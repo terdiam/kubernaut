@@ -16,7 +16,45 @@ export type Field =
   | { kind: "keyValue"; path: string; label: string; help?: string; masked?: boolean }
   | { kind: "stringList"; path: string; label: string; help?: string }
   | { kind: "containers"; path: string; label: string; help?: string }
-  | { kind: "servicePorts"; path: string; label: string; help?: string };
+  | { kind: "servicePorts"; path: string; label: string; help?: string }
+  /**
+   * A reference to another object, offered from the cluster.
+   *
+   * `dependsOn` names the draft path whose value narrows the list — an Ingress
+   * backend port depends on the Service already chosen. `allowCustom` keeps
+   * free text available for something that does not exist yet.
+   */
+  | {
+      kind: "lookup";
+      path: string;
+      label: string;
+      source: LookupSource;
+      dependsOn?: string;
+      allowCustom?: boolean;
+      help?: string;
+      placeholder?: string;
+    }
+  /** A list of `{ name }` references, as `imagePullSecrets` is shaped. */
+  | { kind: "refList"; path: string; label: string; source: LookupSource; help?: string }
+  /** Host/path routing, with the backend Service and port chosen from the cluster. */
+  | { kind: "ingressRules"; path: string; label: string; help?: string }
+  /** Pod volumes backed by a claim, chosen from the claims that exist. */
+  | { kind: "volumes"; path: string; label: string; help?: string };
+
+/** Where a reference field's options come from. Matches the Rust lookup. */
+export type LookupSource =
+  | "secrets"
+  | "dockerConfigSecrets"
+  | "configMaps"
+  | "serviceAccounts"
+  | "persistentVolumeClaims"
+  | "services"
+  | "servicePorts"
+  | "ingressClasses"
+  | "storageClasses"
+  | "priorityClasses"
+  | "nodes"
+  | "workloads";
 
 export interface Section {
   title: string;
@@ -47,8 +85,28 @@ function podTemplate(prefix: string): Section[] {
     {
       title: "Pod",
       fields: [
-        { kind: "text", path: `${prefix}.spec.serviceAccountName`, label: "Service account" },
-        { kind: "text", path: `${prefix}.spec.nodeSelector.kubernetes\\.io/hostname`, label: "Pin to node" },
+        {
+          kind: "lookup",
+          path: `${prefix}.spec.serviceAccountName`,
+          label: "Service account",
+          source: "serviceAccounts",
+          allowCustom: true,
+        },
+        {
+          kind: "lookup",
+          path: `${prefix}.spec.nodeSelector.kubernetes\\.io/hostname`,
+          label: "Pin to node",
+          source: "nodes",
+          allowCustom: true,
+          help: "Pins every replica to one node. Useful for debugging, rarely for production.",
+        },
+        {
+          kind: "lookup",
+          path: `${prefix}.spec.priorityClassName`,
+          label: "Priority class",
+          source: "priorityClasses",
+          allowCustom: true,
+        },
         {
           kind: "select",
           path: `${prefix}.spec.restartPolicy`,
@@ -68,6 +126,24 @@ function podTemplate(prefix: string): Section[] {
           help: "Shares the node's network namespace. Rarely correct, and it bypasses NetworkPolicy.",
         },
         { kind: "keyValue", path: `${prefix}.metadata.labels`, label: "Pod labels" },
+      ],
+    },
+    {
+      title: "Registry & storage",
+      fields: [
+        {
+          kind: "refList",
+          path: `${prefix}.spec.imagePullSecrets`,
+          label: "Image pull secrets",
+          source: "dockerConfigSecrets",
+          help: "Only Secrets of type kubernetes.io/dockerconfigjson can authenticate a pull, and they must live in this namespace.",
+        },
+        {
+          kind: "volumes",
+          path: `${prefix}.spec.volumes`,
+          label: "Volumes",
+          help: "Claims are listed from this namespace; a claim you are about to create can be typed in.",
+        },
       ],
     },
   ];
@@ -250,13 +326,15 @@ const INGRESS: Section[] = [
   {
     title: "Routing",
     fields: [
-      { kind: "text", path: "spec.ingressClassName", label: "Ingress class" },
       {
-        kind: "textarea",
-        path: "spec.rules",
-        label: "Rules (JSON)",
-        help: "Host/path routing is nested; edit it here as JSON or switch to the YAML tab.",
+        kind: "lookup",
+        path: "spec.ingressClassName",
+        label: "Ingress class",
+        source: "ingressClasses",
+        allowCustom: true,
+        help: "Which controller serves this Ingress. A class no controller claims leaves the rules inert.",
       },
+      { kind: "ingressRules", path: "spec.rules", label: "Rules" },
       { kind: "textarea", path: "spec.tls", label: "TLS (JSON)" },
     ],
   },
@@ -298,7 +376,14 @@ const PVC: Section[] = [
     description: "Most fields are immutable after creation; only capacity can usually grow.",
     fields: [
       { kind: "text", path: "spec.resources.requests.storage", label: "Capacity", placeholder: "10Gi" },
-      { kind: "text", path: "spec.storageClassName", label: "Storage class" },
+      {
+        kind: "lookup",
+        path: "spec.storageClassName",
+        label: "Storage class",
+        source: "storageClasses",
+        allowCustom: true,
+        help: "Leave empty to take the cluster's default class.",
+      },
       { kind: "stringList", path: "spec.accessModes", label: "Access modes" },
       {
         kind: "select",
@@ -315,8 +400,20 @@ const HPA: Section[] = [
   {
     title: "Autoscaling",
     fields: [
-      { kind: "text", path: "spec.scaleTargetRef.kind", label: "Target kind" },
-      { kind: "text", path: "spec.scaleTargetRef.name", label: "Target name" },
+      {
+        kind: "select",
+        path: "spec.scaleTargetRef.kind",
+        label: "Target kind",
+        options: ["Deployment", "StatefulSet", "ReplicaSet"],
+      },
+      {
+        kind: "lookup",
+        path: "spec.scaleTargetRef.name",
+        label: "Target name",
+        source: "workloads",
+        dependsOn: "spec.scaleTargetRef.kind",
+        allowCustom: true,
+      },
       { kind: "number", path: "spec.minReplicas", label: "Min replicas", min: 0 },
       { kind: "number", path: "spec.maxReplicas", label: "Max replicas", min: 1 },
       { kind: "textarea", path: "spec.metrics", label: "Metrics (JSON)" },

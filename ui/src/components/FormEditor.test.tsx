@@ -7,6 +7,8 @@ const applyEdit = vi.fn<(cluster: string, request: EditRequest) => Promise<Apply
 
 vi.mock("../api", () => ({
   api: {
+    // Reference fields ask the cluster for their options.
+    lookupOptions: () => Promise.resolve([]),
     applyEdit: (cluster: string, request: EditRequest) => applyEdit(cluster, request),
     previewEdit: vi.fn(),
   },

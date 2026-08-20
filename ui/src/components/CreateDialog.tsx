@@ -7,6 +7,7 @@ import { formSections, type Section } from "../formSpec";
 import { getPath, setPath } from "../path";
 import { templateForKind } from "../manifestTemplates";
 import { FieldRow } from "./FormEditor";
+import { FormContext } from "../formContext";
 import { PlanTable, ResultTable } from "./ManifestOutcome";
 import type { DocResult, ManifestPlan, ResourceDescriptor } from "../types";
 
@@ -273,6 +274,9 @@ function CreateForm({
         )}
 
         {mode === "form" && sections ? (
+          <FormContext.Provider
+            value={{ cluster, namespace: descriptor.namespaced ? namespace || null : null, draft }}
+          >
           <div className="form__body create__form">
             {sections.map((section: Section) => (
               <fieldset key={section.title} className="form__section">
@@ -289,6 +293,7 @@ function CreateForm({
               </fieldset>
             ))}
           </div>
+          </FormContext.Provider>
         ) : (
           <div className="manifest__editor" ref={host} />
         )}

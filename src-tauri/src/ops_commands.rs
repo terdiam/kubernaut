@@ -13,6 +13,7 @@ use k8s_ops::{
     forward::{ForwardId, ForwardSpec, ForwardStatus, PortOption},
     gitops::{self, GitOpsSummary},
     logs::{self, ContainerInfo, LogEvent, LogOptions, LogTarget, SessionId as LogId},
+    lookup::{self, LookupOption},
     manifest::{self, DocResult, ManifestPlan},
     related::{self, EventRow, Related},
 };
@@ -481,6 +482,23 @@ pub async fn diagnose_object(
 ) -> CommandResult<DiagnosisReport> {
     let handle = state.clusters.require(&cluster)?;
     diagnose::diagnose(&handle, &resource, namespace.as_deref(), &name)
+        .await
+        .map_err(CommandError::new)
+}
+
+// -------------------------------------------------------------- lookups
+
+/// Options for a form field that references other objects.
+#[tauri::command]
+pub async fn lookup_options(
+    state: State<'_, AppState>,
+    cluster: String,
+    source: String,
+    namespace: Option<String>,
+    param: Option<String>,
+) -> CommandResult<Vec<LookupOption>> {
+    let handle = state.clusters.require(&cluster)?;
+    lookup::lookup(&handle, &source, namespace.as_deref(), param.as_deref())
         .await
         .map_err(CommandError::new)
 }

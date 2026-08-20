@@ -11,6 +11,8 @@ const planManifest = vi.fn<() => Promise<ManifestPlan>>();
 
 vi.mock("../api", () => ({
   api: {
+    // Reference fields ask the cluster for their options.
+    lookupOptions: () => Promise.resolve([]),
     planManifest: () => planManifest(),
     applyManifest: (_c: string, yaml: string, namespace: string | null) => {
       applied = { yaml, namespace };

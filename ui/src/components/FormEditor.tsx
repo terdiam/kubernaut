@@ -3,6 +3,9 @@ import { api } from "../api";
 import { formSections, type Field, type Section } from "../formSpec";
 import { getPath, setPath } from "../path";
 import { prunedApply } from "../applyPrune";
+import { FormContext } from "../formContext";
+import { LookupField, RefListField, VolumesField } from "./LookupFields";
+import { IngressRulesField } from "./IngressRules";
 import type { DiffResult, FieldConflict } from "../types";
 
 interface Props {
@@ -131,6 +134,7 @@ export function FormEditor(props: Props) {
         />
       )}
 
+      <FormContext.Provider value={{ cluster, namespace, draft }}>
       <div className="form__body">
         {sections.map((section: Section) => (
           <fieldset key={section.title} className="form__section">
@@ -142,6 +146,7 @@ export function FormEditor(props: Props) {
           </fieldset>
         ))}
       </div>
+      </FormContext.Provider>
 
       {diff && (
         <div className="diff">
@@ -340,6 +345,50 @@ export function FieldRow({
             value={Array.isArray(value) ? (value as Obj[]) : []}
             onChange={(next) => onChange(field.path, next.length ? next : undefined)}
           />
+        </div>
+      );
+
+    case "lookup":
+      return (
+        <div className="field">
+          {label}
+          <LookupField
+            id={id}
+            source={field.source}
+            dependsOn={field.dependsOn}
+            allowCustom={field.allowCustom}
+            placeholder={field.placeholder}
+            value={value}
+            onChange={(next) => onChange(field.path, next)}
+          />
+        </div>
+      );
+
+    case "refList":
+      return (
+        <div className="field field--wide">
+          {label}
+          <RefListField
+            source={field.source}
+            value={value}
+            onChange={(next) => onChange(field.path, next)}
+          />
+        </div>
+      );
+
+    case "volumes":
+      return (
+        <div className="field field--wide">
+          {label}
+          <VolumesField value={value} onChange={(next) => onChange(field.path, next)} />
+        </div>
+      );
+
+    case "ingressRules":
+      return (
+        <div className="field field--wide">
+          {label}
+          <IngressRulesField value={value} onChange={(next) => onChange(field.path, next)} />
         </div>
       );
   }

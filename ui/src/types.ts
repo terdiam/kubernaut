@@ -461,6 +461,18 @@ export interface Related {
   nodes: RelatedRef[];
 }
 
+// ---- form lookups ---------------------------------------------------------
+
+/** One choice in a form select, read from the cluster. */
+export interface LookupOption {
+  /** What goes into the manifest. */
+  value: string;
+  /** What the reader sees, when it differs from the value. */
+  label: string;
+  /** One line of context — a type, a provisioner, a phase. */
+  detail: string | null;
+}
+
 // ---- manifests ------------------------------------------------------------
 
 /** What one document in a manifest would do. */

@@ -26,6 +26,7 @@ import type {
   LogEvent,
   LogOptions,
   LogTarget,
+  LookupOption,
   MetricsSources,
   MetricTarget,
   NamespaceUsage,
@@ -235,6 +236,12 @@ export const api = {
   ) => invoke<Related>("related_resources", { cluster, resource, namespace, name }),
   diagnose: (cluster: string, resource: string, namespace: string | null, name: string) =>
     invoke<DiagnosisReport>("diagnose_object", { cluster, resource, namespace, name }),
+  lookupOptions: (
+    cluster: string,
+    source: string,
+    namespace: string | null,
+    param: string | null,
+  ) => invoke<LookupOption[]>("lookup_options", { cluster, source, namespace, param }),
   planManifest: (cluster: string, yaml: string, namespace: string | null, force: boolean) =>
     invoke<ManifestPlan>("plan_manifest", { cluster, yaml, namespace, force }),
   applyManifest: (cluster: string, yaml: string, namespace: string | null, force: boolean) =>

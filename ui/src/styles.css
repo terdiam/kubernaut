@@ -1466,3 +1466,32 @@ body.resizing { cursor: col-resize; user-select: none; }
 }
 .create__kinds button:hover { background: var(--bg-hover); }
 .create__kind { font-weight: 500; }
+
+/* ---- reference fields --------------------------------------------------- */
+
+.lookup { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.lookup select, .lookup input { flex: 1; min-width: 0; }
+.lookup__note { font-size: 11px; }
+
+.reflist, .volumes, .rules { display: flex; flex-direction: column; gap: 6px; }
+.reflist__row, .volumes__row { display: flex; align-items: center; gap: 6px; }
+.reflist__row .lookup, .volumes__row .lookup { flex: 1; }
+.volumes__row > input { width: 160px; }
+
+.rules__host {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+.rules__hostrow { display: flex; align-items: center; gap: 6px; }
+.rules__hostrow > input { flex: 1; }
+
+/* Path, type, service, port, remove — in the order they are read. */
+.rules__path { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.rules__pathvalue { flex: 1; min-width: 120px; }
+.rules__path select { min-width: 110px; }
+.rules__addpath { align-self: flex-start; }
