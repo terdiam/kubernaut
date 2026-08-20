@@ -49,6 +49,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         unhappy.len()
     );
 
+    // `KUBERNAUT_JSON=<pod>` prints that pod's report as the UI receives it,
+    // so the render can be checked against real cluster output.
+    if let Ok(wanted) = std::env::var("KUBERNAUT_JSON") {
+        for pod in unhappy.iter().filter(|p| p.name_any() == wanted) {
+            let ns = pod.namespace().unwrap_or_default();
+            let report =
+                diagnose::diagnose(&cluster, "core/v1/pods", Some(&ns), &pod.name_any()).await?;
+            println!("{}", serde_json::to_string_pretty(&report)?);
+        }
+        manager.disconnect(&context);
+        return Ok(());
+    }
+
     let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
 
     for pod in unhappy.iter().take(25) {
