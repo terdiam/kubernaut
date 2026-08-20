@@ -6,6 +6,7 @@ import type {
   ClusterSummary,
   ContextEntry,
   Diagnostics,
+  DiagnosisReport,
   DiscoveryCache,
   ContainerInfo,
   DiffResult,
@@ -230,6 +231,8 @@ export const api = {
     namespace: string | null,
     name: string,
   ) => invoke<Related>("related_resources", { cluster, resource, namespace, name }),
+  diagnose: (cluster: string, resource: string, namespace: string | null, name: string) =>
+    invoke<DiagnosisReport>("diagnose_object", { cluster, resource, namespace, name }),
 
   // ---- metrics
   clusterOverview: (cluster: string, scope: NodeScope) =>

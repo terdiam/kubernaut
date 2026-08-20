@@ -1221,3 +1221,142 @@ body.resizing { cursor: col-resize; user-select: none; }
 .empty h2 { margin: 0 0 8px; font-size: 16px; }
 .empty p { line-height: 1.6; }
 .conditions__when { white-space: nowrap; font-size: 11px; }
+
+/* ---- diagnostics -------------------------------------------------------- */
+
+.dx { display: flex; flex-direction: column; gap: 10px; }
+.dx__head { margin: 0; }
+.dx__head p { margin: 0; font-size: 12px; }
+
+.dx__clear {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--ok) 40%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--ok) 10%, transparent);
+  color: var(--ok);
+  font-size: 13px;
+}
+
+.dx__pod { display: flex; flex-direction: column; gap: 8px; }
+.dx__podname { margin: 4px 0 0; font-size: 13px; font-weight: 600; }
+
+.dx-finding {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dx-finding--error { border-left-color: var(--error); }
+.dx-finding--warning { border-left-color: var(--warn); }
+.dx-finding--info { border-left-color: var(--pending); }
+
+.dx-finding__head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.dx-finding__head h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.dx-finding__explain { margin: 0; font-size: 13px; color: var(--muted); }
+
+/* Verbatim cluster output. Selectable and wrapped: people paste it into
+   tickets, and truncating it would defeat the point of quoting it. */
+.dx-finding__evidence {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border) 35%, transparent);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
+.dx-finding__steps { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 8px; }
+.dx-step { font-size: 13px; }
+.dx-step__text { margin: 0; }
+.dx-step__actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-top: 5px; }
+.dx-step__go { padding: 2px 8px; font-size: 11.5px; }
+
+.dx-step__command {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.dx-step__command:hover { border-color: var(--accent); }
+.dx-step__command code {
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+.dx-step__command span { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
+
+.dx-prompt {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--warn) 40%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+  font-size: 13px;
+}
+.dx-prompt__link {
+  border: 0;
+  background: none;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* ---- log fetch failures ------------------------------------------------- */
+
+.logfail {
+  margin: 0 0 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+/* A file the node deleted is not coming back; a node that is down might. */
+.logfail--permanent { border-left-color: var(--error); }
+.logfail--transient { border-left-color: var(--warn); }
+
+.logfail__head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.logfail__head h4 { margin: 0; font-size: 14px; font-weight: 600; }
+.logfail__detail { margin: 0; color: var(--muted); }
+.logfail__remedy { margin: 0; }
+.logfail__factshead {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+.logfail__facts {
+  list-style: none;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border) 35%, transparent);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  user-select: text;
+}

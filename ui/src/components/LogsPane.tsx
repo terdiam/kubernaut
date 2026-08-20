@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { api, startLogs } from "../api";
 import { useStore } from "../store";
-import { localiseLogLine } from "../time";
+import { explainLogFailure, survivingFacts, type LogFailure } from "../logsUnavailable";
+import { formatDateTime, localiseLogLine } from "../time";
 import type { ContainerInfo, LogEvent, LogTarget } from "../types";
 
 interface Props {
@@ -11,6 +12,13 @@ interface Props {
   /** Shown in the container picker; empty for workload targets. */
   pod: string | null;
   namespace: string;
+  /**
+   * Where to start. A diagnosis that says "read the previous instance's logs"
+   * has to be able to open exactly that, not a view the reader then has to
+   * configure by hand. Remount (via `key`) to apply a new preset.
+   */
+  initialContainer?: string | null;
+  initialPrevious?: boolean;
 }
 
 interface Line {
@@ -33,17 +41,27 @@ function podColour(pod: string): string {
   return `hsl(${Math.abs(hash) % 360} 70% 68%)`;
 }
 
-export function LogsPane({ cluster, target, pod, namespace }: Props) {
+export function LogsPane({
+  cluster,
+  target,
+  pod,
+  namespace,
+  initialContainer = null,
+  initialPrevious = false,
+}: Props) {
   const [lines, setLines] = useState<Line[]>([]);
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
-  const [container, setContainer] = useState<string | null>(null);
+  const [container, setContainer] = useState<string | null>(initialContainer);
   const [filter, setFilter] = useState("");
   const [follow, setFollow] = useState(true);
   const [wrap, setWrap] = useState(false);
   const [timestamps, setTimestamps] = useState(false);
-  const [previous, setPrevious] = useState(false);
+  const [previous, setPrevious] = useState(initialPrevious);
   const [tailLines, setTailLines] = useState(500);
   const [error, setError] = useState<string | null>(null);
+  // A log fetch that failed for a reason worth explaining, rather than a raw
+  // kubelet string pushed into the output as if it were a log line.
+  const [failure, setFailure] = useState<{ pod: string; failure: LogFailure } | null>(null);
 
   const zone = useStore((s) => s.preferences?.timezone ?? "system");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -70,6 +88,14 @@ export function LogsPane({ cluster, target, pod, namespace }: Props) {
   }, [cluster, namespace, pod]);
 
   const append = useCallback((events: LogEvent[]) => {
+    // Scanned before the state update so the explanation is set outside the
+    // updater, and so the raw message can be kept out of the log body.
+    for (const event of events) {
+      if (event.type !== "podFailed") continue;
+      const explained = explainLogFailure(event.message);
+      if (explained) setFailure({ pod: event.pod, failure: explained });
+    }
+
     setLines((current) => {
       const next = current.slice();
       for (const event of events) {
@@ -97,13 +123,17 @@ export function LogsPane({ cluster, target, pod, namespace }: Props) {
             });
             break;
           case "podFailed":
-            next.push({
-              id,
-              pod: event.pod,
-              container: "",
-              text: `✕ ${event.pod}: ${event.message}`,
-              meta: "failed",
-            });
+            // An explained failure is rendered as a panel; repeating it here
+            // would bury the explanation in the scrollback.
+            if (!explainLogFailure(event.message)) {
+              next.push({
+                id,
+                pod: event.pod,
+                container: "",
+                text: `✕ ${event.pod}: ${event.message}`,
+                meta: "failed",
+              });
+            }
             break;
         }
       }
@@ -117,6 +147,7 @@ export function LogsPane({ cluster, target, pod, namespace }: Props) {
     let cancelled = false;
     setLines([]);
     setError(null);
+    setFailure(null);
 
     startLogs(
       cluster,
@@ -132,7 +163,10 @@ export function LogsPane({ cluster, target, pod, namespace }: Props) {
         stop = session.stop;
       })
       .catch((err) => {
-        if (!cancelled) setError(String(err));
+        if (cancelled) return;
+        const explained = explainLogFailure(String(err));
+        if (explained) setFailure({ pod: pod ?? "", failure: explained });
+        else setError(String(err));
       });
 
     return () => {
@@ -261,6 +295,15 @@ export function LogsPane({ cluster, target, pod, namespace }: Props) {
 
       {error && <p className="error logs__error">{error}</p>}
 
+      {failure && (
+        <LogFailurePanel
+          failure={failure.failure}
+          container={evidenceContainer(containers, container)}
+          zone={zone}
+          onDismiss={() => setFailure(null)}
+        />
+      )}
+
       <div className={`logs__body${wrap ? " logs__body--wrap" : ""}`} ref={scrollRef}>
         <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
           {virtualizer.getVirtualItems().map((item) => {
@@ -295,4 +338,71 @@ export function LogsPane({ cluster, target, pod, namespace }: Props) {
       </div>
     </div>
   );
+}
+
+/**
+ * Which container's status to show as evidence.
+ *
+ * The list puts init containers first, so falling back to `containers[0]`
+ * would report on an init container that succeeded while the app container is
+ * the one whose logs are missing.
+ */
+function evidenceContainer(
+  containers: ContainerInfo[],
+  selected: string | null,
+): ContainerInfo | undefined {
+  if (selected) return containers.find((entry) => entry.name === selected);
+  const app = containers.filter((entry) => entry.role === "app");
+  return app.find((entry) => entry.state === "terminated") ?? app[0] ?? containers[0];
+}
+
+/**
+ * What went wrong, and whatever evidence outlived the log file.
+ *
+ * Shown instead of the kubelet's raw string, which reads like a transient
+ * fault for the most common cause — a log file the node deleted months ago.
+ */
+function LogFailurePanel({
+  failure,
+  container,
+  zone,
+  onDismiss,
+}: {
+  failure: LogFailure;
+  container: ContainerInfo | undefined;
+  zone: string;
+  onDismiss: () => void;
+}) {
+  const facts = survivingFacts(container);
+
+  return (
+    <section className={`logfail logfail--${failure.transient ? "transient" : "permanent"}`}>
+      <header className="logfail__head">
+        <h4>{failure.title}</h4>
+        <button className="icon-button" onClick={onDismiss} aria-label="Dismiss">
+          ✕
+        </button>
+      </header>
+      <p className="logfail__detail">{failure.detail}</p>
+      <p className="logfail__remedy">{failure.remedy}</p>
+
+      {facts.length > 0 && (
+        <>
+          <h5 className="logfail__factshead">What is left in the pod status</h5>
+          <ul className="logfail__facts">
+            {facts.map((fact) => (
+              <li key={fact}>{localiseFact(fact, zone)}</li>
+            ))}
+          </ul>
+        </>
+      )}
+    </section>
+  );
+}
+
+/** `Started 2026-06-07T04:00:20Z` reads better in the user's own timezone. */
+function localiseFact(fact: string, zone: string): string {
+  const match = /^(Started|Finished) (.+)$/.exec(fact);
+  if (!match) return fact;
+  return `${match[1]} ${formatDateTime(match[2] ?? null, zone)}`;
 }

@@ -5,6 +5,7 @@
 use k8s_ops::{
     actions::{self, DeleteRequest, DrainOptions, DrainReport, TargetRef},
     apply::{self, ApplyOutcome, DiffResult, EditRequest},
+    diagnose::{self, DiagnosisReport},
     exec::{
         EphemeralOptions, ExecOptions, LocalShellOptions, NodeShellOptions,
         SessionId as TerminalId, TerminalDescriptor, TerminalEvent, TerminalSession,
@@ -461,6 +462,24 @@ pub async fn related_resources(
 ) -> CommandResult<Related> {
     let handle = state.clusters.require(&cluster)?;
     related::related(&handle, &resource, namespace.as_deref(), &name)
+        .await
+        .map_err(CommandError::new)
+}
+
+/// Why a pod is not running, and the steps that follow from it.
+///
+/// Accepts a workload as well as a pod: the question is nearly always asked of
+/// a Deployment, and the answer lives in its replicas.
+#[tauri::command]
+pub async fn diagnose_object(
+    state: State<'_, AppState>,
+    cluster: String,
+    resource: String,
+    namespace: Option<String>,
+    name: String,
+) -> CommandResult<DiagnosisReport> {
+    let handle = state.clusters.require(&cluster)?;
+    diagnose::diagnose(&handle, &resource, namespace.as_deref(), &name)
         .await
         .map_err(CommandError::new)
 }

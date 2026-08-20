@@ -2,6 +2,7 @@
 
 pub mod actions;
 pub mod apply;
+pub mod diagnose;
 pub mod error;
 pub mod exec;
 pub mod forward;
@@ -12,6 +13,7 @@ mod ring;
 
 pub use actions::{DeleteRequest, DrainOptions, DrainReport, TargetRef};
 pub use apply::{ApplyOutcome, DiffResult, EditRequest, FieldConflict};
+pub use diagnose::{Diagnosis, DiagnosisReport, Finding, Step, StepAction};
 pub use error::{OpsError, Result};
 pub use exec::{ExecOptions, TerminalEvent, TerminalManager, TerminalSession};
 pub use forward::{ForwardManager, ForwardSpec, ForwardStatus, PortOption};

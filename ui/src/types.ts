@@ -144,6 +144,13 @@ export interface ContainerInfo {
   image: string;
   ready: boolean;
   restarts: number;
+  /** `running` | `waiting` | `terminated` | `unknown` */
+  state: string;
+  /** Waiting or terminated reason, whichever applies. */
+  reason: string | null;
+  exitCode: number | null;
+  startedAt: string | null;
+  finishedAt: string | null;
 }
 
 export type LogTarget =
@@ -452,6 +459,52 @@ export interface Related {
   storage: RelatedRef[];
   policies: RelatedRef[];
   nodes: RelatedRef[];
+}
+
+// ---- diagnostics ----------------------------------------------------------
+
+/** A next action a finding suggests, that the app can carry out itself. */
+export type StepAction =
+  | { kind: "logs"; container: string | null; previous: boolean }
+  | { kind: "terminal" }
+  | { kind: "edit" }
+  | { kind: "open"; resource: string; namespace: string | null; name: string };
+
+export interface DiagnosticStep {
+  text: string;
+  /** Equivalent kubectl invocation, for a terminal or a ticket. */
+  command: string | null;
+  action: StepAction | null;
+}
+
+export interface DiagnosticFinding {
+  /** `error` | `warning` | `info` */
+  severity: string;
+  /** Machine-readable cause, e.g. `CrashLoopBackOff`. */
+  code: string;
+  title: string;
+  explanation: string;
+  container: string | null;
+  /** Exact text the cluster produced. Never paraphrased. */
+  evidence: string[];
+  steps: DiagnosticStep[];
+}
+
+export interface Diagnosis {
+  pod: string;
+  namespace: string | null;
+  phase: string;
+  healthy: boolean;
+  summary: string;
+  findings: DiagnosticFinding[];
+}
+
+export interface DiagnosisReport {
+  /** Only the pods with something to report. */
+  pods: Diagnosis[];
+  examined: number;
+  healthy: number;
+  truncated: boolean;
 }
 
 // ---- P3: Helm -------------------------------------------------------------

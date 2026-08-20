@@ -4,13 +4,14 @@ import { useStore } from "../store";
 import { formSections } from "../formSpec";
 import { hasBinaryData, secretFromForm, secretToForm } from "../secret";
 import { ActionsMenu } from "./ActionsMenu";
+import { DiagnosePane } from "./DiagnosePane";
 import { FormEditor } from "./FormEditor";
 import { ForwardDialog } from "./ForwardsPanel";
 import { LogsPane } from "./LogsPane";
 import { ObjectContext } from "./ObjectContext";
 import { ObjectMetricsPane } from "./ObjectMetricsPane";
 import { SizingPane } from "./SizingPane";
-import type { LogTarget, MetricTarget } from "../types";
+import type { LogTarget, MetricTarget, StepAction } from "../types";
 
 // xterm and Monaco are the two heavy dependencies; neither is needed until the
 // user actually opens those tabs.
@@ -19,7 +20,7 @@ const TerminalPane = lazy(() =>
 );
 const YamlEditor = lazy(() => import("./YamlEditor").then((m) => ({ default: m.YamlEditor })));
 
-type Tab = "overview" | "form" | "yaml" | "metrics" | "sizing" | "logs" | "terminal";
+type Tab = "overview" | "diagnose" | "form" | "yaml" | "metrics" | "sizing" | "logs" | "terminal";
 
 /** Kinds with a pod template, where sizing advice applies. */
 const SIZEABLE = new Set(["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"]);
@@ -47,13 +48,23 @@ export function DetailDrawer() {
   const [loading, setLoading] = useState(false);
   const [reload, setReload] = useState(0);
   const [forwarding, setForwarding] = useState(false);
+  // Set when a diagnosis step opens the Logs tab on one container. The counter
+  // forces a remount so a second step with a different preset actually applies.
+  const [logsPreset, setLogsPreset] = useState<{
+    container: string | null;
+    previous: boolean;
+    seq: number;
+  } | null>(null);
 
   const isPod = resource?.kind === "Pod";
   const isSecret = resource?.kind === "Secret" && resource.group === "";
   const canTailLogs = isPod || (resource ? POD_OWNERS.has(resource.kind) : false);
   const hasForm = resource ? formSections(resource.group, resource.kind) !== null : false;
 
-  useEffect(() => setTab("overview"), [selected?.uid]);
+  useEffect(() => {
+    setTab("overview");
+    setLogsPreset(null);
+  }, [selected?.uid]);
 
   // Esc closes the drawer, but must not fire while a dialog is open or while
   // typing — Esc inside Monaco and inside the palette means something else.
@@ -134,6 +145,12 @@ export function DetailDrawer() {
   const wide = tab !== "overview";
   const tabs: { id: Tab; label: string; enabled: boolean }[] = [
     { id: "overview", label: "Overview", enabled: true },
+    {
+      id: "diagnose",
+      label: "Diagnose",
+      // Pods, and the workloads whose pods carry the failure.
+      enabled: (isPod || POD_OWNERS.has(resource.kind)) && Boolean(selected.namespace),
+    },
     { id: "form", label: "Form", enabled: hasForm && resource.editable },
     { id: "yaml", label: "YAML", enabled: true },
     { id: "metrics", label: "Metrics", enabled: metricTarget !== null },
@@ -151,6 +168,29 @@ export function DetailDrawer() {
       enabled: true,
     },
   ];
+
+  /** Carry out a step a finding suggested, inside the drawer. */
+  const runDiagnosisStep = (action: StepAction) => {
+    switch (action.kind) {
+      case "logs":
+        setLogsPreset({
+          container: action.container,
+          previous: action.previous,
+          seq: (logsPreset?.seq ?? 0) + 1,
+        });
+        setTab("logs");
+        break;
+      case "terminal":
+        setTab("terminal");
+        break;
+      case "edit":
+        setTab(hasForm && resource.editable ? "form" : "yaml");
+        break;
+      // `open` navigates to another object and is handled by the pane itself.
+      case "open":
+        break;
+    }
+  };
 
   return (
     <aside className={`drawer${wide ? " drawer--wide" : ""}`}>
@@ -216,6 +256,20 @@ export function DetailDrawer() {
             )}
           </dl>
 
+          {(isPod || POD_OWNERS.has(resource.kind)) &&
+            selected.namespace &&
+            selected.health !== "ok" && (
+              <p className="dx-prompt">
+                {selected.health === "pending"
+                  ? "This is not running yet."
+                  : "This is not healthy."}{" "}
+                <button className="dx-prompt__link" onClick={() => setTab("diagnose")}>
+                  Diagnose it
+                </button>{" "}
+                to see what the cluster says and what to do next.
+              </p>
+            )}
+
           {isSecret && json && hasBinaryData(json) && (
             <p className="warning">
               This Secret holds non-text values. They are left untouched by the form and can be
@@ -233,6 +287,17 @@ export function DetailDrawer() {
             revision={reload}
           />
         </div>
+      )}
+
+      {tab === "diagnose" && selected.namespace && (
+        <DiagnosePane
+          cluster={cluster}
+          resource={resource.key}
+          namespace={selected.namespace}
+          name={selected.name}
+          revision={reload}
+          onAction={runDiagnosisStep}
+        />
       )}
 
       {tab === "form" && formInitial && (
@@ -277,10 +342,13 @@ export function DetailDrawer() {
 
       {tab === "logs" && logTarget && selected.namespace && (
         <LogsPane
+          key={logsPreset?.seq ?? 0}
           cluster={cluster}
           target={logTarget}
           pod={isPod ? selected.name : null}
           namespace={selected.namespace}
+          initialContainer={logsPreset?.container ?? null}
+          initialPrevious={logsPreset?.previous ?? false}
         />
       )}
 

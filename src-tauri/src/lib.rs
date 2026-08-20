@@ -112,6 +112,7 @@ pub fn run() {
             ops_commands::object_events,
             ops_commands::pod_events,
             ops_commands::related_resources,
+            ops_commands::diagnose_object,
             ops_commands::gitops_survey,
             ops_commands::gitops_reconcile,
             ops_commands::gitops_set_suspended,
