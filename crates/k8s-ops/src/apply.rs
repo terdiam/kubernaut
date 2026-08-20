@@ -47,7 +47,7 @@ pub struct DiffResult {
 }
 
 /// One field an apply would take from another field manager.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FieldConflict {
     /// Field manager that owns the field, e.g. `rancher`.
@@ -204,12 +204,12 @@ pub async fn replace(cluster: &Arc<ClusterHandle>, request: &EditRequest) -> Res
     })
 }
 
-fn render(obj: &DynamicObject) -> Result<String> {
+pub(crate) fn render(obj: &DynamicObject) -> Result<String> {
     Ok(k8s_core::objects::to_yaml(obj, false)?)
 }
 
 /// Line-level unified diff with three lines of context.
-fn unified_diff(before: &str, after: &str, name: &str) -> String {
+pub(crate) fn unified_diff(before: &str, after: &str, name: &str) -> String {
     if before == after {
         return String::new();
     }
@@ -226,7 +226,7 @@ fn unified_diff(before: &str, after: &str, name: &str) -> String {
 /// (`reason: FieldManagerConflict`), which is exact. Older or proxied
 /// apiservers send only the prose message, so that is parsed as a fallback:
 /// `Apply failed with 1 conflict: conflict with "rancher" using apps/v1: .spec.replicas`
-fn conflicts_from(status: &kube::core::Status) -> Vec<FieldConflict> {
+pub(crate) fn conflicts_from(status: &kube::core::Status) -> Vec<FieldConflict> {
     let mut out: Vec<FieldConflict> = status
         .details
         .iter()

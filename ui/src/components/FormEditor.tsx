@@ -212,7 +212,7 @@ function ConflictPanel({
   );
 }
 
-function FieldRow({
+export function FieldRow({
   field,
   value,
   onChange,

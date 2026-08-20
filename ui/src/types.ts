@@ -461,6 +461,42 @@ export interface Related {
   nodes: RelatedRef[];
 }
 
+// ---- manifests ------------------------------------------------------------
+
+/** What one document in a manifest would do. */
+export interface DocPlan {
+  index: number;
+  apiVersion: string;
+  kind: string;
+  name: string;
+  namespace: string | null;
+  /** `group/version/plural`, once the kind resolved against this cluster. */
+  resource: string | null;
+  /** `create` | `update` | `unchanged` | `conflict` | `error` */
+  action: string;
+  unified: string;
+  conflicts: FieldConflict[];
+  /** Not errors, but they change what the apply means. */
+  warnings: string[];
+  error: string | null;
+}
+
+export interface ManifestPlan {
+  docs: DocPlan[];
+}
+
+/** What one document actually did. */
+export interface DocResult {
+  index: number;
+  kind: string;
+  name: string;
+  namespace: string | null;
+  /** `created` | `configured` | `unchanged` | `conflict` | `error` */
+  status: string;
+  conflicts: FieldConflict[];
+  error: string | null;
+}
+
 // ---- diagnostics ----------------------------------------------------------
 
 /** A next action a finding suggests, that the app can carry out itself. */

@@ -13,6 +13,7 @@ use k8s_ops::{
     forward::{ForwardId, ForwardSpec, ForwardStatus, PortOption},
     gitops::{self, GitOpsSummary},
     logs::{self, ContainerInfo, LogEvent, LogOptions, LogTarget, SessionId as LogId},
+    manifest::{self, DocResult, ManifestPlan},
     related::{self, EventRow, Related},
 };
 use serde::Serialize;
@@ -480,6 +481,39 @@ pub async fn diagnose_object(
 ) -> CommandResult<DiagnosisReport> {
     let handle = state.clusters.require(&cluster)?;
     diagnose::diagnose(&handle, &resource, namespace.as_deref(), &name)
+        .await
+        .map_err(CommandError::new)
+}
+
+// ------------------------------------------------------------ manifests
+
+/// What applying a manifest would do, per document. Never writes.
+#[tauri::command]
+pub async fn plan_manifest(
+    state: State<'_, AppState>,
+    cluster: String,
+    yaml: String,
+    namespace: Option<String>,
+    force: Option<bool>,
+) -> CommandResult<ManifestPlan> {
+    let handle = state.clusters.require(&cluster)?;
+    manifest::plan(&handle, &yaml, namespace.as_deref(), force.unwrap_or(false))
+        .await
+        .map_err(CommandError::new)
+}
+
+/// Apply every document in a manifest, creating what does not exist yet.
+#[tauri::command]
+pub async fn apply_manifest(
+    state: State<'_, AppState>,
+    cluster: String,
+    yaml: String,
+    namespace: Option<String>,
+    force: Option<bool>,
+) -> CommandResult<Vec<DocResult>> {
+    state.ensure_writable(&cluster).map_err(CommandError::new)?;
+    let handle = state.clusters.require(&cluster)?;
+    manifest::apply(&handle, &yaml, namespace.as_deref(), force.unwrap_or(false))
         .await
         .map_err(CommandError::new)
 }

@@ -13,6 +13,8 @@ import { DetailDrawer } from "./components/DetailDrawer";
 import { NamespacePicker } from "./components/NamespacePicker";
 import { CommandPalette } from "./components/CommandPalette";
 import { ForwardsPanel } from "./components/ForwardsPanel";
+import { CreateDialog } from "./components/CreateDialog";
+import { ImportDialog } from "./components/ImportDialog";
 import { onClusterStatus } from "./api";
 import { useStore } from "./store";
 
@@ -51,6 +53,12 @@ export default function App() {
   const toggleForwards = useStore((s) => s.toggleForwards);
   const paletteOpen = useStore((s) => s.paletteOpen);
   const setPaletteOpen = useStore((s) => s.setPaletteOpen);
+  const createOpen = useStore((s) => s.createOpen);
+  const openCreate = useStore((s) => s.openCreate);
+  const closeCreate = useStore((s) => s.closeCreate);
+  const importOpen = useStore((s) => s.importOpen);
+  const openImport = useStore((s) => s.openImport);
+  const closeImport = useStore((s) => s.closeImport);
 
   useEffect(() => {
     void loadContexts();
@@ -114,6 +122,15 @@ export default function App() {
           />
 
           <button
+            className="button"
+            onClick={openImport}
+            disabled={!activeCluster}
+            title="Apply a manifest file as it stands"
+          >
+            Import YAML
+          </button>
+
+          <button
             className="button button--ghost"
             onClick={toggleForwards}
             title="Port forwards (⌘P)"
@@ -169,9 +186,23 @@ export default function App() {
             {view === "security" && <SecurityCenter />}
             {view === "settings" && <Settings />}
             {forwardsOpen && <ForwardsPanel onClose={toggleForwards} />}
+
+            {activeCluster && (
+              <button
+                className="fab"
+                onClick={openCreate}
+                title="Create a resource"
+                aria-label="Create a resource"
+              >
+                +
+              </button>
+            )}
           </div>
           <DetailDrawer />
         </div>
+
+        {createOpen && <CreateDialog onClose={closeCreate} />}
+        {importOpen && <ImportDialog onClose={closeImport} />}
       </div>
 
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} />}

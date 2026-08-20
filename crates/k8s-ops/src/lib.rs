@@ -8,6 +8,7 @@ pub mod exec;
 pub mod forward;
 pub mod gitops;
 pub mod logs;
+pub mod manifest;
 pub mod related;
 mod ring;
 
@@ -19,4 +20,5 @@ pub use exec::{ExecOptions, TerminalEvent, TerminalManager, TerminalSession};
 pub use forward::{ForwardManager, ForwardSpec, ForwardStatus, PortOption};
 pub use gitops::{GitOpsEntry, GitOpsSummary};
 pub use logs::{ContainerInfo, LogEvent, LogManager, LogOptions, LogSession, LogTarget};
+pub use manifest::{DocPlan, DocResult, ManifestPlan};
 pub use related::{EventRow, Related, RelatedRef};

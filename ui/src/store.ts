@@ -79,6 +79,14 @@ interface AppState {
   savePreferences: (preferences: Preferences) => Promise<void>;
   /** Navigate to another object by resource key, name and namespace. */
   openObject: (resource: string, namespace: string | null, name: string) => Promise<void>;
+  /** Create dialog, opened by the floating + button. Creates the kind in view. */
+  createOpen: boolean;
+  openCreate: () => void;
+  closeCreate: () => void;
+  /** Import-a-manifest dialog, opened from the topbar. */
+  importOpen: boolean;
+  openImport: () => void;
+  closeImport: () => void;
   setOverviewScope: (scope: "all" | "controlPlane" | "workers") => void;
 }
 
@@ -166,6 +174,8 @@ export const useStore = create<AppState>((set, get) => ({
   discovery: null,
   namespaces: [],
   selectedNamespaces: [],
+  createOpen: false,
+  importOpen: false,
 
   resource: null,
   spec: null,
@@ -379,6 +389,11 @@ export const useStore = create<AppState>((set, get) => ({
     set({ preferences: saved });
     applyTheme(saved.theme);
   },
+
+  openCreate: () => set({ createOpen: true }),
+  closeCreate: () => set({ createOpen: false }),
+  openImport: () => set({ importOpen: true }),
+  closeImport: () => set({ importOpen: false }),
 
   openObject: async (resourceKey, namespace, name) => {
     const discovery = get().discovery;

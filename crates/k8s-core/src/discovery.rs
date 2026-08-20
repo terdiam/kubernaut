@@ -213,6 +213,31 @@ impl DiscoveryCache {
         best
     }
 
+    /// Exact match on `apiVersion` + `kind`, as a manifest names them.
+    ///
+    /// Deliberately not a fuzzy match: applying a document under a version the
+    /// cluster does not serve fails server-side with a far worse message than
+    /// "this cluster serves it as X".
+    pub fn resolve_gvk(&self, api_version: &str, kind: &str) -> Option<&ResourceDescriptor> {
+        self.index
+            .values()
+            .find(|res| res.api_version == api_version && res.kind == kind)
+    }
+
+    /// Versions of `kind` this cluster does serve, for the error when the
+    /// document names one it does not.
+    pub fn versions_of_kind(&self, kind: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .index
+            .values()
+            .filter(|res| res.kind == kind)
+            .map(|res| res.api_version.clone())
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
     /// Every watchable, listable resource — the default sidebar contents.
     pub fn listable(&self) -> impl Iterator<Item = &ResourceDescriptor> {
         self.index.values().filter(|r| r.watchable)

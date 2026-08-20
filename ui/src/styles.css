@@ -427,7 +427,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 /* ================= P1: editors, logs, terminal, dock ================= */
 
-.app__center { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+/* `position: relative` anchors the floating create button. */
+.app__center { display: flex; flex-direction: column; flex: 1; min-width: 0; position: relative; }
 
 .button {
   background: var(--bg);
@@ -1360,3 +1361,108 @@ body.resizing { cursor: col-resize; user-select: none; }
   line-height: 1.6;
   user-select: text;
 }
+
+/* ---- manifest create / import ------------------------------------------- */
+
+.manifest { width: min(920px, 96vw); }
+.manifest__toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.manifest__ns { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.manifest__ns input { width: 150px; }
+.manifest__hint { font-size: 12px; margin: 0 0 8px; }
+
+/* A styled label wrapping a hidden file input: the native control cannot be
+   restyled, and a plain input keeps the file inside the webview rather than
+   handing the renderer a filesystem path. */
+.manifest__file { position: relative; overflow: hidden; cursor: pointer; }
+.manifest__file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+.manifest__editor {
+  height: min(46vh, 420px);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.manifest__plan { margin-top: 12px; }
+.manifest__plan h4 { margin: 0 0 6px; font-size: 13px; }
+.manifest__docs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+
+.manifest__doc {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--bg-elevated);
+}
+.manifest__doc--create, .manifest__doc--created { border-left-color: var(--ok); }
+.manifest__doc--update, .manifest__doc--configured { border-left-color: var(--pending); }
+.manifest__doc--conflict { border-left-color: var(--warn); }
+.manifest__doc--error { border-left-color: var(--error); }
+
+.manifest__dochead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.manifest__docmsg { margin: 6px 0 0; font-size: 12px; }
+.manifest__docmsg--warn { color: var(--warn); }
+
+/* Action bar above a resource list. Sits outside `.table__scroll` so it does
+   not move when a widened column scrolls the grid sideways. */
+.table__bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* ---- create: floating action button ------------------------------------- */
+
+/* Anchored inside the centre column, not the window, so an open detail drawer
+   sits beside it rather than under it. */
+.fab {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 1px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 26%, var(--bg-elevated));
+  color: var(--text);
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.35);
+  z-index: 40;
+}
+.fab:hover { background: color-mix(in srgb, var(--accent) 40%, var(--bg-elevated)); }
+.fab:active { transform: translateY(1px); }
+
+.create__change { margin-left: 10px; font-size: 12px; font-weight: 400; }
+.create__form { max-height: min(52vh, 460px); overflow-y: auto; }
+
+.create__kinds {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  max-height: 46vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.create__kinds button {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.create__kinds button:hover { background: var(--bg-hover); }
+.create__kind { font-weight: 500; }

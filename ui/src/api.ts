@@ -7,6 +7,7 @@ import type {
   ContextEntry,
   Diagnostics,
   DiagnosisReport,
+  DocResult,
   DiscoveryCache,
   ContainerInfo,
   DiffResult,
@@ -39,6 +40,7 @@ import type {
   ImportPreview,
   ImportRequest,
   ManagedKubeconfig,
+  ManifestPlan,
   Preferences,
   PortOption,
   Related,
@@ -233,6 +235,10 @@ export const api = {
   ) => invoke<Related>("related_resources", { cluster, resource, namespace, name }),
   diagnose: (cluster: string, resource: string, namespace: string | null, name: string) =>
     invoke<DiagnosisReport>("diagnose_object", { cluster, resource, namespace, name }),
+  planManifest: (cluster: string, yaml: string, namespace: string | null, force: boolean) =>
+    invoke<ManifestPlan>("plan_manifest", { cluster, yaml, namespace, force }),
+  applyManifest: (cluster: string, yaml: string, namespace: string | null, force: boolean) =>
+    invoke<DocResult[]>("apply_manifest", { cluster, yaml, namespace, force }),
 
   // ---- metrics
   clusterOverview: (cluster: string, scope: NodeScope) =>
