@@ -1,0 +1,92 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/k8s-core",
+    "crates/k8s-ops",
+    "crates/k8s-metrics",
+    "crates/k8s-helm",
+    "crates/k8s-security",
+    "src-tauri",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "Apache-2.0"
+repository = "https://github.com/masao/kubernaut"
+
+[workspace.dependencies]
+kube = { version = "4.2", default-features = false, features = [
+    "client",
+    "runtime",
+    "derive",
+    "ws",
+    "gzip",
+    "rustls-tls",
+    # Explicit crypto provider: with default-features off, hyper-rustls would
+    # otherwise have no provider and the oidc/oauth paths fail to compile.
+    # `ring` over `aws-lc-rs` because it needs no cmake/nasm on Windows CI.
+    "ring",
+    "oidc",
+    "oauth",
+    "socks5",
+    "http-proxy",
+    "kubelet-debug",
+] }
+k8s-openapi = { version = "0.28", features = ["latest"] }
+http = "1"
+
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+async-trait = "0.1"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml_ng = "0.10"
+
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+dashmap = "6"
+arc-swap = "1"
+parking_lot = "0.12"
+directories = "6"
+chrono = { version = "0.4", features = ["serde"] }
+humantime = "2"
+regex = "1"
+base64 = "0.22"
+similar = "2"
+json-patch = "4"
+jsonptr = "0.7"
+sha2 = "0.10"
+flate2 = "1"
+tempfile = "3"
+portable-pty = "0.9"
+rand = "0.10"
+
+tauri = { version = "2.11", features = [] }
+tauri-build = { version = "2", features = [] }
+tauri-plugin-updater = "2.10"
+tauri-plugin-process = "2"
+tauri-plugin-dialog = "2"
+
+k8s-core = { path = "crates/k8s-core" }
+k8s-ops = { path = "crates/k8s-ops" }
+k8s-metrics = { path = "crates/k8s-metrics" }
+k8s-helm = { path = "crates/k8s-helm" }
+k8s-security = { path = "crates/k8s-security" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[profile.dev]
+opt-level = 1

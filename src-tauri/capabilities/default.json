@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Minimum surface the main window needs. Every cluster call goes through our own commands, so no filesystem, shell or http plugin permission is granted here. The updater and process permissions exist only to install a signed release the user asked for.",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-start-dragging",
+    "updater:default",
+    "process:allow-restart",
+    "dialog:allow-open"
+  ]
+}

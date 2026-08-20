@@ -1,0 +1,38 @@
+[package]
+name = "k8s-helm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+k8s-core.workspace = true
+kube.workspace = true
+k8s-openapi.workspace = true
+
+tokio.workspace = true
+futures.workspace = true
+
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+base64.workspace = true
+flate2.workspace = true
+similar.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing-subscriber.workspace = true
+
+[[example]]
+name = "helm_smoke"
+path = "examples/helm_smoke.rs"
+
+[[example]]
+name = "helm_write_smoke"
+path = "examples/helm_write_smoke.rs" 

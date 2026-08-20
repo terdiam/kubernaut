@@ -1,0 +1,40 @@
+[package]
+name = "kubernaut"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Kubernetes management for macOS, Windows and Linux"
+
+[lib]
+# Tauri v2 keeps the app in a lib so mobile/desktop entrypoints can share it.
+name = "kubernaut_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build.workspace = true
+
+[dependencies]
+k8s-core.workspace = true
+k8s-helm.workspace = true
+k8s-metrics.workspace = true
+k8s-ops.workspace = true
+k8s-security.workspace = true
+
+tauri.workspace = true
+
+# Updates are opt-in at runtime; the plugin makes no request unless asked.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-updater.workspace = true
+tauri-plugin-process.workspace = true
+tauri-plugin-dialog.workspace = true
+tokio.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+directories.workspace = true
+tracing-subscriber.workspace = true
+tracing-appender.workspace = true

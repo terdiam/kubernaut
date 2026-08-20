@@ -1,0 +1,117 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+# Pinned deliberately. Bumping the version means bumping it here, which makes
+# the change reviewable rather than silently picking up whatever is newest.
+env:
+  HELM_VERSION: v3.19.0
+  TRIVY_VERSION: 0.68.0
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+            helm_platform: darwin-arm64
+          - os: macos-14
+            target: x86_64-apple-darwin
+            helm_platform: darwin-amd64
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            helm_platform: linux-amd64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            helm_platform: windows-amd64
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev
+
+      # The sidecar is fetched and checksum-verified here rather than committed,
+      # so the repository holds no binaries. Upstream publishes the digest
+      # alongside the archive; pinning the digest in this file as well would
+      # additionally protect against a compromised distribution host, at the
+      # cost of a manual update on every bump.
+      - name: Fetch and verify helm
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="helm-${HELM_VERSION}-${{ matrix.helm_platform }}.tar.gz"
+          base="https://get.helm.sh"
+          curl -fsSLO "${base}/${archive}"
+          curl -fsSL "${base}/${archive}.sha256sum" -o expected.txt
+
+          if command -v sha256sum >/dev/null; then
+            sha256sum -c expected.txt
+          else
+            actual=$(shasum -a 256 "${archive}" | awk '{print $1}')
+            expected=$(awk '{print $1}' expected.txt)
+            [ "${actual}" = "${expected}" ] || { echo "checksum mismatch"; exit 1; }
+          fi
+
+          tar -xzf "${archive}"
+          mkdir -p src-tauri/binaries
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            mv "${{ matrix.helm_platform }}/helm.exe" src-tauri/binaries/helm.exe
+          else
+            mv "${{ matrix.helm_platform }}/helm" src-tauri/binaries/helm
+            chmod +x src-tauri/binaries/helm
+          fi
+          src-tauri/binaries/helm* version --short
+
+      - run: npm ci
+
+      - name: Build, sign and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # Update signing. Generated once with `tauri signer generate`; the
+          # public half lives in tauri.conf.json and the private half only
+          # here. Without these the workflow still builds, but publishes no
+          # update manifest — which is the correct failure: an unsigned update
+          # channel is worse than none.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+          # macOS code signing and notarisation. Unsigned builds are quarantined
+          # by Gatekeeper and refuse to open from a normal download.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          args: --target ${{ matrix.target }}
+          tagName: ${{ github.ref_name }}
+          releaseName: Kubernaut ${{ github.ref_name }}
+          # Draft on purpose: a human checks the artefacts before anyone's
+          # auto-updater sees them.
+          releaseDraft: true
+          includeUpdaterJson: true

@@ -1,0 +1,37 @@
+[package]
+name = "k8s-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+kube.workspace = true
+k8s-openapi.workspace = true
+http.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml_ng.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+dashmap.workspace = true
+arc-swap.workspace = true
+parking_lot.workspace = true
+regex.workspace = true
+directories.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tracing-subscriber.workspace = true
+
+[[example]]
+name = "import_smoke"
+path = "examples/import_smoke.rs"
+
+[[example]]
+name = "smoke"
+path = "examples/smoke.rs" 
