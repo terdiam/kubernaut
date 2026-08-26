@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "app": "tauri dev",
     "app:build": "tauri build",
+    "tauri": "tauri",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
