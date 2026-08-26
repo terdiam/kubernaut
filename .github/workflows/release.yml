@@ -13,6 +13,12 @@ env:
 
 jobs:
   bundle:
+    # GITHUB_TOKEN is read-only by default in this repository, so tauri-action's
+    # release upload failed with "Resource not accessible by integration" after
+    # a build that had otherwise succeeded.
+    permissions:
+      contents: write
+
     # Windows only for now. The other three entries are kept below, commented
     # out, because removing them loses the platform strings rather than the
     # intent:
