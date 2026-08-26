@@ -6,3 +6,8 @@ src-tauri/binaries/*
 !src-tauri/binaries/README.md
 .DS_Store
 *.log
+
+# Agent tooling installed into the working tree, not part of the app.
+.agents/
+.claude/
+skills-lock.json
