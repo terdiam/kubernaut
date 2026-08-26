@@ -9,7 +9,7 @@ on:
 # the change reviewable rather than silently picking up whatever is newest.
 env:
   HELM_VERSION: v3.19.0
-  TRIVY_VERSION: 0.68.0
+  TRIVY_VERSION: 0.74.0
 
 jobs:
   bundle:
@@ -20,15 +20,19 @@ jobs:
           - os: macos-14
             target: aarch64-apple-darwin
             helm_platform: darwin-arm64
+            trivy_platform: macOS-ARM64
           - os: macos-14
             target: x86_64-apple-darwin
             helm_platform: darwin-amd64
+            trivy_platform: macOS-64bit
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             helm_platform: linux-amd64
+            trivy_platform: Linux-64bit
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             helm_platform: windows-amd64
+            trivy_platform: windows-64bit
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -83,6 +87,49 @@ jobs:
             chmod +x src-tauri/binaries/helm
           fi
           src-tauri/binaries/helm* version --short
+
+      # Same reasoning as helm, with two differences that matter: trivy ships a
+      # single checksum file covering every asset, so the line for this archive
+      # is selected before verifying — `sha256sum -c` over the whole file fails
+      # on the assets that were never downloaded. And the binary sits at the
+      # archive root rather than in a platform folder.
+      - name: Fetch and verify trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            archive="trivy_${TRIVY_VERSION}_${{ matrix.trivy_platform }}.zip"
+          else
+            archive="trivy_${TRIVY_VERSION}_${{ matrix.trivy_platform }}.tar.gz"
+          fi
+
+          curl -fsSLO "${base}/${archive}"
+          curl -fsSL "${base}/trivy_${TRIVY_VERSION}_checksums.txt" -o all-checksums.txt
+          grep " ${archive}\$" all-checksums.txt > expected-trivy.txt
+
+          if command -v sha256sum >/dev/null; then
+            sha256sum -c expected-trivy.txt
+          else
+            actual=$(shasum -a 256 "${archive}" | awk '{print $1}')
+            expected=$(awk '{print $1}' expected-trivy.txt)
+            [ "${actual}" = "${expected}" ] || { echo "checksum mismatch"; exit 1; }
+          fi
+
+          mkdir -p src-tauri/binaries
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            if command -v unzip >/dev/null; then
+              unzip -q "${archive}" trivy.exe
+            else
+              powershell -Command "Expand-Archive -Path '${archive}' -DestinationPath . -Force"
+            fi
+            mv trivy.exe src-tauri/binaries/trivy.exe
+          else
+            tar -xzf "${archive}" trivy
+            mv trivy src-tauri/binaries/trivy
+            chmod +x src-tauri/binaries/trivy
+          fi
+          src-tauri/binaries/trivy* --version
 
       - run: npm ci
 
