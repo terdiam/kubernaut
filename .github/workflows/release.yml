@@ -13,26 +13,36 @@ env:
 
 jobs:
   bundle:
+    # Windows only for now. The other three entries are kept below, commented
+    # out, because removing them loses the platform strings rather than the
+    # intent:
+    #
+    #   macOS needs a Developer ID certificate. With APPLE_CERTIFICATE empty,
+    #   tauri-action still attempts the keychain import and the job dies with
+    #   "failed to import keychain certificate" after ~11 minutes — at the 10x
+    #   billing multiplier a private repository pays for.
+    #
+    #   Linux builds fine; it is out only because nothing needs it yet.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
-            target: aarch64-apple-darwin
-            helm_platform: darwin-arm64
-            trivy_platform: macOS-ARM64
-          - os: macos-14
-            target: x86_64-apple-darwin
-            helm_platform: darwin-amd64
-            trivy_platform: macOS-64bit
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            helm_platform: linux-amd64
-            trivy_platform: Linux-64bit
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             helm_platform: windows-amd64
             trivy_platform: windows-64bit
+          # - os: macos-14
+          #   target: aarch64-apple-darwin
+          #   helm_platform: darwin-arm64
+          #   trivy_platform: macOS-ARM64
+          # - os: macos-14
+          #   target: x86_64-apple-darwin
+          #   helm_platform: darwin-amd64
+          #   trivy_platform: macOS-64bit
+          # - os: ubuntu-22.04
+          #   target: x86_64-unknown-linux-gnu
+          #   helm_platform: linux-amd64
+          #   trivy_platform: Linux-64bit
     runs-on: ${{ matrix.os }}
 
     steps:
