@@ -9,13 +9,16 @@
 //!
 //! We recover the real PATH once at startup by asking the user's login shell.
 
-use std::{collections::HashSet, ffi::OsString, path::PathBuf, time::Duration};
+use std::{collections::HashSet, ffi::OsString, path::PathBuf};
 
 /// Generous, because a prompt framework (powerlevel10k, oh-my-zsh, starship)
 /// plus completion rebuilding can take several seconds on a cold cache. Timing
 /// out here is not fatal — the fallback directories still apply — but it costs
 /// the user their real PATH, which is the whole point of this module.
-const SHELL_TIMEOUT: Duration = Duration::from_secs(15);
+/// Windows has no login-shell step to time, and `-D warnings` in CI turns an
+/// unused constant into a build failure there.
+#[cfg(not(windows))]
+const SHELL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// Resolve the login shell `PATH` and merge it into this process' environment.
 ///
