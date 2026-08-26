@@ -199,7 +199,9 @@ pub async fn history(
         })
         .collect();
 
-    revisions.sort_by(|a, b| b.revision.cmp(&a.revision));
+    // Newest first. `sort_by_key` with `Reverse` rather than a hand-rolled
+    // comparator: clippy rejects the latter, and CI runs it with `-D warnings`.
+    revisions.sort_by_key(|entry| std::cmp::Reverse(entry.revision));
     Ok(revisions)
 }
 
