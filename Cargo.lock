@@ -2143,7 +2143,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-core"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "arc-swap",
  "dashmap",
@@ -2167,7 +2167,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-helm"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "base64 0.22.1",
  "dashmap",
@@ -2189,7 +2189,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-metrics"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "dashmap",
  "futures",
@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-ops"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "dashmap",
  "directories",
@@ -2247,7 +2247,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-security"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "dashmap",
  "futures",
@@ -2388,7 +2388,7 @@ dependencies = [
 
 [[package]]
 name = "kubernaut"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "directories",
  "futures",
