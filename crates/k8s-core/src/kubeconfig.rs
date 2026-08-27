@@ -382,6 +382,63 @@ pub fn preview(yaml: &str) -> Result<Vec<String>> {
 /// Importing a file whose context is also called `default` would otherwise
 /// shadow, or be shadowed by, one already there — with no indication which
 /// cluster a click reaches.
+/// Make every cluster and user name in a document unique to it.
+///
+/// `Kubeconfig::merge` is first-wins across the files this app manages, and it
+/// merges by *name*. Two kubeadm clusters both call their user
+/// `kubernetes-admin` and their cluster `kubernetes`, so importing a second one
+/// leaves its context pointing at the first one's certificate — which the
+/// second apiserver rejects with a 401 that looks exactly like an expired
+/// credential. Qualifying the names on the way in removes the collision
+/// entirely; nothing outside this file refers to them.
+pub fn qualify_entries(yaml: &str, suffix: &str) -> Result<String> {
+    let mut config = Kubeconfig::from_yaml(yaml)?;
+    let suffix = suffix.trim();
+    if suffix.is_empty() {
+        return serde_yaml_ng::to_string(&config).map_err(CoreError::other);
+    }
+
+    let qualify = |name: &str| {
+        // Idempotent: re-importing a file this app already wrote must not
+        // stack suffixes.
+        if name.ends_with(&format!("__{suffix}")) {
+            name.to_string()
+        } else {
+            format!("{name}__{suffix}")
+        }
+    };
+
+    let mut clusters: BTreeMap<String, String> = BTreeMap::new();
+    for entry in &mut config.clusters {
+        let renamed = qualify(&entry.name);
+        clusters.insert(entry.name.clone(), renamed.clone());
+        entry.name = renamed;
+    }
+
+    let mut users: BTreeMap<String, String> = BTreeMap::new();
+    for entry in &mut config.auth_infos {
+        let renamed = qualify(&entry.name);
+        users.insert(entry.name.clone(), renamed.clone());
+        entry.name = renamed;
+    }
+
+    for context in &mut config.contexts {
+        let Some(ctx) = context.context.as_mut() else {
+            continue;
+        };
+        if let Some(renamed) = clusters.get(&ctx.cluster) {
+            ctx.cluster = renamed.clone();
+        }
+        if let Some(user) = ctx.user.as_ref()
+            && let Some(renamed) = users.get(user)
+        {
+            ctx.user = Some(renamed.clone());
+        }
+    }
+
+    serde_yaml_ng::to_string(&config).map_err(CoreError::other)
+}
+
 pub fn rename_contexts(yaml: &str, renames: &BTreeMap<String, String>) -> Result<String> {
     let mut config = Kubeconfig::from_yaml(yaml)?;
 
@@ -473,5 +530,122 @@ contexts: [{ name: c, context: { cluster: c, user: u } }]
 users: [{ name: u, user: {} }]
 "#;
         assert_eq!(auth_kind(&config(yaml), "c"), AuthKind::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod qualify_tests {
+    use super::*;
+
+    /// Two kubeadm clusters, as they arrive: identical cluster and user names.
+    fn kubeadm(server: &str) -> String {
+        format!(
+            r#"
+apiVersion: v1
+kind: Config
+clusters: [{{ name: kubernetes, cluster: {{ server: {server}, certificate-authority-data: Zm9v }} }}]
+contexts: [{{ name: kubernetes-admin@kubernetes, context: {{ cluster: kubernetes, user: kubernetes-admin }} }}]
+users: [{{ name: kubernetes-admin, user: {{ client-certificate-data: {server_cert}, client-key-data: a2V5 }} }}]
+"#,
+            server = server,
+            server_cert = if server.contains("one") {
+                "Y2VydDE="
+            } else {
+                "Y2VydDI="
+            }
+        )
+    }
+
+    #[test]
+    fn two_kubeadm_imports_stop_colliding() {
+        // Contexts collide by name too, but the import flow already asks the
+        // user to rename those; this models that step so the test exercises
+        // what actually reaches disk.
+        let renamed = rename_contexts(
+            &kubeadm("https://two:6443"),
+            &BTreeMap::from([(
+                "kubernetes-admin@kubernetes".to_string(),
+                "kubernetes-admin@two".to_string(),
+            )]),
+        )
+        .expect("rename");
+
+        let first = qualify_entries(&kubeadm("https://one:6443"), "one").expect("first");
+        let second = qualify_entries(&renamed, "two").expect("second");
+
+        let a = Kubeconfig::from_yaml(&first).unwrap();
+        let b = Kubeconfig::from_yaml(&second).unwrap();
+
+        assert_eq!(a.auth_infos[0].name, "kubernetes-admin__one");
+        assert_eq!(b.auth_infos[0].name, "kubernetes-admin__two");
+        assert_eq!(a.clusters[0].name, "kubernetes__one");
+
+        // The merge the app performs at load time is first-wins by name; with
+        // the names qualified, the second file's credential survives it.
+        let merged = a.clone().merge(b.clone()).expect("merge");
+        assert_eq!(merged.auth_infos.len(), 2);
+        assert_eq!(merged.clusters.len(), 2);
+
+        // And each context still points at its own entries.
+        for (context, want) in [
+            (&merged.contexts[0], "kubernetes-admin__one"),
+            (&merged.contexts[1], "kubernetes-admin__two"),
+        ] {
+            assert_eq!(
+                context.context.as_ref().unwrap().user.as_deref(),
+                Some(want)
+            );
+        }
+    }
+
+    #[test]
+    fn the_context_keeps_pointing_at_its_own_cluster_and_user() {
+        let yaml = qualify_entries(&kubeadm("https://one:6443"), "prod").expect("qualified");
+        let config = Kubeconfig::from_yaml(&yaml).unwrap();
+        let ctx = config.contexts[0].context.as_ref().unwrap();
+
+        assert_eq!(ctx.cluster, config.clusters[0].name);
+        assert_eq!(
+            ctx.user.as_deref(),
+            Some(config.auth_infos[0].name.as_str())
+        );
+        // The context's own name is left alone; that rename is a separate,
+        // user-visible decision.
+        assert_eq!(config.contexts[0].name, "kubernetes-admin@kubernetes");
+    }
+
+    #[test]
+    fn qualifying_twice_does_not_stack_suffixes() {
+        let once = qualify_entries(&kubeadm("https://one:6443"), "prod").unwrap();
+        let twice = qualify_entries(&once, "prod").unwrap();
+        let config = Kubeconfig::from_yaml(&twice).unwrap();
+        assert_eq!(config.auth_infos[0].name, "kubernetes-admin__prod");
+    }
+
+    #[test]
+    fn an_empty_suffix_changes_nothing() {
+        let yaml = qualify_entries(&kubeadm("https://one:6443"), "  ").unwrap();
+        let config = Kubeconfig::from_yaml(&yaml).unwrap();
+        assert_eq!(config.auth_infos[0].name, "kubernetes-admin");
+    }
+
+    #[test]
+    fn the_credential_itself_is_untouched() {
+        let before = Kubeconfig::from_yaml(&kubeadm("https://one:6443")).unwrap();
+        let after =
+            Kubeconfig::from_yaml(&qualify_entries(&kubeadm("https://one:6443"), "x").unwrap())
+                .unwrap();
+        assert_eq!(
+            before.auth_infos[0]
+                .auth_info
+                .as_ref()
+                .unwrap()
+                .client_certificate_data,
+            after.auth_infos[0]
+                .auth_info
+                .as_ref()
+                .unwrap()
+                .client_certificate_data
+        );
     }
 }

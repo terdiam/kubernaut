@@ -146,6 +146,12 @@ pub fn import(request: &ImportRequest) -> Result<PathBuf, String> {
             .map_err(|err| err.to_string())?
     };
 
+    // Cluster and user names are merged across every managed file by name, and
+    // two kubeadm clusters both ship `kubernetes` / `kubernetes-admin`. Without
+    // this the second import silently inherits the first one's certificate.
+    let yaml = k8s_core::kubeconfig::qualify_entries(&yaml, &sanitise(&request.label))
+        .map_err(|err| err.to_string())?;
+
     // Parse before writing: a file that cannot be read back would silently
     // disappear from the cluster list with no explanation.
     k8s_core::kubeconfig::preview(&yaml).map_err(|err| err.to_string())?;
