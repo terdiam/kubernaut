@@ -229,8 +229,9 @@ impl ClusterManager {
             .clone()
             .unwrap_or_else(|| config.default_namespace.clone());
 
+        let auth = kubeconfig::auth_kind(&loaded.config, context);
         let client = Client::try_from(config.clone())
-            .map_err(|source| CoreError::client_build(context, source))?;
+            .map_err(|source| CoreError::client_build(context, auth, source))?;
 
         // The receiver is dropped immediately; subscribers attach later via
         // `watch_status`. Every write below therefore uses `send_replace`,
@@ -255,7 +256,7 @@ impl ClusterManager {
             .client
             .apiserver_version()
             .await
-            .map_err(|source| CoreError::client_build(context, source))?;
+            .map_err(|source| CoreError::client_build(context, auth, source))?;
         handle.status_tx.send_replace(ClusterStatus::Connected {
             version: version.git_version.clone(),
         });

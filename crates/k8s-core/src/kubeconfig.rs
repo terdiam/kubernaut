@@ -104,6 +104,57 @@ pub fn contexts(loaded: &LoadedKubeconfig) -> Vec<ContextEntry> {
 }
 
 /// Build the `KubeConfigOptions` for a named context.
+/// How a context proves who it is.
+///
+/// What "re-authenticate" means depends entirely on this: a cloud context runs
+/// a provider login, a kubeadm context needs a fresh admin kubeconfig from the
+/// control plane, and a token context needs a new token issued. Telling the
+/// second to run `aws eks update-kubeconfig` sends them nowhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthKind {
+    /// A credential plugin (`aws`, `gcloud`, `az`, `kubelogin`).
+    Exec,
+    /// A bearer token written into the kubeconfig.
+    Token,
+    /// A client certificate, as kubeadm and RKE hand out.
+    ClientCertificate,
+    Basic,
+    Unknown,
+}
+
+/// Which credential the named context uses.
+pub fn auth_kind(config: &Kubeconfig, context: &str) -> AuthKind {
+    let user = config
+        .contexts
+        .iter()
+        .find(|entry| entry.name == context)
+        .and_then(|entry| entry.context.as_ref())
+        .and_then(|ctx| ctx.user.clone())
+        .unwrap_or_default();
+
+    let Some(auth) = config
+        .auth_infos
+        .iter()
+        .find(|entry| entry.name == user)
+        .and_then(|entry| entry.auth_info.as_ref())
+    else {
+        return AuthKind::Unknown;
+    };
+
+    // Ordered by which one the client actually uses when several are present.
+    if auth.exec.is_some() {
+        AuthKind::Exec
+    } else if auth.token.is_some() || auth.token_file.is_some() {
+        AuthKind::Token
+    } else if auth.client_certificate.is_some() || auth.client_certificate_data.is_some() {
+        AuthKind::ClientCertificate
+    } else if auth.username.is_some() {
+        AuthKind::Basic
+    } else {
+        AuthKind::Unknown
+    }
+}
+
 pub fn options_for(context: &str) -> KubeConfigOptions {
     KubeConfigOptions {
         context: Some(context.to_string()),
@@ -346,4 +397,81 @@ pub fn rename_contexts(yaml: &str, renames: &BTreeMap<String, String>) -> Result
     }
 
     serde_yaml_ng::to_string(&config).map_err(CoreError::other)
+}
+
+#[cfg(test)]
+mod auth_kind_tests {
+    use super::*;
+
+    fn config(yaml: &str) -> Kubeconfig {
+        serde_yaml_ng::from_str(yaml).expect("kubeconfig fixture")
+    }
+
+    const KUBEADM: &str = r#"
+apiVersion: v1
+kind: Config
+clusters: [{ name: kubernetes, cluster: { server: https://10.0.0.1:6443 } }]
+contexts: [{ name: kubernetes-admin@kubernetes, context: { cluster: kubernetes, user: kubernetes-admin } }]
+users: [{ name: kubernetes-admin, user: { client-certificate-data: Zm9v, client-key-data: YmFy } }]
+"#;
+
+    const CLOUD: &str = r#"
+apiVersion: v1
+kind: Config
+clusters: [{ name: eks, cluster: { server: https://example.eks.amazonaws.com } }]
+contexts: [{ name: eks, context: { cluster: eks, user: eks } }]
+users:
+  - name: eks
+    user:
+      exec:
+        apiVersion: client.authentication.k8s.io/v1beta1
+        command: aws
+"#;
+
+    #[test]
+    fn a_kubeadm_context_is_certificate_based() {
+        // The default context name a kubeadm cluster hands out, and the shape
+        // that must not be told to run a cloud login command.
+        assert_eq!(
+            auth_kind(&config(KUBEADM), "kubernetes-admin@kubernetes"),
+            AuthKind::ClientCertificate
+        );
+    }
+
+    #[test]
+    fn a_credential_plugin_wins_over_everything_else() {
+        assert_eq!(auth_kind(&config(CLOUD), "eks"), AuthKind::Exec);
+    }
+
+    #[test]
+    fn a_token_context_is_recognised() {
+        let yaml = r#"
+apiVersion: v1
+kind: Config
+clusters: [{ name: c, cluster: { server: https://c } }]
+contexts: [{ name: c, context: { cluster: c, user: u } }]
+users: [{ name: u, user: { token: abc } }]
+"#;
+        assert_eq!(auth_kind(&config(yaml), "c"), AuthKind::Token);
+    }
+
+    #[test]
+    fn a_context_that_is_not_there_is_unknown_rather_than_a_panic() {
+        assert_eq!(
+            auth_kind(&config(KUBEADM), "no-such-context"),
+            AuthKind::Unknown
+        );
+    }
+
+    #[test]
+    fn a_user_entry_with_nothing_in_it_is_unknown() {
+        let yaml = r#"
+apiVersion: v1
+kind: Config
+clusters: [{ name: c, cluster: { server: https://c } }]
+contexts: [{ name: c, context: { cluster: c, user: u } }]
+users: [{ name: u, user: {} }]
+"#;
+        assert_eq!(auth_kind(&config(yaml), "c"), AuthKind::Unknown);
+    }
 }
