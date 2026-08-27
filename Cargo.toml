@@ -85,7 +85,10 @@ k8s-security = { path = "crates/k8s-security" }
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-strip = true
+# Debug info is the bulk of the size and goes; the symbol table stays, because
+# the panic hook writes `Backtrace::force_capture()` into the crash log and
+# `strip = true` reduces every one of those to bare addresses.
+strip = "debuginfo"
 panic = "abort"
 
 [profile.dev]
