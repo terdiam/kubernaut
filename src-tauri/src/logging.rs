@@ -165,8 +165,16 @@ mod tests {
     fn log_directory_is_under_the_app_data_path() {
         let directory = log_directory().expect("a data directory on this platform");
         assert!(directory.ends_with("logs"));
+        // Case-insensitive: the `directories` crate lowercases the app name
+        // for the XDG path it builds on Linux (`~/.local/share/kubernaut`),
+        // while macOS and Windows keep the given case
+        // (`.../Kubernaut/logs`). Both are the app's own directory; only the
+        // casing differs.
         assert!(
-            directory.to_string_lossy().contains("Kubernaut"),
+            directory
+                .to_string_lossy()
+                .to_lowercase()
+                .contains("kubernaut"),
             "{}",
             directory.display()
         );
