@@ -7,10 +7,16 @@ explicitly add.
 
 ## Screenshots
 
-*Coming soon — every existing install of this app is connected to real
-clusters, and a screenshot of it shows real cluster and namespace names in the
-sidebar even on an empty view. Screenshots need a clean profile (no saved
-clusters) or careful cropping before they can go in a public README.*
+Taken against a local [k3d](https://k3d.io) cluster, not a real one — every
+name in these images is invented.
+
+| | |
+| --- | --- |
+| ![Overview: gauges, usage history, live issues](screenshots/overview.png) Cluster overview, with an issue an `ImagePullBackOff` pod put there itself | ![Deployments, with the row-selection column](screenshots/deployments.png) Row selection on any resource table |
+| ![Diagnose tab quoting the kubelet's own error and giving next steps](screenshots/diagnose.png) Diagnose: the cluster's own error, and what to do about it | ![Bulk action bar: delete, restart, export](screenshots/bulk.png) Act on a selection — delete, restart, export |
+| ![Create dialog, form mode, for a Deployment](screenshots/create.png) Create, as a form or as YAML | ![Ingress form with the backend service and port chosen from the cluster](screenshots/ingress-form.png) Reference fields read from the cluster, not typed |
+| ![Helm releases and revision history](screenshots/helm.png) Every Helm release, read straight from the cluster | ![Security Center workload findings](screenshots/security.png) Workload posture findings, no scanner required |
+| ![Multi-pod log stream](screenshots/logs.png) Log streaming | ![Container shell terminal](screenshots/terminal.png) A shell into the pod |
 
 ## Install
 
