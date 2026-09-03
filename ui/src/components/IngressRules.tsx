@@ -145,7 +145,17 @@ function PathRow({
     onChange({ backend: { service: { ...service, port } } });
   };
 
-  const currentPort = portValue((service.port ?? {}) as Obj);
+  const storedPort = portValue((service.port ?? {}) as Obj);
+  // The lookup writes a named port's *name* as the option value ("http"), so
+  // renaming survives renumbering — but a manifest that already references the
+  // port by number ("80") would then match nothing by raw value, even though
+  // it is the same port, and get wrongly flagged as gone from the service. A
+  // label always leads with the number (`"80"` or `"80 · http"`), so match on
+  // that too before deciding the stored port is genuinely stale.
+  const matchedOption = ports.options.find(
+    (option) => option.value === storedPort || option.label.split(" · ")[0] === storedPort,
+  );
+  const currentPort = matchedOption?.value ?? storedPort;
 
   return (
     <div className="rules__path">

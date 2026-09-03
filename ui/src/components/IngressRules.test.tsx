@@ -170,6 +170,33 @@ describe("IngressRulesField", () => {
     expect(screen.getByText("9999 (not on this service)")).toBeTruthy();
   });
 
+  it("recognises a port stored by number against a service that names it", async () => {
+    // The lookup offers a named port by its name (`value: "http"`) so a fresh
+    // pick survives renumbering, but an existing manifest can already
+    // reference the same port by number. Comparing raw values alone made that
+    // legitimate port look like it had vanished from the service.
+    rules(vi.fn(), [
+      {
+        host: "",
+        http: {
+          paths: [
+            {
+              path: "/",
+              pathType: "Prefix",
+              backend: { service: { name: "web", port: { number: 80 } } },
+            },
+          ],
+        },
+      },
+    ]);
+    await waitFor(() => expect(portSelect().options.length).toBeGreaterThan(1));
+
+    expect(screen.queryByText("80 (not on this service)")).toBeNull();
+    // The select must show the matching option as selected, not just avoid
+    // the warning text — otherwise it renders with nothing chosen.
+    expect(portSelect().value).toBe("http");
+  });
+
   it("starts a host with one path already on it", () => {
     const onChange = rules();
     fireEvent.click(screen.getByText("Add host"));
