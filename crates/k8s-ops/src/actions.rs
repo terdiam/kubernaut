@@ -295,3 +295,198 @@ mod tests {
         assert!(err.contains("was not performed"), "{err}");
     }
 }
+
+// ------------------------------------------------------------------- bulk
+
+/// What one object in a bulk operation did.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BulkOutcome {
+    pub resource: String,
+    pub namespace: Option<String>,
+    pub name: String,
+    pub ok: bool,
+    pub error: Option<String>,
+}
+
+/// Delete several objects at once.
+///
+/// The single-object path makes the user type the object's name, so that they
+/// look at what they are about to destroy. The equivalent for a set is the
+/// size of it: `confirmation` must be the number of targets, typed out. Faking
+/// per-name confirmations on the user's behalf would keep the signature and
+/// throw away the guarantee.
+///
+/// One failure does not stop the rest — a partial delete reported honestly is
+/// more useful than an abort halfway with no account of what happened.
+pub async fn delete_many(
+    cluster: &Arc<ClusterHandle>,
+    targets: &[TargetRef],
+    confirmation: &str,
+) -> Result<Vec<BulkOutcome>> {
+    check_bulk_delete(targets, confirmation)?;
+
+    let mut out = Vec::with_capacity(targets.len());
+    for target in targets {
+        let result = async {
+            let api = api_for(cluster, target).await?;
+            api.delete(&target.name, &Default::default()).await?;
+            Ok::<(), OpsError>(())
+        }
+        .await;
+
+        out.push(BulkOutcome {
+            resource: target.resource.clone(),
+            namespace: target.namespace.clone(),
+            name: target.name.clone(),
+            ok: result.is_ok(),
+            error: result.err().map(|err| err.to_string()),
+        });
+    }
+    Ok(out)
+}
+
+/// Everything a bulk delete is checked for before a request is made.
+///
+/// Separate from the request loop so the guarantee can be tested without a
+/// cluster: the guard is the whole point of the function.
+fn check_bulk_delete(targets: &[TargetRef], confirmation: &str) -> Result<()> {
+    if targets.is_empty() {
+        return Err(OpsError::other("nothing selected"));
+    }
+    require_confirmation(&targets.len().to_string(), confirmation)
+}
+
+/// Roll several workloads, the way `kubectl rollout restart` does.
+pub async fn restart_many(
+    cluster: &Arc<ClusterHandle>,
+    targets: &[TargetRef],
+) -> Result<Vec<BulkOutcome>> {
+    let mut out = Vec::with_capacity(targets.len());
+    for target in targets {
+        let result = restart(cluster, target).await;
+        out.push(BulkOutcome {
+            resource: target.resource.clone(),
+            namespace: target.namespace.clone(),
+            name: target.name.clone(),
+            ok: result.is_ok(),
+            error: result.err().map(|err| err.to_string()),
+        });
+    }
+    Ok(out)
+}
+
+/// Upper bound on one export. A namespace can hold thousands of objects, and
+/// a multi-megabyte string crossing the IPC bridge helps nobody.
+pub const EXPORT_LIMIT: usize = 500;
+
+/// What an export produced, and what it left out.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExportResult {
+    /// Multi-document YAML, `---` separated.
+    pub yaml: String,
+    pub exported: usize,
+    /// Objects that could not be read, with the reason.
+    pub failed: Vec<BulkOutcome>,
+    /// True when more were asked for than [`EXPORT_LIMIT`].
+    pub truncated: bool,
+}
+
+/// Read objects and concatenate them as a manifest.
+///
+/// Server-managed fields are stripped, so what comes out can be applied
+/// somewhere else rather than only read.
+pub async fn export(cluster: &Arc<ClusterHandle>, targets: &[TargetRef]) -> Result<ExportResult> {
+    let truncated = targets.len() > EXPORT_LIMIT;
+    let mut documents = Vec::new();
+    let mut failed = Vec::new();
+
+    for target in targets.iter().take(EXPORT_LIMIT) {
+        match k8s_core::objects::get(
+            cluster,
+            &target.resource,
+            target.namespace.as_deref(),
+            &target.name,
+        )
+        .await
+        {
+            Ok(object) => match k8s_core::objects::to_yaml(&object, false) {
+                Ok(yaml) => documents.push(yaml),
+                Err(err) => failed.push(BulkOutcome {
+                    resource: target.resource.clone(),
+                    namespace: target.namespace.clone(),
+                    name: target.name.clone(),
+                    ok: false,
+                    error: Some(err.to_string()),
+                }),
+            },
+            Err(err) => failed.push(BulkOutcome {
+                resource: target.resource.clone(),
+                namespace: target.namespace.clone(),
+                name: target.name.clone(),
+                ok: false,
+                error: Some(err.to_string()),
+            }),
+        }
+    }
+
+    Ok(ExportResult {
+        exported: documents.len(),
+        yaml: documents.join("---\n"),
+        failed,
+        truncated,
+    })
+}
+
+#[cfg(test)]
+mod bulk_tests {
+    use super::*;
+
+    fn targets(n: usize) -> Vec<TargetRef> {
+        (0..n)
+            .map(|i| TargetRef {
+                resource: "apps/v1/deployments".into(),
+                namespace: Some("app".into()),
+                name: format!("web-{i}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn deleting_nothing_is_refused() {
+        // An empty set would be a harmless no-op against the cluster, but the
+        // dialog that produced it is a bug worth surfacing.
+        let err = check_bulk_delete(&[], "0").expect_err("empty");
+        assert!(err.to_string().contains("nothing selected"), "{err}");
+    }
+
+    #[test]
+    fn the_confirmation_for_a_set_is_its_size() {
+        // Typing one object's name confirms the wrong thing entirely when
+        // twelve are selected, so the count is what has to be typed.
+        assert!(check_bulk_delete(&targets(12), "12").is_ok());
+        assert!(check_bulk_delete(&targets(12), "web-0").is_err());
+        assert!(check_bulk_delete(&targets(12), "11").is_err());
+        assert!(check_bulk_delete(&targets(12), "").is_err());
+    }
+
+    #[test]
+    fn a_miscount_names_both_numbers() {
+        let err = check_bulk_delete(&targets(3), "2").expect_err("mismatch");
+        let message = err.to_string();
+        assert!(
+            message.contains("`2`") && message.contains("`3`"),
+            "{message}"
+        );
+        assert!(message.contains("was not performed"), "{message}");
+    }
+
+    #[test]
+    fn the_export_limit_is_stated_rather_than_silently_applied() {
+        // `ExportResult::truncated` exists so a 900-object export cannot look
+        // complete.
+        assert_eq!(EXPORT_LIMIT, 500);
+        assert!(targets(EXPORT_LIMIT + 1).len() > EXPORT_LIMIT);
+    }
+}

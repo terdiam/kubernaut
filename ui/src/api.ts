@@ -4,6 +4,7 @@ import type {
   ApplyOutcome,
   ClusterStatus,
   ClusterSummary,
+  BulkOutcome,
   ContextEntry,
   Diagnostics,
   DiagnosisReport,
@@ -14,6 +15,7 @@ import type {
   EventRow,
   DrainReport,
   EditRequest,
+  ExportResult,
   ForwardSpec,
   ForwardStatus,
   GitOpsSummary,
@@ -236,6 +238,12 @@ export const api = {
   ) => invoke<Related>("related_resources", { cluster, resource, namespace, name }),
   diagnose: (cluster: string, resource: string, namespace: string | null, name: string) =>
     invoke<DiagnosisReport>("diagnose_object", { cluster, resource, namespace, name }),
+  deleteObjects: (cluster: string, targets: TargetRef[], confirmation: string) =>
+    invoke<BulkOutcome[]>("delete_objects", { cluster, targets, confirmation }),
+  restartWorkloads: (cluster: string, targets: TargetRef[]) =>
+    invoke<BulkOutcome[]>("restart_workloads", { cluster, targets }),
+  exportObjects: (cluster: string, targets: TargetRef[]) =>
+    invoke<ExportResult>("export_objects", { cluster, targets }),
   lookupOptions: (
     cluster: string,
     source: string,

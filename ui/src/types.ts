@@ -461,6 +461,26 @@ export interface Related {
   nodes: RelatedRef[];
 }
 
+// ---- bulk actions ---------------------------------------------------------
+
+/** What one object in a bulk operation did. */
+export interface BulkOutcome {
+  resource: string;
+  namespace: string | null;
+  name: string;
+  ok: boolean;
+  error: string | null;
+}
+
+export interface ExportResult {
+  /** Multi-document YAML, `---` separated. */
+  yaml: string;
+  exported: number;
+  failed: BulkOutcome[];
+  /** More objects were asked for than the export limit allows. */
+  truncated: boolean;
+}
+
 // ---- form lookups ---------------------------------------------------------
 
 /** One choice in a form select, read from the cluster. */

@@ -4,6 +4,7 @@ import { useStore } from "../store";
 import { age } from "../age";
 import { useLiveColumns, type LiveCell } from "../liveColumns";
 import { toneFor } from "../statusTone";
+import { BulkBar } from "./BulkBar";
 import { formatDateTime } from "../time";
 import type { Row } from "../types";
 
@@ -51,6 +52,11 @@ export function ResourceTable() {
   const [sort, setSort] = useState<SortKey>(null);
   const [now, setNow] = useState(() => Date.now());
   const [widths, setWidths] = useState<number[]>([]);
+  // Checked rows, by uid. Separate from `selected`, which is the one row the
+  // detail drawer is showing.
+  const [checked, setChecked] = useState<Set<string>>(new Set());
+  // Anchor for shift-click, so a range can be taken without clicking each row.
+  const anchor = useRef<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ index: number; startX: number; startWidth: number } | null>(null);
 
@@ -71,6 +77,12 @@ export function ResourceTable() {
   useEffect(() => {
     setWidths(defaultWidths(columns, showNamespace, showAbsolute ? 180 : 90));
   }, [resource?.key, columns, showNamespace, showAbsolute]);
+
+  // A selection means nothing once the table shows a different kind.
+  useEffect(() => {
+    setChecked(new Set());
+    anchor.current = null;
+  }, [resource?.key]);
 
   const startResize = useCallback(
     (index: number, event: React.MouseEvent) => {
@@ -189,7 +201,47 @@ export function ResourceTable() {
   const cellValue = (row: Row, index: number): string =>
     index < ownColumns ? (row.cells[index] ?? "") : liveCell(row, index).text;
 
-  const template = widths.map((w) => `${w}px`).join(" ");
+  const checkedRows = visible.filter((row) => checked.has(row.uid));
+  const allChecked = visible.length > 0 && checkedRows.length === visible.length;
+
+  const toggleRow = (row: Row, event: React.MouseEvent) => {
+    event.stopPropagation();
+    setChecked((current) => {
+      const next = new Set(current);
+      // Shift extends from the last row clicked, which is how selecting every
+      // failing pod in a list stays a two-click job rather than forty.
+      const from = anchor.current ? visible.findIndex((r) => r.uid === anchor.current) : -1;
+      const to = visible.findIndex((r) => r.uid === row.uid);
+      if (event.shiftKey && from >= 0 && to >= 0) {
+        const [start, end] = from < to ? [from, to] : [to, from];
+        const adding = !next.has(row.uid);
+        for (let i = start; i <= end; i += 1) {
+          const uid = visible[i]?.uid;
+          if (!uid) continue;
+          if (adding) next.add(uid);
+          else next.delete(uid);
+        }
+      } else if (!next.delete(row.uid)) {
+        next.add(row.uid);
+      }
+      anchor.current = row.uid;
+      return next;
+    });
+  };
+
+  const toggleAll = () =>
+    setChecked((current) => {
+      if (visible.length > 0 && visible.every((row) => current.has(row.uid))) {
+        return new Set();
+      }
+      // Only what the filter leaves visible: checking rows nobody can see is
+      // how a bulk delete surprises someone.
+      return new Set(visible.map((row) => row.uid));
+    });
+
+  // A fixed first column, kept out of `widths` so the resize handles below
+  // keep indexing the columns they already did.
+  const template = ["36px", ...widths.map((w) => `${w}px`)].join(" ");
   let position = 0;
   const namePosition = position++;
   const namespacePosition = showNamespace ? position++ : -1;
@@ -220,9 +272,33 @@ export function ResourceTable() {
 
   return (
     <div className="table">
+      {cluster && (
+        <BulkBar
+          cluster={cluster}
+          resource={resource}
+          selected={checkedRows}
+          visible={visible}
+          onClear={() => setChecked(new Set())}
+          onDone={() => setChecked(new Set())}
+        />
+      )}
+
       <div className="table__scroll" ref={scrollRef}>
         <div className="table__inner" style={{ minWidth: "max-content" }}>
           <div className="table__head" style={{ gridTemplateColumns: template }} role="row">
+            <div className="th th--check">
+              <input
+                type="checkbox"
+                checked={allChecked}
+                ref={(element) => {
+                  if (element) {
+                    element.indeterminate = checkedRows.length > 0 && !allChecked;
+                  }
+                }}
+                onChange={toggleAll}
+                aria-label={allChecked ? "Clear selection" : "Select every visible row"}
+              />
+            </div>
             {headerCell("name", "Name", -1, namePosition, (row) => row.name)}
             {showNamespace &&
               headerCell(
@@ -275,6 +351,15 @@ export function ResourceTable() {
                   }}
                   onClick={() => select(row)}
                 >
+                  <span className="td td--check">
+                    <input
+                      type="checkbox"
+                      checked={checked.has(row.uid)}
+                      onClick={(event) => toggleRow(row, event)}
+                      onChange={() => {}}
+                      aria-label={`Select ${row.name}`}
+                    />
+                  </span>
                   <span className="td td--name" title={row.name}>
                     <span className="health" />
                     <span className="td__text">{row.name}</span>

@@ -1495,3 +1495,51 @@ body.resizing { cursor: col-resize; user-select: none; }
 .rules__pathvalue { flex: 1; min-width: 120px; }
 .rules__path select { min-width: 110px; }
 .rules__addpath { align-self: flex-start; }
+
+/* ---- bulk selection ----------------------------------------------------- */
+
+.bulk { border-bottom: 1px solid var(--border); }
+.bulk__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 7px 12px;
+  font-size: 12px;
+}
+/* Pushed to the right so it does not move as selection buttons appear. */
+.bulk__all { margin-left: auto; }
+
+.bulk__failures {
+  list-style: none;
+  margin: 0;
+  padding: 6px 12px 10px;
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--error);
+}
+
+.bulk__list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  max-height: 240px;
+  overflow-y: auto;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--border) 35%, transparent);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  user-select: text;
+}
+
+/* The checkbox column sits outside the resizable grid. */
+.th--check, .td--check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.th--check input, .td--check input { cursor: pointer; margin: 0; }

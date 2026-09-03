@@ -4,6 +4,7 @@
 
 use k8s_ops::{
     actions::{self, DeleteRequest, DrainOptions, DrainReport, TargetRef},
+    actions::{BulkOutcome, ExportResult},
     apply::{self, ApplyOutcome, DiffResult, EditRequest},
     diagnose::{self, DiagnosisReport},
     exec::{
@@ -482,6 +483,50 @@ pub async fn diagnose_object(
 ) -> CommandResult<DiagnosisReport> {
     let handle = state.clusters.require(&cluster)?;
     diagnose::diagnose(&handle, &resource, namespace.as_deref(), &name)
+        .await
+        .map_err(CommandError::new)
+}
+
+// ----------------------------------------------------------- bulk actions
+
+/// Delete several objects. `confirmation` must be the number of targets.
+#[tauri::command]
+pub async fn delete_objects(
+    state: State<'_, AppState>,
+    cluster: String,
+    targets: Vec<TargetRef>,
+    confirmation: String,
+) -> CommandResult<Vec<BulkOutcome>> {
+    state.ensure_writable(&cluster).map_err(CommandError::new)?;
+    let handle = state.clusters.require(&cluster)?;
+    actions::delete_many(&handle, &targets, &confirmation)
+        .await
+        .map_err(CommandError::new)
+}
+
+/// Roll several workloads.
+#[tauri::command]
+pub async fn restart_workloads(
+    state: State<'_, AppState>,
+    cluster: String,
+    targets: Vec<TargetRef>,
+) -> CommandResult<Vec<BulkOutcome>> {
+    state.ensure_writable(&cluster).map_err(CommandError::new)?;
+    let handle = state.clusters.require(&cluster)?;
+    actions::restart_many(&handle, &targets)
+        .await
+        .map_err(CommandError::new)
+}
+
+/// Read objects and return them as one manifest. Never writes.
+#[tauri::command]
+pub async fn export_objects(
+    state: State<'_, AppState>,
+    cluster: String,
+    targets: Vec<TargetRef>,
+) -> CommandResult<ExportResult> {
+    let handle = state.clusters.require(&cluster)?;
+    actions::export(&handle, &targets)
         .await
         .map_err(CommandError::new)
 }

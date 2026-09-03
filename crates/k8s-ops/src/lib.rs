@@ -13,7 +13,7 @@ pub mod manifest;
 pub mod related;
 mod ring;
 
-pub use actions::{DeleteRequest, DrainOptions, DrainReport, TargetRef};
+pub use actions::{BulkOutcome, DeleteRequest, DrainOptions, DrainReport, ExportResult, TargetRef};
 pub use apply::{ApplyOutcome, DiffResult, EditRequest, FieldConflict};
 pub use diagnose::{Diagnosis, DiagnosisReport, Finding, Step, StepAction};
 pub use error::{OpsError, Result};
