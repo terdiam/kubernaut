@@ -1,173 +1,183 @@
 # Kubernaut
 
-Multi-cluster Kubernetes management for macOS, Windows and Linux. Rust core
-(`kube-rs`) behind a Tauri v2 shell, React/TypeScript UI.
+A multi-cluster Kubernetes desktop app for macOS, Windows and Linux. Rust core
+(`kube-rs`) behind a Tauri v2 shell, React/TypeScript UI — built to stay usable
+on clusters with thousands of objects, and to never touch a cluster you did not
+explicitly add.
 
-## Status — P2 (metrics & overview)
+## Screenshots
 
-**P0 — foundation**
+*Coming soon — every existing install of this app is connected to real
+clusters, and a screenshot of it shows real cluster and namespace names in the
+sidebar even on an empty view. Screenshots need a clean profile (no saved
+clusters) or careful cropping before they can go in a public README.*
 
-- Multi-cluster connection manager over kubeconfig contexts, lazily connected,
-  with a health prober that reports connected / degraded / unreachable.
-- Login-shell `PATH` recovery so `exec` credential plugins (`aws`,
-  `gke-gcloud-auth-plugin`, `az`, `kubelogin`) resolve when the app is launched
-  from Finder or a `.desktop` entry.
-- Full API discovery including CRDs, with `additionalPrinterColumns` honoured.
-- Shared, ref-counted watches with 100 ms delta batching over a Tauri channel.
-- Virtualised resource table with per-kind columns and row health.
+## Install
 
-**P1 — operations**
+Download a build for your platform from
+[Releases](https://github.com/terdiam/kubernaut/releases). macOS and Windows
+builds are not code-signed (no paid developer account), so the OS will warn
+before the first run:
 
-- Log streaming with a drop-oldest ring, an explicit "N lines dropped" marker,
-  and multi-pod tail that follows a workload's pods across a rollout.
-- Four terminal modes, all through one session type: a **container shell**, an
-  **ephemeral debug container** for images that ship no shell, a **node shell**
-  (privileged `nsenter` pod, removed when the terminal closes), and a **local
-  kubectl shell** whose `KUBECONFIG` is a temporary single-context file — a
-  shell opened against staging cannot reach production by changing `--context`.
-  Live resize and UTF-8-safe chunking throughout.
-- Port forwarding bound to loopback by default, resolving the target pod per
-  connection so a rollout does not kill the forward.
-- YAML editing in Monaco, validated against **this cluster's** OpenAPI schema
-  (so CRDs work), with a `dryRun=All` diff preview and field-manager conflict
-  reporting before anything is applied.
-- Rancher-style form editing for 14 common kinds, over the same server-side
-  apply path. Secrets decode for editing and re-encode on save.
-- Actions: scale, rollout restart, cordon/uncordon, drain (eviction API, so
-  PodDisruptionBudgets are respected), delete and evict — each behind a typed
-  confirmation.
-- Command palette (⌘K) searching clusters, resource types and live objects.
+- **macOS** — right-click the app → **Open**, or clear the quarantine flag:
+  `xattr -dr com.apple.quarantine /Applications/Kubernaut.app`
+- **Windows** — SmartScreen: **More info** → **Run anyway**.
 
-**P2 — metrics & visualisation**
+Or build from source — see [Build](#build).
 
-- Cluster overview: CPU, memory and pod gauges showing usage, requests, limits,
-  allocatable and capacity against one shared denominator, an hour of in-memory
-  history, and a live issues panel.
-- Namespace heatmap: usage against declared requests per namespace, flagging
-  both over-request and namespaces that declare no request at all.
-- Topology graph: Ingress → Service → Workload → Pod → Node, laid out in fixed
-  layers so it does not rearrange between refreshes. Services selecting zero
-  pods and ingresses routing to a missing service are highlighted.
-- Per-object metrics for a pod, node, namespace or workload, with its requests
-  and limits drawn as reference lines.
-- Nodes list live CPU, memory, disk and pod usage as bars coloured by pressure,
-  plus OS and architecture. CPU and memory come from metrics-server, pod counts
-  from the pod set, and disk from each kubelet's summary endpoint — none of it
-  is in the node object, and it is merged into the table without the watch and
-  the sampler fighting over the same rows.
-- Status values are coloured from one shared vocabulary, so `Ready` reads green
-  and `CrashLoopBackOff` red across built-in kinds and CRD printer columns
-  alike. Compound values take their most severe part, and conditions whose name
-  describes a problem invert — `MemoryPressure=True` is not good news.
-- Sources: `metrics.k8s.io` for live usage, and a Prometheus-compatible endpoint
-  when one is present — discovered automatically and queried through the
-  apiserver's service proxy, so there is no port-forward and no second set of
-  credentials. Thanos, VictoriaMetrics and Mimir answer the same API.
-- Searchable, multi-select namespace filter: selecting several namespaces opens
-  one watch per namespace and merges the results.
+## Why
 
-**P3 — Helm**
+Kubernetes GUIs tend to break in one of two ways: they hold the entire object
+list in the frontend and choke on a large cluster, or they read
+`~/.kube/config` on launch and put every configured cluster one click away,
+production included. Kubernaut keeps all cluster state in Rust — the UI only
+ever asks for a page or subscribes to a delta stream — and starts with **no**
+clusters connected; every one is added explicitly.
 
-- Releases are read from the cluster's own `helm.sh/release.v1` Secrets, so
-  listing and inspecting needs no helm binary and shows **every** release —
-  including ones installed by CI, Flux, Rancher or a colleague, which a UI that
-  only tracked its own installs would miss.
-- Values, rendered manifest, notes and full revision history per release. The
-  "include chart defaults" view merges defaults with the user's overrides using
-  helm's own coalescing rules (maps merge, lists replace).
-- Install, upgrade, rollback and uninstall through the helm binary, each behind
-  a typed confirmation, with a real diff first: the proposed render compared
-  against the manifest helm recorded for the current revision — what the
-  `helm-diff` plugin does, without the plugin.
-- The diff is summarised per object, and differences confined to Secret values
-  are flagged as regenerated material. Charts calling `genSelfSignedCert` or
-  `randAlphaNum` mint new values on every render, so a plain text diff always
-  reports pending changes — which teaches people to ignore it.
-- Repository management and chart search. These write to the user's own helm
-  configuration, so repos stay in sync with their CLI.
+## Features
 
-**P4 — Security Center**
+### Multi-cluster
 
-- Workload posture: privileged containers, host namespaces, host-path mounts,
-  added capabilities, unpinned images, missing limits and more — read from each
-  object's own spec, so it needs no scanner and no extra permissions. Checks run
-  per workload rather than per pod, so a Deployment's flaw is reported once
-  instead of once per replica.
+- Contexts are added explicitly, from a kubeconfig file, a paste, or picked
+  out of `~/.kube/config` — the app never reads that file on its own.
+  Colliding context names must be renamed before import, and the underlying
+  cluster/user names are qualified per import so two kubeadm clusters (both
+  named `kubernetes` / `kubernetes-admin` by default) never merge into one
+  credential.
+- Lazy, health-probed connections (connected / degraded / unreachable), with
+  login-shell `PATH` recovery so `exec` credential plugins (`aws`, `gcloud`,
+  `az`, `kubelogin`) resolve even when the app is launched from Finder.
+- Per-cluster display name, accent colour, impersonation, default namespace,
+  proxy and TLS settings. **Protected contexts** refuse every destructive
+  action outright — no dialog, no override — enforced in the command layer,
+  not just the UI.
+
+### Resource browser
+
+- Full API discovery including CRDs, with `additionalPrinterColumns` honoured
+  — a custom resource gets a real table with no app changes.
+  Virtualised, sortable, resizable, with live status colouring from one shared
+  vocabulary (`CrashLoopBackOff` reads red everywhere, including in CRD
+  columns).
+- Shared, ref-counted watches batched over a Tauri IPC channel, so many open
+  tabs on the same resource cost one watch, not several.
+- **Row selection** — checkbox column with select-all and shift-click ranges,
+  a bulk bar for delete / restart / export, and a fuzzy command palette (⌘K)
+  across clusters, resource types and live objects.
+
+### Create, edit and import
+
+- **Create** — a floating **+** button on every list creates that kind, as a
+  form or as YAML; switching between them keeps the draft. 16 starting
+  templates plus a generic skeleton for any kind, including CRDs. Reference
+  fields — image pull secrets, volumes, ingress backend service and port,
+  ingress class, storage class, service account, node, priority class, HPA
+  scale target — are read from the cluster and offered as selects, not typed
+  by hand.
+- **Import YAML** applies a file as it stands: server-owned fields
+  (`resourceVersion`, `managedFields`, `status`, …) are stripped so an
+  exported object can be re-applied, `ownerReferences` are flagged rather than
+  silently dropped, and each document in a multi-document file is planned and
+  applied independently — one failure does not block the rest.
+- **YAML editing** in Monaco, validated against *this cluster's* own OpenAPI
+  schema, with a real `dryRun=All` diff before anything is applied and
+  explicit field-manager conflict reporting (with an option to take
+  ownership).
+- **Form editing** for common kinds over the same server-side apply path —
+  only the fields that changed are sent, so an edit never claims ownership of
+  the rest of the object. Secrets decode for editing and re-encode on save.
+- **Bulk export** — selected rows, or everything a filter leaves visible, as a
+  zip through the OS save dialog: one YAML file per object, grouped
+  `<namespace>/<kind>/<name>.yaml`.
+
+### Diagnose
+
+A tab that reads a pod's status the way a human would, and quotes the cluster
+rather than guessing: `CrashLoopBackOff`, `ImagePullFailed` (tag vs. credential
+vs. network, told apart), `CreateContainerConfigError` (missing object vs.
+missing key inside an object that exists), `Unschedulable` (parsed against
+what the pod actually requests), `Evicted`, `OOMKilled`, node pressure, a
+stuck `Terminating` finalizer, and more — each with the exact evidence and a
+next step that opens straight into logs, a shell, or the editor.
+
+### Logs and terminal
+
+- Log streaming with a drop-oldest ring and an explicit "N lines dropped"
+  marker, multi-pod tail that follows a workload's pods through a rollout, and
+  a clear explanation (with whatever forensics survive) when the log file
+  itself is already gone from the node.
+- Four terminal modes behind one session type: container shell, ephemeral
+  debug container (for images with no shell), node shell (a removable
+  privileged debug pod), and a local kubectl shell pinned to a temporary
+  single-context kubeconfig — it cannot reach another cluster by changing
+  `--context`.
+- Port forwarding bound to loopback by default, re-resolving the target pod
+  per connection so a rollout does not kill the forward.
+
+### Metrics and topology
+
+- Cluster overview: CPU/memory/pod gauges against usage, requests, limits and
+  capacity, an hour of history, and a live issues panel.
+- Namespace heatmap (usage vs. declared requests), per-object metrics with
+  request/limit reference lines, and node-level CPU/memory/disk/pod usage.
+- Topology graph — Ingress → Service → Workload → Pod → Node — with dangling
+  selectors and missing backends highlighted.
+- Sizing recommendations per container from observed usage, with the sample
+  count and confidence attached; under 8 samples nothing is suggested at all.
+- Reads `metrics.k8s.io`, and auto-discovers a Prometheus-compatible endpoint
+  (Thanos, VictoriaMetrics, Mimir all answer the same API) queried through the
+  apiserver proxy — no port-forward, no extra credentials.
+
+### Helm
+
+- Releases read straight from the cluster's `helm.sh/release.v1` Secrets, so
+  every release shows up — including ones installed by CI, Flux, Rancher or a
+  colleague.
+- Values, rendered manifest, notes and full revision history. Install /
+  upgrade / rollback / uninstall with a real pre-upgrade diff (what the
+  `helm-diff` plugin does, without the plugin), and regenerated Secret values
+  (`genSelfSignedCert`, `randAlphaNum`) flagged instead of shown as noise on
+  every diff.
+
+### GitOps
+
+Argo CD, Flux and Fleet in one list — repository, applied commit, and why an
+entry is unhealthy — with reconcile/suspend working through the controllers'
+own annotations, so neither CLI is required.
+
+### Security Center
+
+- Workload posture checks (privileged, host namespaces, host-path mounts,
+  added capabilities, unpinned images, missing limits, …) read straight from
+  each object's spec — no scanner, no extra permissions, one finding per
+  Deployment rather than one per replica.
 - RBAC analysis: wildcard grants, escalation verbs, cluster-wide Secret reads,
-  `pods/exec`, and bindings to unauthenticated subjects. Roles the cluster
-  ships itself are marked and hidden by default — without that distinction the
-  hundreds of built-in roles bury the one somebody granted by mistake.
-- Image inventory, and vulnerabilities from Trivy Operator when it is installed
-  or the local `trivy` CLI otherwise. When neither is present the panel says so
-  rather than showing an empty list that reads like "nothing found".
-- The first-run database download is a separate, explicit step (~110 MiB to
-  fetch, ~1.2 GB on disk). Folding it into the first scan is how that scan times
-  out and the whole feature looks broken. Several database repositories are
-  tried in turn, because Trivy's default mirror can accept a connection and then
-  transfer nothing — which is indistinguishable from a slow link until you try
-  somewhere else.
-- Findings start at medium severity: a real cluster produces thousands of true
-  but unremarkable low-severity notes, and showing them first hides the rest.
+  `pods/exec`, bindings to unauthenticated subjects — with the roles the
+  cluster ships itself marked and hidden by default.
+- Image vulnerabilities from Trivy Operator when installed, or the bundled
+  `trivy` CLI otherwise.
 
-**P5 — release engineering**
+### Safety and privacy
 
-- Settings, persisted between runs: theme (light / dark / follow the system),
-  display time zone, extra `PATH` directories for kubeconfig exec plugins,
-  default log tail, and update behaviour. Written atomically, and an unreadable file falls back to
-  defaults rather than stopping the app.
-- **Protected contexts.** Named contexts refuse every destructive action from
-  the app — no dialog, no override. A confirmation stops accidents but not
-  habit; after the tenth one people type the name without reading it. Enforced
-  in the command layer across all twelve mutating operations, not in the UI.
-- Signed auto-updates through `tauri-plugin-updater`, off by default. With the
-  setting off the app makes no outbound request of its own — everything it
-  talks to is a cluster you chose. Installing is always an explicit click, so
-  an editor with unsaved YAML is never restarted underneath you.
-- Release workflow builds macOS (both architectures), Windows and Linux, fetches
-  and checksum-verifies the helm sidecar, and opens a **draft** release so a
-  human sees the artefacts before any installed copy does. See
-  [docs/RELEASING.md](docs/RELEASING.md).
-- Local logging with panic capture, seven days retained. **No telemetry**: this
-  app holds credentials for production clusters, and the only privacy guarantee
-  worth trusting is that there is no code to send anything anywhere. Crashes are
-  surfaced in Settings so a bug report is a file you read first.
+- Destructive actions — delete, scale to zero, drain, rollback, uninstall —
+  each behind a typed confirmation (the object's name for one, the count of
+  the set for many), and refused outright on a protected context.
+- **No telemetry.** With auto-update off, the app makes no outbound request of
+  its own — everything it talks to is a cluster you added yourself. Local
+  crash logs only, kept for 7 days, surfaced in Settings.
+- Signed, opt-in auto-updates; installing is always an explicit click, so an
+  editor with unsaved YAML is never restarted underneath you.
 
-**Beyond the plan**
+## Build
 
-- **Explicit clusters.** The app does not read `~/.kube/config` on its own. The
-  first run is empty, and every cluster is one somebody added — so nothing is
-  one click from production because a file happened to be on disk. Adding a
-  cluster offers the contexts found in your kubeconfig, a file picker, or pasted
-  YAML; whichever you choose, a copy is stored in this app's own configuration
-  and your kubeconfig is never written to. Context name collisions must be
-  renamed before importing: two contexts with one name give no way to tell which
-  cluster a click reaches.
-- **Time zone.** Kubernetes records every timestamp in UTC, and reading those
-  beside a local clock is how an incident timeline gets misread by a whole
-  timezone. Absolute times — object metadata, conditions, chart axes, and the
-  prefix Kubernetes puts on log lines — are converted to a chosen zone and shown
-  on a 24-hour clock. The YAML tab is deliberately excluded: it shows what the
-  cluster stores, and rewriting it would make a copied manifest wrong.
-- **Per-cluster settings.** Right-click a tile for connect/disconnect, settings
-  and removal. Settings cover a display name and accent colour — making
-  production look different is the cheapest guard against acting on the wrong
-  cluster — plus impersonation (`--as`, `--as-group`), a default namespace, a
-  per-cluster proxy, and TLS verification. Removal forgets the stored
-  kubeconfig; the cluster itself is untouched.
-- **GitOps.** Argo CD, Flux and Fleet in one list: which repository, which
-  commit is applied, and why it is not. Unhealthy entries sort first, and
-  reconcile/suspend work through the annotations the controllers already watch,
-  so neither CLI is needed.
-- **Sizing recommendations.** Request and limit suggestions per container from
-  observed usage, with the sample count, observation window and a confidence
-  level attached. Below eight samples no numbers are shown at all; a window
-  under six hours is labelled as not having seen a daily peak. No CPU limit is
-  suggested, and a suggestion that would *lower* a memory limit says outright
-  that memory limits are enforced by killing the container.
+```bash
+npm install
+npm run app:build
+```
 
-Not done: Indonesian translation. The chrome could be translated, but Kubernetes
-terms (`Deployment`, `CrashLoopBackOff`) must stay as they appear in kubectl and
-in every search result, so a half-translated UI was judged worse than none.
+Requires Node 22+ and a Rust toolchain (`rustup target add <triple>` for a
+target other than your host). See `.github/workflows/release.yml` for the
+exact matrix and how the `helm`/`trivy` sidecars are fetched and verified.
 
 ## Develop
 
@@ -177,8 +187,6 @@ npm run app
 ```
 
 `npm run app` runs `tauri dev`, which starts Vite and the Rust app together.
-
-Useful checks:
 
 ```bash
 cargo test --workspace
@@ -193,46 +201,33 @@ Log level is controlled by `KUBERNAUT_LOG` (e.g. `KUBERNAUT_LOG=debug,kube=info`
 | Path | Contents |
 | --- | --- |
 | `crates/k8s-core` | kubeconfig, connection manager, discovery, watches, row projection |
-| `crates/k8s-ops` | logs, exec, port-forward, apply/diff, actions |
+| `crates/k8s-ops` | logs, exec, port-forward, apply/diff, actions, bulk operations, diagnostics |
 | `crates/k8s-metrics` | quantity parsing, aggregation, sampling, Prometheus, topology |
 | `crates/k8s-helm` | release store (Secrets), helm CLI wrapper, upgrade diff |
 | `crates/k8s-security` | posture checks, RBAC analysis, vulnerability sources |
 | `src-tauri` | Tauri app, IPC commands, capabilities |
 | `ui` | React frontend |
 
-## Testing against a cluster
+## Testing against a real cluster
 
-```bash
-kind create cluster --name kubernaut-dev --config test/kind-3node.yaml
-kubectl apply -f test/crd-sample.yaml
-```
-
-The CRD sample verifies that a custom type appears in the sidebar without any
-app-side changes and that its printer columns drive the table.
-
-Two headless smoke tests exercise a real cluster without launching the GUI.
-Both are read-only — the second uses `dryRun=All` for its diff and makes no
-writes:
+Headless, read-only smoke tests exercise real behaviour without launching the
+GUI:
 
 ```bash
 cargo run -p k8s-core --example smoke -- <context> apps/v1/deployments <namespace>
 cargo run -p k8s-core --example import_smoke -- <context>
 cargo run -p k8s-ops --example ops_smoke -- <context> <namespace> <deployment>
+cargo run -p k8s-ops --example exec_smoke -- <context> <namespace> <pod>
+cargo run -p k8s-ops --example diagnose_smoke -- <context> <namespace>
+cargo run -p k8s-ops --example lookup_smoke -- <context> <namespace>
+cargo run -p k8s-ops --example manifest_smoke -- <context> <namespace>
+cargo run -p k8s-ops --example gitops_smoke -- <context>
 cargo run -p k8s-metrics --example metrics_smoke -- <context>
+cargo run -p k8s-metrics --example sizing_smoke -- <context> <namespace> <deployment>
 cargo run -p k8s-helm --example helm_smoke -- <context>
 cargo run -p k8s-security --example security_smoke -- <context>
-cargo run -p k8s-ops --example exec_smoke -- <context> <namespace> <pod>
 ```
 
-The metrics numbers can be cross-checked directly:
+## License
 
-```bash
-kubectl top nodes
-```
-
-### Known gap
-
-The Prometheus path is unit-tested (query encoding, proxy path construction,
-metric selection) but has not been exercised against a live Prometheus — the
-development cluster has none, and discovery correctly reports that. Treat the
-range-query code as unverified until it runs against a real endpoint.
+[Apache License 2.0](LICENSE).
