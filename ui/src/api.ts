@@ -244,6 +244,8 @@ export const api = {
     invoke<BulkOutcome[]>("restart_workloads", { cluster, targets }),
   exportObjects: (cluster: string, targets: TargetRef[]) =>
     invoke<ExportResult>("export_objects", { cluster, targets }),
+  exportObjectsToFile: (cluster: string, targets: TargetRef[], path: string) =>
+    invoke<ExportResult>("export_objects_to_file", { cluster, targets, path }),
   lookupOptions: (
     cluster: string,
     source: string,

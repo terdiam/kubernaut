@@ -1,6 +1,10 @@
 import { useState } from "react";
+import { save } from "@tauri-apps/plugin-dialog";
 import { api } from "../api";
 import type { BulkOutcome, ResourceDescriptor, Row, TargetRef } from "../types";
+
+/** Mirrors `k8s_ops::actions::EXPORT_LIMIT`, for the message only. */
+const EXPORT_LIMIT = 500;
 
 /** Kinds `kubectl rollout restart` understands — the ones with a pod template. */
 const RESTARTABLE = new Set(["Deployment", "StatefulSet", "DaemonSet"]);
@@ -42,28 +46,45 @@ export function BulkBar({ cluster, resource, selected, visible, onClear, onDone 
   const count = selected.length;
   const canRestart = RESTARTABLE.has(resource.kind);
 
+  /**
+   * Ask where to put the archive, then have Rust write it.
+   *
+   * A page cannot save a file here — the webview blocks downloads, which is
+   * why the earlier blob link did nothing at all. The OS dialog answers with a
+   * path and only that path is handed across, so the renderer never gains
+   * filesystem access.
+   */
   const download = async (rows: Row[], label: string) => {
-    setBusy(true);
     setError(null);
     setOutcomes(null);
+    setNote(null);
+
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    let path: string | null = null;
     try {
-      const result = await api.exportObjects(cluster, targets(rows));
+      path = await save({
+        title: `Export ${rows.length} ${resource.kind}`,
+        defaultPath: `${resource.plural}-${label}-${stamp}.zip`,
+        filters: [{ name: "Zip archive", extensions: ["zip"] }],
+      });
+    } catch (err) {
+      setError(String(err));
+      return;
+    }
+    // Cancelling the dialog is an answer, not a failure.
+    if (!path) return;
+
+    setBusy(true);
+    try {
+      const result = await api.exportObjectsToFile(cluster, targets(rows), path);
       if (result.exported === 0) {
-        setError("Nothing could be read.");
+        setError("Nothing could be read; the archive is empty.");
         setOutcomes(result.failed);
         return;
       }
-      const blob = new Blob([result.yaml], { type: "application/yaml" });
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = `${resource.plural}-${label}.yaml`;
-      anchor.click();
-      URL.revokeObjectURL(url);
-
       setNote(
-        `${result.exported} document(s) written` +
-          (result.truncated ? ", capped at the export limit" : "") +
+        `${result.exported} object(s) written to ${path}` +
+          (result.truncated ? `, capped at ${EXPORT_LIMIT}` : "") +
           (result.failed.length > 0 ? `, ${result.failed.length} could not be read` : ""),
       );
       if (result.failed.length > 0) setOutcomes(result.failed);
@@ -142,7 +163,7 @@ export function BulkBar({ cluster, resource, selected, visible, onClear, onDone 
               onClick={() => void download(selected, "selected")}
               disabled={busy}
             >
-              Download YAML
+              Export YAML…
             </button>
             <button className="button button--ghost" onClick={onClear} disabled={busy}>
               Clear
@@ -156,7 +177,7 @@ export function BulkBar({ cluster, resource, selected, visible, onClear, onDone 
           disabled={busy || visible.length === 0}
           title="Every row the current filter leaves visible"
         >
-          Download all ({visible.length})
+          Export all ({visible.length})…
         </button>
 
         {note && <span className="muted">{note}</span>}

@@ -6,13 +6,17 @@ import type { BulkOutcome, ExportResult, ResourceDescriptor, Row, TargetRef } fr
 const deleteObjects =
   vi.fn<(c: string, t: TargetRef[], confirmation: string) => Promise<BulkOutcome[]>>();
 const restartWorkloads = vi.fn<(c: string, t: TargetRef[]) => Promise<BulkOutcome[]>>();
-const exportObjects = vi.fn<(c: string, t: TargetRef[]) => Promise<ExportResult>>();
+const exportObjectsToFile =
+  vi.fn<(c: string, t: TargetRef[], path: string) => Promise<ExportResult>>();
+const save = vi.fn<() => Promise<string | null>>();
+
+vi.mock("@tauri-apps/plugin-dialog", () => ({ save: () => save() }));
 
 vi.mock("../api", () => ({
   api: {
     deleteObjects: (c: string, t: TargetRef[], k: string) => deleteObjects(c, t, k),
     restartWorkloads: (c: string, t: TargetRef[]) => restartWorkloads(c, t),
-    exportObjects: (c: string, t: TargetRef[]) => exportObjects(c, t),
+    exportObjectsToFile: (c: string, t: TargetRef[], p: string) => exportObjectsToFile(c, t, p),
   },
 }));
 
@@ -67,7 +71,8 @@ afterEach(() => {
   cleanup();
   deleteObjects.mockReset();
   restartWorkloads.mockReset();
-  exportObjects.mockReset();
+  exportObjectsToFile.mockReset();
+  save.mockReset();
 });
 
 describe("BulkBar", () => {
@@ -76,7 +81,7 @@ describe("BulkBar", () => {
     expect(button("Delete")).toBeUndefined();
     expect(button("Restart")).toBeUndefined();
     // Exporting the whole list needs no selection.
-    expect(button("Download all (3)")).toBeTruthy();
+    expect(button("Export all (3)…")).toBeTruthy();
   });
 
   it("will not delete until the size of the set is typed", async () => {
@@ -126,18 +131,48 @@ describe("BulkBar", () => {
 
   it("says when an export was capped rather than letting it look complete", async () => {
     mount([row("web")]);
-    exportObjects.mockResolvedValue({
-      yaml: "apiVersion: v1\n",
+    save.mockResolvedValue("/tmp/deployments.zip");
+    exportObjectsToFile.mockResolvedValue({
+      yaml: "",
       exported: 500,
       failed: [],
       truncated: true,
     });
-    // jsdom has no object URLs.
-    URL.createObjectURL = vi.fn(() => "blob:x");
-    URL.revokeObjectURL = vi.fn();
 
-    fireEvent.click(button("Download YAML"));
-    expect(await screen.findByText(/capped at the export limit/)).toBeTruthy();
+    fireEvent.click(button("Export YAML…"));
+    expect(await screen.findByText(/capped at 500/)).toBeTruthy();
+    expect(exportObjectsToFile).toHaveBeenCalledWith(
+      "default",
+      expect.any(Array),
+      "/tmp/deployments.zip",
+    );
+  });
+
+  it("treats a cancelled save dialog as an answer, not a failure", async () => {
+    mount([row("web")]);
+    save.mockResolvedValue(null);
+
+    fireEvent.click(button("Export YAML…"));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    // Nothing is written and nothing is reported as wrong.
+    expect(exportObjectsToFile).not.toHaveBeenCalled();
+    expect(document.querySelector(".error")).toBeNull();
+  });
+
+  it("writes where the dialog said, and says so", async () => {
+    mount([row("web"), row("api")]);
+    save.mockResolvedValue("/Users/me/Desktop/app.zip");
+    exportObjectsToFile.mockResolvedValue({
+      yaml: "",
+      exported: 2,
+      failed: [],
+      truncated: false,
+    });
+
+    fireEvent.click(button("Export YAML…"));
+    // The path matters: a file written somewhere the user cannot find is a
+    // file they will assume was never written.
+    expect(await screen.findByText(/2 object\(s\) written to \/Users\/me\/Desktop\/app.zip/)).toBeTruthy();
   });
 
   it("hides restart for a kind that has no pod template", () => {

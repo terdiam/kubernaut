@@ -61,6 +61,9 @@ humantime = "2"
 regex = "1"
 base64 = "0.22"
 similar = "2"
+# Archive format for bulk export: openable by double-click on both macOS and
+# Windows, unlike a tarball.
+zip = { version = "4", default-features = false, features = ["deflate"] }
 json-patch = "4"
 jsonptr = "0.7"
 sha2 = "0.10"

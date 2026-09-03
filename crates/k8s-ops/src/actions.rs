@@ -439,6 +439,146 @@ pub async fn export(cluster: &Arc<ClusterHandle>, targets: &[TargetRef]) -> Resu
     })
 }
 
+/// Where one object lands inside the archive.
+///
+/// Grouped by namespace then kind, so unpacking a namespace's export gives the
+/// same shape people already keep manifests in. Cluster-scoped objects have no
+/// namespace to file under and go in `_cluster`.
+fn archive_path(target: &TargetRef, kind: &str) -> String {
+    let namespace = target.namespace.as_deref().unwrap_or("_cluster");
+    format!(
+        "{}/{}/{}.yaml",
+        sanitise_segment(namespace),
+        sanitise_segment(kind),
+        sanitise_segment(&target.name)
+    )
+}
+
+/// Keep a path segment to characters that are safe on every platform the app
+/// runs on. Object names are already DNS-safe, but a CRD kind is not
+/// guaranteed to be.
+fn sanitise_segment(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '.' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if cleaned.is_empty() {
+        "unnamed".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Read objects and write them into a zip archive at `path`.
+///
+/// Writing happens here rather than in the webview: a page cannot save a file
+/// on this platform, and routing bytes through the IPC bridge to a renderer
+/// that then cannot write them helps nobody.
+pub async fn export_archive(
+    cluster: &Arc<ClusterHandle>,
+    targets: &[TargetRef],
+    path: &std::path::Path,
+) -> Result<ExportResult> {
+    if targets.is_empty() {
+        return Err(OpsError::other("nothing selected"));
+    }
+
+    let truncated = targets.len() > EXPORT_LIMIT;
+    let mut failed = Vec::new();
+    let mut written = 0usize;
+    let mut seen: std::collections::BTreeSet<String> = Default::default();
+
+    let file = std::fs::File::create(path)
+        .map_err(|err| OpsError::other(format!("could not create {}: {err}", path.display())))?;
+    let mut archive = zip::ZipWriter::new(file);
+    let options: zip::write::FileOptions<'_, ()> =
+        zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    for target in targets.iter().take(EXPORT_LIMIT) {
+        let object = match k8s_core::objects::get(
+            cluster,
+            &target.resource,
+            target.namespace.as_deref(),
+            &target.name,
+        )
+        .await
+        {
+            Ok(object) => object,
+            Err(err) => {
+                failed.push(BulkOutcome {
+                    resource: target.resource.clone(),
+                    namespace: target.namespace.clone(),
+                    name: target.name.clone(),
+                    ok: false,
+                    error: Some(err.to_string()),
+                });
+                continue;
+            }
+        };
+
+        let kind = object
+            .types
+            .as_ref()
+            .map(|t| t.kind.clone())
+            .unwrap_or_else(|| {
+                // Fall back to the plural from the resource key when the object
+                // carries no TypeMeta.
+                target
+                    .resource
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("object")
+                    .to_string()
+            });
+
+        let yaml = match k8s_core::objects::to_yaml(&object, false) {
+            Ok(yaml) => yaml,
+            Err(err) => {
+                failed.push(BulkOutcome {
+                    resource: target.resource.clone(),
+                    namespace: target.namespace.clone(),
+                    name: target.name.clone(),
+                    ok: false,
+                    error: Some(err.to_string()),
+                });
+                continue;
+            }
+        };
+
+        // Two objects can only collide here if the same one was passed twice;
+        // silently overwriting would make the count disagree with the archive.
+        let mut entry = archive_path(target, &kind);
+        let mut suffix = 2;
+        while !seen.insert(entry.clone()) {
+            entry = entry.replace(".yaml", &format!("-{suffix}.yaml"));
+            suffix += 1;
+        }
+
+        archive
+            .start_file(&entry, options)
+            .map_err(|err| OpsError::other(err.to_string()))?;
+        std::io::Write::write_all(&mut archive, yaml.as_bytes())?;
+        written += 1;
+    }
+
+    archive
+        .finish()
+        .map_err(|err| OpsError::other(format!("could not finish the archive: {err}")))?;
+
+    Ok(ExportResult {
+        yaml: String::new(),
+        exported: written,
+        failed,
+        truncated,
+    })
+}
+
 #[cfg(test)]
 mod bulk_tests {
     use super::*;
@@ -480,6 +620,41 @@ mod bulk_tests {
             "{message}"
         );
         assert!(message.contains("was not performed"), "{message}");
+    }
+
+    #[test]
+    fn the_archive_groups_by_namespace_then_kind() {
+        let target = TargetRef {
+            resource: "apps/v1/deployments".into(),
+            namespace: Some("production".into()),
+            name: "checkout-api".into(),
+        };
+        assert_eq!(
+            archive_path(&target, "Deployment"),
+            "production/Deployment/checkout-api.yaml"
+        );
+    }
+
+    #[test]
+    fn a_cluster_scoped_object_has_a_folder_of_its_own() {
+        // `_cluster` rather than the empty string, which would put the file at
+        // the archive root and mix it in with namespace folders.
+        let target = TargetRef {
+            resource: "core/v1/nodes".into(),
+            namespace: None,
+            name: "node-1".into(),
+        };
+        assert_eq!(archive_path(&target, "Node"), "_cluster/Node/node-1.yaml");
+    }
+
+    #[test]
+    fn path_segments_cannot_escape_the_archive() {
+        // A CRD kind is not guaranteed to be path-safe, and a zip entry that
+        // walks upward is a classic way to write outside the extract folder.
+        assert_eq!(sanitise_segment("../../etc"), ".._.._etc");
+        assert_eq!(sanitise_segment("a/b"), "a_b");
+        assert_eq!(sanitise_segment(""), "unnamed");
+        assert_eq!(sanitise_segment("Fine-name.v1_2"), "Fine-name.v1_2");
     }
 
     #[test]

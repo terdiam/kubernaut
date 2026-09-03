@@ -24,6 +24,7 @@ tracing.workspace = true
 dashmap.workspace = true
 parking_lot.workspace = true
 similar.workspace = true
+zip.workspace = true
 portable-pty.workspace = true
 rand.workspace = true
 tempfile.workspace = true

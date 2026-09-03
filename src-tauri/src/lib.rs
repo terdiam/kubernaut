@@ -116,6 +116,7 @@ pub fn run() {
             ops_commands::delete_objects,
             ops_commands::restart_workloads,
             ops_commands::export_objects,
+            ops_commands::export_objects_to_file,
             ops_commands::lookup_options,
             ops_commands::plan_manifest,
             ops_commands::apply_manifest,

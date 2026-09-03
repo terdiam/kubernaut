@@ -518,6 +518,23 @@ pub async fn restart_workloads(
         .map_err(CommandError::new)
 }
 
+/// Read objects and write them into a zip archive at `path`.
+///
+/// The path comes from the OS save dialog the user just answered, so no
+/// filesystem capability is granted to the webview.
+#[tauri::command]
+pub async fn export_objects_to_file(
+    state: State<'_, AppState>,
+    cluster: String,
+    targets: Vec<TargetRef>,
+    path: String,
+) -> CommandResult<ExportResult> {
+    let handle = state.clusters.require(&cluster)?;
+    actions::export_archive(&handle, &targets, std::path::Path::new(&path))
+        .await
+        .map_err(CommandError::new)
+}
+
 /// Read objects and return them as one manifest. Never writes.
 #[tauri::command]
 pub async fn export_objects(
