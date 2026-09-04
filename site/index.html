@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kubernaut — Kubernetes desktop app</title>
+<meta name="description" content="A multi-cluster Kubernetes desktop app for macOS, Windows and Linux. Rust core, no telemetry, no clusters connected until you add them." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⎈</text></svg>" />
+<style>
+  :root{
+    --bg:#0b0f14; --bg-alt:#111721; --panel:#161d29; --border:#232c3b;
+    --text:#e6ebf2; --muted:#8b97a8; --accent:#5fb3ff; --accent-2:#7ee0b8;
+    --code-bg:#0e1420;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;}
+  a{color:var(--accent);text-decoration:none;}
+  a:hover{text-decoration:underline;}
+  .wrap{max-width:920px;margin:0 auto;padding:0 24px;}
+  header.hero{padding:72px 0 40px;text-align:center;
+    background:radial-gradient(60% 100% at 50% 0%, #142033 0%, var(--bg) 70%);}
+  .logo{font-size:42px;}
+  h1{font-size:2.4rem;margin:12px 0 8px;letter-spacing:-0.02em;}
+  .tagline{color:var(--muted);font-size:1.1rem;max-width:640px;margin:0 auto 28px;}
+  .badges{display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-bottom:28px;}
+  .badge{border:1px solid var(--border);background:var(--panel);border-radius:999px;
+    padding:6px 14px;font-size:0.85rem;color:var(--muted);}
+  .badge b{color:var(--text);}
+  .badge.pulse{border-color:#2a4a3a;background:#0f1f18;color:var(--accent-2);}
+
+  .download-card{background:var(--panel);border:1px solid var(--border);border-radius:14px;
+    padding:24px;max-width:560px;margin:0 auto;}
+  .os-tabs{display:flex;gap:6px;justify-content:center;margin-bottom:16px;}
+  .os-tab{border:1px solid var(--border);background:transparent;color:var(--muted);
+    padding:7px 16px;border-radius:8px;cursor:pointer;font-size:0.9rem;}
+  .os-tab.active{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:600;}
+  .primary-dl{display:block;background:var(--accent);color:#04121f;text-align:center;
+    padding:13px 20px;border-radius:10px;font-weight:700;font-size:1.02rem;margin-bottom:10px;}
+  .primary-dl:hover{text-decoration:none;filter:brightness(1.08);}
+  .secondary-links{display:flex;gap:14px;justify-content:center;flex-wrap:wrap;
+    font-size:0.85rem;color:var(--muted);}
+  .other-os{margin-top:14px;text-align:center;font-size:0.85rem;color:var(--muted);}
+  .loading{color:var(--muted);text-align:center;font-size:0.9rem;}
+
+  section{padding:52px 0;border-top:1px solid var(--border);}
+  h2{font-size:1.5rem;margin-bottom:22px;}
+  .why{color:var(--muted);}
+  .why b{color:var(--text);}
+
+  .shots{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+  .shots figure{margin:0;background:var(--panel);border:1px solid var(--border);
+    border-radius:10px;overflow:hidden;}
+  .shots img{display:block;width:100%;height:auto;}
+  .shots figcaption{padding:10px 14px;font-size:0.85rem;color:var(--muted);}
+  @media (max-width:640px){.shots{grid-template-columns:1fr;}}
+
+  .features{display:grid;grid-template-columns:1fr 1fr;gap:26px 32px;}
+  .features h3{font-size:1rem;margin:0 0 6px;color:var(--text);}
+  .features p{margin:0;color:var(--muted);font-size:0.92rem;}
+  @media (max-width:640px){.features{grid-template-columns:1fr;}}
+
+  code{background:var(--code-bg);border:1px solid var(--border);border-radius:5px;
+    padding:1px 6px;font-size:0.88em;}
+  footer{padding:36px 0 60px;text-align:center;color:var(--muted);font-size:0.85rem;}
+  footer a{color:var(--muted);}
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <div class="logo">⎈</div>
+    <h1>Kubernaut</h1>
+    <p class="tagline">A multi-cluster Kubernetes desktop app for macOS, Windows and Linux.
+      Rust core, no telemetry, starts with <b>no</b> clusters connected.</p>
+
+    <div class="badges">
+      <span class="badge pulse" id="version-badge">Checking latest version…</span>
+      <span class="badge">Apache-2.0</span>
+      <span class="badge">macOS · Windows · Linux (amd64/arm64)</span>
+    </div>
+
+    <div class="download-card">
+      <div class="os-tabs" id="os-tabs"></div>
+      <div id="download-area" class="loading">Loading release info…</div>
+    </div>
+  </div>
+</header>
+
+<section>
+  <div class="wrap">
+    <h2>Why</h2>
+    <p class="why">
+      Kubernetes GUIs tend to break one of two ways: they hold the entire object list in the
+      frontend and choke on a large cluster, or they read <code>~/.kube/config</code> on launch
+      and put every configured cluster one click away, production included. Kubernaut keeps all
+      cluster state in Rust — the UI only ever asks for a page or subscribes to a delta stream —
+      and starts with <b>no</b> clusters connected; every one is added explicitly.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Screenshots</h2>
+    <p style="color:var(--muted);font-size:0.85rem;margin-top:-12px;">
+      Taken against a local <a href="https://k3d.io" target="_blank" rel="noopener">k3d</a>
+      cluster, not a real one — every name in these images is invented.
+    </p>
+    <div class="shots">
+      <figure>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/overview.png" alt="Cluster overview: gauges, usage history, live issues" loading="lazy" />
+        <figcaption>Cluster overview, with an issue an <code>ImagePullBackOff</code> pod put there itself</figcaption>
+      </figure>
+      <figure>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/deployments.png" alt="Deployments table with row selection" loading="lazy" />
+        <figcaption>Row selection on any resource table</figcaption>
+      </figure>
+      <figure>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/diagnose.png" alt="Diagnose tab quoting the kubelet's own error" loading="lazy" />
+        <figcaption>Diagnose: the cluster's own error, and what to do about it</figcaption>
+      </figure>
+      <figure>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/bulk.png" alt="Bulk action bar: delete, restart, export" loading="lazy" />
+        <figcaption>Act on a selection — delete, restart, export</figcaption>
+      </figure>
+      <figure>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/create.png" alt="Create dialog, form mode, for a Deployment" loading="lazy" />
+        <figcaption>Create, as a form or as YAML</figcaption>
+      </figure>
+      <figure>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/ingress-form.png" alt="Ingress form with backend service and port chosen from the cluster" loading="lazy" />
+        <figcaption>Reference fields read from the cluster, not typed</figcaption>
+      </figure>
+      <figure>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/helm.png" alt="Helm releases and revision history" loading="lazy" />
+        <figcaption>Every Helm release, read straight from the cluster</figcaption>
+      </figure>
+      <figure>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/security.png" alt="Security Center workload findings" loading="lazy" />
+        <figcaption>Workload posture findings, no scanner required</figcaption>
+      </figure>
+      <figure>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/logs.png" alt="Multi-pod log stream" loading="lazy" />
+        <figcaption>Log streaming</figcaption>
+      </figure>
+      <figure>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/terminal.png" alt="Container shell terminal" loading="lazy" />
+        <figcaption>A shell into the pod</figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap">
+    <h2>Features</h2>
+    <div class="features">
+      <div><h3>Multi-cluster</h3><p>Contexts added explicitly, lazy health-probed connections,
+        protected contexts that refuse destructive actions outright.</p></div>
+      <div><h3>Resource browser</h3><p>Full API discovery including CRDs, virtualised tables,
+        row selection, a fuzzy command palette across clusters.</p></div>
+      <div><h3>Create, edit, import</h3><p>Form or YAML with a real cluster-side diff before
+        anything applies; reference fields read from the cluster, not typed.</p></div>
+      <div><h3>Diagnose</h3><p>Reads a pod's status the way a human would — quotes the cluster,
+        not a guess — with a next step straight into logs or a shell.</p></div>
+      <div><h3>Logs and terminal</h3><p>Multi-pod log tail, four terminal modes, port forwarding
+        bound to loopback by default.</p></div>
+      <div><h3>Metrics and topology</h3><p>Cluster gauges, namespace heatmap, sizing
+        recommendations, and an Ingress → Service → Pod → Node graph.</p></div>
+      <div><h3>Helm</h3><p>Every release read straight from the cluster's own Secrets, with a
+        real pre-upgrade diff.</p></div>
+      <div><h3>Security Center</h3><p>Workload posture checks, RBAC analysis, and image CVEs —
+        no scanner required.</p></div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <a href="https://github.com/terdiam/kubernaut">github.com/terdiam/kubernaut</a>
+    · <a href="https://github.com/terdiam/kubernaut/releases">Releases</a>
+    · Apache License 2.0
+  </div>
+</footer>
+
+<script>
+(async function () {
+  const REPO = "terdiam/kubernaut";
+  const versionBadge = document.getElementById("version-badge");
+  const downloadArea = document.getElementById("download-area");
+  const osTabs = document.getElementById("os-tabs");
+
+  // Matches each platform to the asset-name substrings that identify it,
+  // in priority order — first match wins. Two Linux arch package names
+  // ("arm64.deb" / "aarch64.rpm") are why this is per-OS instead of one
+  // flat map: the same OS needs an arch pass a level down.
+  const CLASSIFY = {
+    mac: (n) => n.endsWith(".dmg"),
+    windows: (n) => n.endsWith(".exe") || n.endsWith(".msi"),
+    linux: (n) => n.endsWith(".deb") || n.endsWith(".rpm") || n.endsWith(".AppImage"),
+  };
+
+  function detectOS() {
+    const ua = navigator.userAgent;
+    if (/Mac/.test(ua)) return "mac";
+    if (/Win/.test(ua)) return "windows";
+    if (/Linux/.test(ua)) return "linux";
+    return "mac";
+  }
+
+  function isArm(name) {
+    return /aarch64|arm64/i.test(name);
+  }
+
+  function renderMac(assets) {
+    const dmg = assets.find((a) => CLASSIFY.mac(a.name));
+    if (!dmg) return `<p class="loading">No macOS build in the latest release.</p>`;
+    return `<a class="primary-dl" href="${dmg.browser_download_url}">Download for macOS (Universal)</a>
+      <p class="other-os">Unsigned build — right-click the app → <b>Open</b> on first launch,
+      or run <code>xattr -dr com.apple.quarantine /Applications/Kubernaut.app</code>.</p>`;
+  }
+
+  function renderWindows(assets) {
+    const exe = assets.find((a) => a.name.endsWith("-setup.exe"));
+    const msi = assets.find((a) => a.name.endsWith(".msi"));
+    const primary = exe || msi;
+    if (!primary) return `<p class="loading">No Windows build in the latest release.</p>`;
+    const links = [exe, msi].filter(Boolean)
+      .map((a) => `<a href="${a.browser_download_url}">${a.name.endsWith(".msi") ? "MSI" : "EXE"}</a>`)
+      .join(" · ");
+    return `<a class="primary-dl" href="${primary.browser_download_url}">Download for Windows</a>
+      <div class="secondary-links">${links}</div>
+      <p class="other-os">Unsigned build — SmartScreen: <b>More info</b> → <b>Run anyway</b>.</p>`;
+  }
+
+  function renderLinux(assets) {
+    const linuxAssets = assets.filter((a) => CLASSIFY.linux(a.name));
+    if (!linuxAssets.length) return `<p class="loading">No Linux build in the latest release.</p>`;
+    const amd64 = linuxAssets.filter((a) => !isArm(a.name));
+    const arm64 = linuxAssets.filter((a) => isArm(a.name));
+    const row = (label, list) =>
+      list.length
+        ? `<p class="other-os"><b>${label}:</b> ${list
+            .map((a) => `<a href="${a.browser_download_url}">${a.name.split(".").pop()}</a>`)
+            .join(" · ")}</p>`
+        : "";
+    const primary = amd64.find((a) => a.name.endsWith(".AppImage")) || amd64[0];
+    return `${primary ? `<a class="primary-dl" href="${primary.browser_download_url}">Download AppImage (amd64)</a>` : ""}
+      ${row("amd64", amd64)}
+      ${row("arm64", arm64)}`;
+  }
+
+  const RENDER = { mac: renderMac, windows: renderWindows, linux: renderLinux };
+  const LABEL = { mac: "macOS", windows: "Windows", linux: "Linux" };
+
+  function renderTabs(active, onSelect) {
+    osTabs.innerHTML = "";
+    for (const os of ["mac", "windows", "linux"]) {
+      const btn = document.createElement("button");
+      btn.className = "os-tab" + (os === active ? " active" : "");
+      btn.textContent = LABEL[os];
+      btn.onclick = () => onSelect(os);
+      osTabs.appendChild(btn);
+    }
+  }
+
+  try {
+    const res = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, {
+      headers: { Accept: "application/vnd.github+json" },
+    });
+    if (!res.ok) throw new Error(`GitHub API ${res.status}`);
+    const release = await res.json();
+    const assets = release.assets || [];
+
+    versionBadge.textContent = `Latest: ${release.tag_name}`;
+    versionBadge.title = `Released ${new Date(release.published_at).toLocaleDateString()}`;
+
+    let current = detectOS();
+    function select(os) {
+      current = os;
+      renderTabs(current, select);
+      downloadArea.className = "";
+      downloadArea.innerHTML = RENDER[os](assets);
+    }
+    select(current);
+  } catch (err) {
+    versionBadge.textContent = "Version check unavailable";
+    downloadArea.innerHTML = `<p class="loading">Could not reach the GitHub API — see
+      <a href="https://github.com/${REPO}/releases">Releases</a> directly.</p>`;
+    console.error(err);
+  }
+})();
+</script>
+
+</body>
+</html>
