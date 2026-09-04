@@ -190,13 +190,35 @@ export function RefListField({
   );
 }
 
+type VolumeKind = "pvc" | "configMap" | "secret";
+
 /**
- * Pod volumes backed by a claim.
- *
- * Only the claim-backed shape is modelled: it is the one that references
- * another object and therefore the one worth choosing rather than typing.
- * Volumes of any other shape are listed read-only so the form never silently
- * drops them.
+ * The object-reference key each kind stores its reference under, and inside
+ * that, the field holding the referenced name — asymmetric in the
+ * Kubernetes API itself (`configMap.name` but `secret.secretName`), not a
+ * choice made here.
+ */
+const VOLUME_KIND: Record<
+  VolumeKind,
+  { key: string; field: string; source: string; label: string }
+> = {
+  pvc: { key: "persistentVolumeClaim", field: "claimName", source: "persistentVolumeClaims", label: "Claim" },
+  configMap: { key: "configMap", field: "name", source: "configMaps", label: "ConfigMap" },
+  secret: { key: "secret", field: "secretName", source: "secrets", label: "Secret" },
+};
+
+function volumeKind(volume: Obj): VolumeKind | null {
+  if (volume.persistentVolumeClaim !== undefined) return "pvc";
+  if (volume.configMap !== undefined) return "configMap";
+  if (volume.secret !== undefined) return "secret";
+  return null;
+}
+
+/**
+ * Pod volumes backed by another object: a claim, a ConfigMap or a Secret —
+ * the three shapes worth choosing from the cluster rather than typing.
+ * Volumes of any other shape (`emptyDir`, `hostPath`, …) are listed read-only
+ * so the form never silently drops them.
  */
 export function VolumesField({
   value,
@@ -206,57 +228,77 @@ export function VolumesField({
   onChange: (next: Obj[] | undefined) => void;
 }) {
   const all = Array.isArray(value) ? (value as Obj[]) : [];
-  const claims = all.filter((volume) => volume.persistentVolumeClaim !== undefined);
-  const others = all.filter((volume) => volume.persistentVolumeClaim === undefined);
-  const { options, loading, error } = useLookup("persistentVolumeClaims", null);
+  const managed = all.filter((volume) => volumeKind(volume) !== null);
+  const others = all.filter((volume) => volumeKind(volume) === null);
 
-  const write = (nextClaims: Obj[]) => {
-    const next = [...others, ...nextClaims];
+  const write = (nextManaged: Obj[]) => {
+    const next = [...others, ...nextManaged];
     onChange(next.length ? next : undefined);
   };
   const update = (index: number, patch: Obj) => {
-    const next = claims.slice();
+    const next = managed.slice();
     next[index] = { ...next[index], ...patch };
+    write(next);
+  };
+  const setKind = (index: number, kind: VolumeKind) => {
+    const { key, field } = VOLUME_KIND[kind];
+    // A whole replacement, not a merge — `update` layers its patch onto the
+    // existing volume, which would leave the old reference key sitting next
+    // to the new one. A volume has exactly one source; an object naming two
+    // is rejected by the apiserver.
+    const next = managed.slice();
+    next[index] = { name: managed[index]!.name, [key]: { [field]: "" } };
     write(next);
   };
 
   return (
     <div className="volumes">
-      {claims.map((volume, index) => (
-        <div key={index} className="volumes__row">
-          <input
-            value={typeof volume.name === "string" ? volume.name : ""}
-            placeholder="volume name"
-            onChange={(e) => update(index, { name: e.target.value })}
-          />
-          <OptionSelect
-            value={String(
-              (volume.persistentVolumeClaim as Obj | undefined)?.claimName ?? "",
-            )}
-            options={options}
-            loading={loading}
-            error={error}
-            allowCustom
-            placeholder="claim"
-            onChange={(claimName) => update(index, { persistentVolumeClaim: { claimName } })}
-          />
-          <button
-            type="button"
-            className="icon-button"
-            onClick={() => write(claims.filter((_, at) => at !== index))}
-            aria-label="Remove"
-          >
-            ✕
-          </button>
-        </div>
-      ))}
+      {managed.map((volume, index) => {
+        const kind = volumeKind(volume)!;
+        const { key, field, source } = VOLUME_KIND[kind];
+        const refValue = String((volume[key] as Obj | undefined)?.[field] ?? "");
+        return (
+          <div key={index} className="volumes__row">
+            <input
+              value={typeof volume.name === "string" ? volume.name : ""}
+              placeholder="volume name"
+              onChange={(e) => update(index, { name: e.target.value })}
+            />
+            <select value={kind} onChange={(e) => setKind(index, e.target.value as VolumeKind)}>
+              {(Object.keys(VOLUME_KIND) as VolumeKind[]).map((k) => (
+                <option key={k} value={k}>
+                  {VOLUME_KIND[k].label}
+                </option>
+              ))}
+            </select>
+            <LookupField
+              id={`volume-${index}-ref`}
+              source={source}
+              allowCustom
+              placeholder={VOLUME_KIND[kind].label.toLowerCase()}
+              value={refValue}
+              onChange={(next) => update(index, { [key]: { [field]: next ?? "" } })}
+            />
+            <button
+              type="button"
+              className="icon-button"
+              onClick={() => write(managed.filter((_, at) => at !== index))}
+              aria-label="Remove"
+            >
+              ✕
+            </button>
+          </div>
+        );
+      })}
 
       <button
         type="button"
         className="button button--ghost"
-        onClick={() => write([...claims, { name: "data", persistentVolumeClaim: { claimName: "" } }])}
+        onClick={() =>
+          write([...managed, { name: "data", persistentVolumeClaim: { claimName: "" } }])
+        }
       >
-        Add claim volume
+        Add volume
       </button>
 
       {others.length > 0 && (

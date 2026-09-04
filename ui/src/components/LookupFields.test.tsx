@@ -147,22 +147,74 @@ describe("RefListField", () => {
 });
 
 describe("VolumesField", () => {
-  it("edits claim-backed volumes and leaves the rest alone", async () => {
+  const rows = () => [...document.querySelectorAll(".volumes__row")] as HTMLDivElement[];
+  const nameInput = (row: HTMLElement) => row.querySelector("input") as HTMLInputElement;
+  const kindSelect = (row: HTMLElement) => row.querySelectorAll("select")[0] as HTMLSelectElement;
+  // The reference control is a LookupField: a <select> once its value is
+  // recognised (or empty), an <input> when it is unrecognised or being typed.
+  const refControl = (row: HTMLElement) =>
+    (row.querySelector(".lookup select") ?? row.querySelector(".lookup input")) as
+      | HTMLSelectElement
+      | HTMLInputElement;
+
+  it("edits a claim-backed volume and leaves an unmodeled one alone", async () => {
     lookupOptions.mockResolvedValue([option("data-0", "Bound 10Gi")]);
     const onChange = vi.fn();
     const volumes = [
-      { name: "config", configMap: { name: "settings" } },
+      { name: "cache", emptyDir: {} },
       { name: "data", persistentVolumeClaim: { claimName: "data-0" } },
     ];
     scope(<VolumesField value={volumes} onChange={onChange} />);
 
-    // A volume the form does not model must survive an edit to one it does.
+    // A volume shape the form does not model must survive an edit to one it does.
     expect(await screen.findByText(/kept as they are/)).toBeTruthy();
+    expect(screen.getByText(/cache/)).toBeTruthy();
 
-    fireEvent.change(screen.getByDisplayValue("data"), { target: { value: "storage" } });
+    fireEvent.change(nameInput(rows()[0]!), { target: { value: "storage" } });
     expect(onChange).toHaveBeenCalledWith([
-      { name: "config", configMap: { name: "settings" } },
+      { name: "cache", emptyDir: {} },
       { name: "storage", persistentVolumeClaim: { claimName: "data-0" } },
+    ]);
+  });
+
+  it("writes a ConfigMap and a Secret reference under the API's own field names", async () => {
+    lookupOptions.mockResolvedValue([]);
+    const onChange = vi.fn();
+    const volumes = [
+      { name: "config", configMap: { name: "settings" } },
+      { name: "tls", secret: { secretName: "tls-cert" } },
+    ];
+    scope(<VolumesField value={volumes} onChange={onChange} />);
+    await waitFor(() => expect(lookupOptions).toHaveBeenCalled());
+
+    // `configMap.name`, but `secret.secretName` — the apiserver's asymmetry,
+    // not a typo, and the one thing this field must get exactly right.
+    fireEvent.change(refControl(rows()[0]!), { target: { value: "other-config" } });
+    expect(onChange).toHaveBeenCalledWith([
+      { name: "config", configMap: { name: "other-config" } },
+      { name: "tls", secret: { secretName: "tls-cert" } },
+    ]);
+  });
+
+  it("drops the old reference when a volume's source kind changes", async () => {
+    lookupOptions.mockResolvedValue([]);
+    const onChange = vi.fn();
+    const volumes = [{ name: "data", persistentVolumeClaim: { claimName: "data-0" } }];
+    scope(<VolumesField value={volumes} onChange={onChange} />);
+    await waitFor(() => expect(lookupOptions).toHaveBeenCalled());
+
+    fireEvent.change(kindSelect(rows()[0]!), { target: { value: "secret" } });
+    // Keeping `persistentVolumeClaim` alongside the new `secret` key would be
+    // an object naming two sources, which the apiserver rejects outright.
+    expect(onChange).toHaveBeenCalledWith([{ name: "data", secret: { secretName: "" } }]);
+  });
+
+  it("starts a new volume as an (empty) claim", () => {
+    const onChange = vi.fn();
+    scope(<VolumesField value={[]} onChange={onChange} />);
+    fireEvent.click(screen.getByText("Add volume"));
+    expect(onChange).toHaveBeenCalledWith([
+      { name: "data", persistentVolumeClaim: { claimName: "" } },
     ]);
   });
 });

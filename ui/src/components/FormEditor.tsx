@@ -663,6 +663,70 @@ function ContainersEditor({
     onChange(next);
   };
 
+  // Only the two key-backed shapes are modelled — the ones that name a
+  // ConfigMap or Secret and therefore benefit from a picker. `fieldRef` and
+  // `resourceFieldRef` (downward API) are left exactly as the existing
+  // disabled-input fallback already handles them.
+  const envSource = (variable: Obj): "literal" | "configMap" | "secret" | "other" => {
+    if (variable.valueFrom === undefined) return "literal";
+    const from = variable.valueFrom as Obj;
+    if (from.configMapKeyRef !== undefined) return "configMap";
+    if (from.secretKeyRef !== undefined) return "secret";
+    return "other";
+  };
+  const envRef = (variable: Obj, source: "configMap" | "secret"): { name: string; key: string } => {
+    const refKey = source === "configMap" ? "configMapKeyRef" : "secretKeyRef";
+    const ref = ((variable.valueFrom as Obj)?.[refKey] as Obj) ?? {};
+    return { name: String(ref.name ?? ""), key: String(ref.key ?? "") };
+  };
+  const setEnvSource = (
+    index: number,
+    env: Obj[],
+    position: number,
+    source: "literal" | "configMap" | "secret",
+  ) => {
+    const name = env[position]!.name;
+    const next = env.slice();
+    next[position] =
+      source === "literal"
+        ? { name, value: "" }
+        : {
+            name,
+            valueFrom: {
+              [source === "configMap" ? "configMapKeyRef" : "secretKeyRef"]: { name: "", key: "" },
+            },
+          };
+    patch(index, "env", next);
+  };
+  const setEnvRef = (
+    index: number,
+    env: Obj[],
+    position: number,
+    source: "configMap" | "secret",
+    patchRef: Partial<{ name: string; key: string }>,
+  ) => {
+    const refKey = source === "configMap" ? "configMapKeyRef" : "secretKeyRef";
+    const next = env.slice();
+    next[position] = {
+      ...next[position],
+      valueFrom: { [refKey]: { ...envRef(next[position]!, source), ...patchRef } },
+    };
+    patch(index, "env", next);
+  };
+
+  // `envFrom` imports every key of a ConfigMap or Secret as an environment
+  // variable at once — the bulk counterpart to picking one key at a time.
+  const envFromKind = (entry: Obj): "configMap" | "secret" | null => {
+    if (entry.configMapRef !== undefined) return "configMap";
+    if (entry.secretRef !== undefined) return "secret";
+    return null;
+  };
+  const setEnvFrom = (index: number, envFrom: Obj[], position: number, next: Obj) => {
+    const all = envFrom.slice();
+    all[position] = next;
+    patch(index, "envFrom", all);
+  };
+
   const resourceValue = (container: Obj, bucket: string, key: string) => {
     const resources = (container.resources ?? {}) as Obj;
     const group = (resources[bucket] ?? {}) as Obj;
@@ -673,6 +737,7 @@ function ContainersEditor({
     <div className="containers">
       {value.map((container, index) => {
         const env = Array.isArray(container.env) ? (container.env as Obj[]) : [];
+        const envFrom = Array.isArray(container.envFrom) ? (container.envFrom as Obj[]) : [];
         const mounts = Array.isArray(container.volumeMounts) ? (container.volumeMounts as Obj[]) : [];
         return (
           <div className="containers__item" key={index}>
@@ -738,39 +803,147 @@ function ContainersEditor({
             <div className="field field--wide">
               <label className="field__label">Environment</label>
               <div className="kv">
-                {env.map((variable, position) => (
-                  <div className="kv__row" key={position}>
-                    <input
-                      value={String(variable.name ?? "")}
-                      onChange={(e) => {
-                        const next = env.slice();
-                        next[position] = { ...variable, name: e.target.value };
-                        patch(index, "env", next);
-                      }}
-                    />
-                    <input
-                      value={String(variable.value ?? "")}
-                      placeholder={variable.valueFrom ? "(from reference)" : ""}
-                      disabled={Boolean(variable.valueFrom)}
-                      onChange={(e) => {
-                        const next = env.slice();
-                        next[position] = { ...variable, value: e.target.value };
-                        patch(index, "env", next);
-                      }}
-                    />
-                    <button
-                      className="icon-button"
-                      onClick={() => patch(index, "env", env.filter((_, i) => i !== position))}
-                    >
-                      ✕
-                    </button>
-                  </div>
-                ))}
+                {env.map((variable, position) => {
+                  const source = envSource(variable);
+                  return (
+                    <div className="kv__row" key={position}>
+                      <input
+                        value={String(variable.name ?? "")}
+                        placeholder="NAME"
+                        onChange={(e) => {
+                          const next = env.slice();
+                          next[position] = { ...variable, name: e.target.value };
+                          patch(index, "env", next);
+                        }}
+                      />
+                      {source === "other" ? (
+                        <input value="" placeholder="(from reference — edit in YAML)" disabled />
+                      ) : (
+                        <select
+                          value={source}
+                          onChange={(e) =>
+                            setEnvSource(
+                              index,
+                              env,
+                              position,
+                              e.target.value as "literal" | "configMap" | "secret",
+                            )
+                          }
+                        >
+                          <option value="literal">Value</option>
+                          <option value="configMap">ConfigMap key</option>
+                          <option value="secret">Secret key</option>
+                        </select>
+                      )}
+                      {source === "literal" && (
+                        <input
+                          value={String(variable.value ?? "")}
+                          placeholder="value"
+                          onChange={(e) => {
+                            const next = env.slice();
+                            next[position] = { ...variable, value: e.target.value };
+                            patch(index, "env", next);
+                          }}
+                        />
+                      )}
+                      {(source === "configMap" || source === "secret") && (
+                        <>
+                          <LookupField
+                            id={`env-${index}-${position}-ref`}
+                            source={source === "configMap" ? "configMaps" : "secrets"}
+                            allowCustom
+                            placeholder={source === "configMap" ? "ConfigMap" : "Secret"}
+                            value={envRef(variable, source).name}
+                            onChange={(next) => setEnvRef(index, env, position, source, { name: next ?? "" })}
+                          />
+                          <input
+                            value={envRef(variable, source).key}
+                            placeholder="key"
+                            onChange={(e) =>
+                              setEnvRef(index, env, position, source, { key: e.target.value })
+                            }
+                          />
+                        </>
+                      )}
+                      <button
+                        className="icon-button"
+                        onClick={() => patch(index, "env", env.filter((_, i) => i !== position))}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  );
+                })}
                 <button
                   className="button button--ghost"
                   onClick={() => patch(index, "env", [...env, { name: "", value: "" }])}
                 >
                   + Add variable
+                </button>
+              </div>
+            </div>
+
+            <div className="field field--wide">
+              <label className="field__label">
+                Environment from
+                <span className="field__help">
+                  Every key of a ConfigMap or Secret, imported as an environment variable at once.
+                </span>
+              </label>
+              <div className="kv">
+                {envFrom.map((entry, position) => {
+                  const kind = envFromKind(entry);
+                  if (!kind) return null;
+                  const refKey = kind === "configMap" ? "configMapRef" : "secretRef";
+                  const refName = String(((entry[refKey] as Obj) ?? {}).name ?? "");
+                  return (
+                    <div className="kv__row" key={position}>
+                      <select
+                        value={kind}
+                        onChange={(e) =>
+                          setEnvFrom(index, envFrom, position, {
+                            [e.target.value === "configMap" ? "configMapRef" : "secretRef"]: { name: "" },
+                          })
+                        }
+                      >
+                        <option value="configMap">ConfigMap</option>
+                        <option value="secret">Secret</option>
+                      </select>
+                      <LookupField
+                        id={`envfrom-${index}-${position}`}
+                        source={kind === "configMap" ? "configMaps" : "secrets"}
+                        allowCustom
+                        value={refName}
+                        onChange={(next) =>
+                          setEnvFrom(index, envFrom, position, { [refKey]: { name: next ?? "" } })
+                        }
+                      />
+                      <input
+                        value={String(entry.prefix ?? "")}
+                        placeholder="prefix (optional)"
+                        onChange={(e) => {
+                          const next = { ...entry };
+                          if (e.target.value === "") delete next.prefix;
+                          else next.prefix = e.target.value;
+                          setEnvFrom(index, envFrom, position, next);
+                        }}
+                      />
+                      <button
+                        className="icon-button"
+                        onClick={() => patch(index, "envFrom", envFrom.filter((_, i) => i !== position))}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  );
+                })}
+                <button
+                  className="button button--ghost"
+                  onClick={() =>
+                    patch(index, "envFrom", [...envFrom, { configMapRef: { name: "" } }])
+                  }
+                >
+                  + Add source
                 </button>
               </div>
             </div>

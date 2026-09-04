@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FormEditor } from "./FormEditor";
 import type { ApplyOutcome, EditRequest } from "../types";
@@ -198,6 +198,146 @@ describe("FormEditor", () => {
         metadata: { name: "data" },
         spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: "20Gi" } } },
       },
+    ]);
+  });
+
+  function mountBareDeployment() {
+    applyEdit.mockResolvedValue({ status: "applied", yaml: "", resourceVersion: "2" });
+    render(
+      <FormEditor
+        cluster="default"
+        resource="apps/v1/deployments"
+        group="apps"
+        kind="Deployment"
+        namespace="production"
+        name="backend"
+        initial={{
+          apiVersion: "apps/v1",
+          kind: "Deployment",
+          metadata: { name: "backend", namespace: "production" },
+          spec: { template: { spec: { containers: [{ name: "backend", image: "nginx" }] } } },
+        }}
+        onApplied={vi.fn()}
+      />,
+    );
+  }
+
+  it("sources an environment variable from a ConfigMap key", async () => {
+    mountBareDeployment();
+
+    fireEvent.click(screen.getByRole("button", { name: "+ Add variable" }));
+    const row = document.querySelector(".kv__row") as HTMLElement;
+    fireEvent.change(row.querySelector("input")!, { target: { value: "DB_HOST" } });
+    fireEvent.change(row.querySelector("select")!, { target: { value: "configMap" } });
+
+    // The ConfigMap doesn't exist in the cluster yet, so its name is typed.
+    // Inputs in the row, in DOM order: the variable's own name, then the
+    // reference name (now typed, not selected), then the key.
+    fireEvent.click(within(row).getByText("type a name"));
+    const [, nameRef, key] = row.querySelectorAll("input") as unknown as [
+      HTMLInputElement,
+      HTMLInputElement,
+      HTMLInputElement,
+    ];
+    fireEvent.change(nameRef, { target: { value: "app-config" } });
+    fireEvent.change(key, { target: { value: "host" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const sent = JSON.parse(applyEdit.mock.calls[0]![1].yaml);
+    expect(sent.spec.template.spec.containers[0].env).toEqual([
+      { name: "DB_HOST", valueFrom: { configMapKeyRef: { name: "app-config", key: "host" } } },
+    ]);
+  });
+
+  it("sources an environment variable from a Secret key", async () => {
+    mountBareDeployment();
+
+    fireEvent.click(screen.getByRole("button", { name: "+ Add variable" }));
+    const row = document.querySelector(".kv__row") as HTMLElement;
+    fireEvent.change(row.querySelector("input")!, { target: { value: "DB_PASSWORD" } });
+    fireEvent.change(row.querySelector("select")!, { target: { value: "secret" } });
+
+    fireEvent.click(within(row).getByText("type a name"));
+    const [, nameRef, key] = row.querySelectorAll("input") as unknown as [
+      HTMLInputElement,
+      HTMLInputElement,
+      HTMLInputElement,
+    ];
+    fireEvent.change(nameRef, { target: { value: "db-credentials" } });
+    fireEvent.change(key, { target: { value: "password" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const sent = JSON.parse(applyEdit.mock.calls[0]![1].yaml);
+    expect(sent.spec.template.spec.containers[0].env).toEqual([
+      {
+        name: "DB_PASSWORD",
+        valueFrom: { secretKeyRef: { name: "db-credentials", key: "password" } },
+      },
+    ]);
+  });
+
+  it("keeps a downward-API env var (fieldRef) untouched and unselectable", async () => {
+    applyEdit.mockResolvedValue({ status: "applied", yaml: "", resourceVersion: "2" });
+    render(
+      <FormEditor
+        cluster="default"
+        resource="apps/v1/deployments"
+        group="apps"
+        kind="Deployment"
+        namespace="production"
+        name="backend"
+        initial={{
+          apiVersion: "apps/v1",
+          kind: "Deployment",
+          metadata: { name: "backend", namespace: "production" },
+          spec: {
+            template: {
+              spec: {
+                containers: [
+                  {
+                    name: "backend",
+                    image: "nginx",
+                    env: [{ name: "POD_IP", valueFrom: { fieldRef: { fieldPath: "status.podIP" } } }],
+                  },
+                ],
+              },
+            },
+          },
+        }}
+        onApplied={vi.fn()}
+      />,
+    );
+
+    const row = document.querySelector(".kv__row") as HTMLElement;
+    // No source select for a shape this field does not model — nothing to
+    // pick that could silently rewrite it.
+    expect(row.querySelector("select")).toBeNull();
+    expect((row.querySelectorAll("input")[1] as HTMLInputElement).disabled).toBe(true);
+
+    // Renaming the variable is a real, in-model edit — unlike its value, which
+    // this field never touches — and must carry `fieldRef` through unharmed.
+    fireEvent.change(row.querySelectorAll("input")[0]!, { target: { value: "POD_IP_ADDR" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const sent = JSON.parse(applyEdit.mock.calls[0]![1].yaml);
+    expect(sent.spec.template.spec.containers[0].env).toEqual([
+      { name: "POD_IP_ADDR", valueFrom: { fieldRef: { fieldPath: "status.podIP" } } },
+    ]);
+  });
+
+  it("imports every key of a ConfigMap or Secret as environment variables", async () => {
+    mountBareDeployment();
+
+    fireEvent.click(screen.getByRole("button", { name: "+ Add source" }));
+    const row = document.querySelector(".kv__row") as HTMLElement;
+    fireEvent.change(row.querySelector("select")!, { target: { value: "secret" } });
+    fireEvent.click(within(row).getByText("type a name"));
+    fireEvent.change(row.querySelectorAll("input")[0]!, { target: { value: "app-secrets" } });
+    fireEvent.change(row.querySelectorAll("input")[1]!, { target: { value: "APP_" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const sent = JSON.parse(applyEdit.mock.calls[0]![1].yaml);
+    expect(sent.spec.template.spec.containers[0].envFrom).toEqual([
+      { secretRef: { name: "app-secrets" }, prefix: "APP_" },
     ]);
   });
 });

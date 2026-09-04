@@ -144,7 +144,7 @@ function podTemplate(prefix: string): Section[] {
           kind: "volumes",
           path: `${prefix}.spec.volumes`,
           label: "Volumes",
-          help: "Claims are listed from this namespace; a claim you are about to create can be typed in.",
+          help: "A claim, ConfigMap or Secret from this namespace — or type the name of one you are about to create.",
         },
       ],
     },
