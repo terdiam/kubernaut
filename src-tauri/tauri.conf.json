@@ -48,7 +48,7 @@
       "endpoints": [
         "https://github.com/terdiam/kubernaut/releases/latest/download/latest.json"
       ],
-      "pubkey": "",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEE4QjMwNkM3NkU2RTg4NkQKUldSdGlHNXV4d2F6cUJsc3VwL1EyNzdFRXBYQUxUcDg0Ti9HNEFRMFJReVdaTEd2NFI0WmxWWFkK",
       "windows": {
         "installMode": "passive"
       }
