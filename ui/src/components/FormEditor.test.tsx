@@ -91,4 +91,113 @@ describe("FormEditor", () => {
     expect(applyEdit).toHaveBeenCalledTimes(2);
     expect(applyEdit.mock.calls[1]![1].force).toBe(true);
   });
+
+  it("lets a container mount a volume the pod already declares", async () => {
+    applyEdit.mockResolvedValue({ status: "applied", yaml: "", resourceVersion: "2" });
+    render(
+      <FormEditor
+        cluster="default"
+        resource="apps/v1/deployments"
+        group="apps"
+        kind="Deployment"
+        namespace="production"
+        name="backend"
+        initial={{
+          apiVersion: "apps/v1",
+          kind: "Deployment",
+          metadata: { name: "backend", namespace: "production" },
+          spec: {
+            template: {
+              spec: {
+                containers: [{ name: "backend", image: "registry.example/backend:1.4.2" }],
+                // Already declared, so the mount below is offered by name, not typed blind.
+                volumes: [{ name: "data", persistentVolumeClaim: { claimName: "data" } }],
+              },
+            },
+          },
+        }}
+        onApplied={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "+ Add mount" }));
+    // The suggested volume is filled in automatically; only the path is typed.
+    const volumeField = screen.getByPlaceholderText("which volume") as HTMLInputElement;
+    expect(volumeField.value).toBe("data");
+    fireEvent.change(screen.getByPlaceholderText("/path/in/container"), {
+      target: { value: "/var/lib/app" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const sent = JSON.parse(applyEdit.mock.calls[0]![1].yaml);
+    expect(sent.spec.template.spec.containers[0].volumeMounts).toEqual([
+      { name: "data", mountPath: "/var/lib/app" },
+    ]);
+  });
+
+  it("suggests a StatefulSet's own volume claim template as a mount target", async () => {
+    render(
+      <FormEditor
+        cluster="default"
+        resource="apps/v1/statefulsets"
+        group="apps"
+        kind="StatefulSet"
+        namespace="production"
+        name="db"
+        initial={{
+          apiVersion: "apps/v1",
+          kind: "StatefulSet",
+          metadata: { name: "db", namespace: "production" },
+          spec: {
+            serviceName: "db",
+            replicas: 1,
+            template: { spec: { containers: [{ name: "postgres", image: "postgres:16" }] } },
+            // No `spec.volumes` entry — StatefulSet gives each template an
+            // implicit volume, so the suggestion has to come from here.
+            volumeClaimTemplates: [
+              { metadata: { name: "data" }, spec: { resources: { requests: { storage: "10Gi" } } } },
+            ],
+          },
+        }}
+        onApplied={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "+ Add mount" }));
+    const volumeField = screen.getByPlaceholderText("which volume") as HTMLInputElement;
+    expect(volumeField.value).toBe("data");
+  });
+
+  it("provisions per-replica storage for a StatefulSet from a volume claim template", async () => {
+    applyEdit.mockResolvedValue({ status: "applied", yaml: "", resourceVersion: "2" });
+    render(
+      <FormEditor
+        cluster="default"
+        resource="apps/v1/statefulsets"
+        group="apps"
+        kind="StatefulSet"
+        namespace="production"
+        name="db"
+        initial={{
+          apiVersion: "apps/v1",
+          kind: "StatefulSet",
+          metadata: { name: "db", namespace: "production" },
+          spec: { serviceName: "db", replicas: 1 },
+        }}
+        onApplied={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "+ Add volume claim template" }));
+    fireEvent.change(screen.getByPlaceholderText("10Gi"), { target: { value: "20Gi" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const sent = JSON.parse(applyEdit.mock.calls[0]![1].yaml);
+    expect(sent.spec.volumeClaimTemplates).toEqual([
+      {
+        metadata: { name: "data" },
+        spec: { accessModes: ["ReadWriteOnce"], resources: { requests: { storage: "20Gi" } } },
+      },
+    ]);
+  });
 });

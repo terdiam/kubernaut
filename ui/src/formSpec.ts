@@ -39,7 +39,9 @@ export type Field =
   /** Host/path routing, with the backend Service and port chosen from the cluster. */
   | { kind: "ingressRules"; path: string; label: string; help?: string }
   /** Pod volumes backed by a claim, chosen from the claims that exist. */
-  | { kind: "volumes"; path: string; label: string; help?: string };
+  | { kind: "volumes"; path: string; label: string; help?: string }
+  /** StatefulSet-only: templates that provision one PVC per replica. */
+  | { kind: "volumeClaimTemplates"; path: string; label: string; help?: string };
 
 /** Where a reference field's options come from. Matches the Rust lookup. */
 export type LookupSource =
@@ -219,6 +221,21 @@ const STATEFULSET: Section[] = [
     ],
   },
   ...podTemplate("spec.template"),
+  {
+    title: "Storage",
+    description:
+      "One PersistentVolumeClaim per replica, provisioned from each template and named " +
+      "<template>-<pod>. Immutable after creation — changing a template does not resize " +
+      "or replace claims that already exist.",
+    fields: [
+      {
+        kind: "volumeClaimTemplates",
+        path: "spec.volumeClaimTemplates",
+        label: "Volume claim templates",
+        help: "Mount one of these under Containers → Volume mounts, by the template's name.",
+      },
+    ],
+  },
   METADATA,
 ];
 

@@ -3,7 +3,7 @@ import { api } from "../api";
 import { formSections, type Field, type Section } from "../formSpec";
 import { getPath, setPath } from "../path";
 import { prunedApply } from "../applyPrune";
-import { FormContext } from "../formContext";
+import { FormContext, useFormScope } from "../formContext";
 import { LookupField, RefListField, VolumesField } from "./LookupFields";
 import { IngressRulesField } from "./IngressRules";
 import type { DiffResult, FieldConflict } from "../types";
@@ -333,6 +333,12 @@ export function FieldRow({
       return (
         <ContainersEditor
           value={Array.isArray(value) ? (value as Obj[]) : []}
+          // The pod's own volumes live one level up, at a path this field's own
+          // path always predicts (`<prefix>.spec.containers` next to
+          // `<prefix>.spec.volumes` — see `podTemplate`) — so a mount can offer
+          // what the Volumes field already declared, without either field
+          // needing to know about the other's existence.
+          volumesPath={field.path.replace(/\.containers$/, ".volumes")}
           onChange={(next) => onChange(field.path, next)}
         />
       );
@@ -389,6 +395,17 @@ export function FieldRow({
         <div className="field field--wide">
           {label}
           <IngressRulesField value={value} onChange={(next) => onChange(field.path, next)} />
+        </div>
+      );
+
+    case "volumeClaimTemplates":
+      return (
+        <div className="field field--wide">
+          {label}
+          <VolumeClaimTemplatesEditor
+            value={Array.isArray(value) ? (value as Obj[]) : []}
+            onChange={(next) => onChange(field.path, next.length ? next : undefined)}
+          />
         </div>
       );
   }
@@ -592,11 +609,36 @@ function ServicePortsEditor({
 
 function ContainersEditor({
   value,
+  volumesPath,
   onChange,
 }: {
   value: Obj[];
+  volumesPath: string;
   onChange: (next: Obj[]) => void;
 }) {
+  const { draft } = useFormScope();
+  // Names only, and only the ones the Volumes field manages (claim-backed) —
+  // the rest are still real volumes, just not ones this form declared, so
+  // typing their name into a mount is still allowed, just not suggested.
+  const podVolumes = getPath(draft, volumesPath);
+  // `volumeClaimTemplates` is always at this one path, unlike the pod template
+  // above it — StatefulSet is the only kind with it, and Kubernetes gives each
+  // template an implicit volume of the same name, with no `spec.volumes` entry
+  // needed. A different kind simply has nothing at this path.
+  const claimTemplates = getPath(draft, "spec.volumeClaimTemplates");
+  const volumeNames = [
+    ...(Array.isArray(podVolumes) ? podVolumes : []),
+    ...(Array.isArray(claimTemplates) ? claimTemplates : []),
+  ]
+    .map((v) => {
+      if (!v || typeof v !== "object") return "";
+      const direct = (v as Obj).name;
+      if (typeof direct === "string") return direct;
+      const meta = (v as Obj).metadata;
+      return meta && typeof meta === "object" ? String((meta as Obj).name ?? "") : "";
+    })
+    .filter(Boolean);
+
   const patch = (index: number, key: string, val: unknown) => {
     const next = value.slice();
     const entry = { ...(next[index] ?? {}) };
@@ -631,6 +673,7 @@ function ContainersEditor({
     <div className="containers">
       {value.map((container, index) => {
         const env = Array.isArray(container.env) ? (container.env as Obj[]) : [];
+        const mounts = Array.isArray(container.volumeMounts) ? (container.volumeMounts as Obj[]) : [];
         return (
           <div className="containers__item" key={index}>
             <div className="containers__head">
@@ -731,6 +774,82 @@ function ContainersEditor({
                 </button>
               </div>
             </div>
+
+            <div className="field field--wide">
+              <label className="field__label">
+                Volume mounts
+                <span className="field__help">
+                  Name matches a volume from Volumes below, or one of this workload's volume
+                  claim templates.
+                </span>
+              </label>
+              <div className="kv">
+                {mounts.map((mount, position) => (
+                  <div className="kv__row" key={position}>
+                    <input
+                      value={String(mount.name ?? "")}
+                      placeholder="which volume"
+                      list={volumeNames.length > 0 ? `container-${index}-volumes` : undefined}
+                      onChange={(e) => {
+                        const next = mounts.slice();
+                        next[position] = { ...mount, name: e.target.value };
+                        patch(index, "volumeMounts", next);
+                      }}
+                    />
+                    <input
+                      value={String(mount.mountPath ?? "")}
+                      placeholder="/path/in/container"
+                      onChange={(e) => {
+                        const next = mounts.slice();
+                        next[position] = { ...mount, mountPath: e.target.value };
+                        patch(index, "volumeMounts", next);
+                      }}
+                    />
+                    <label className="field--inline" title="Read only">
+                      <input
+                        type="checkbox"
+                        checked={mount.readOnly === true}
+                        onChange={(e) => {
+                          const next = mounts.slice();
+                          const updated = { ...mount };
+                          if (e.target.checked) updated.readOnly = true;
+                          else delete updated.readOnly;
+                          next[position] = updated;
+                          patch(index, "volumeMounts", next);
+                        }}
+                      />
+                      RO
+                    </label>
+                    <button
+                      className="icon-button"
+                      onClick={() =>
+                        patch(index, "volumeMounts", mounts.filter((_, i) => i !== position))
+                      }
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+                {volumeNames.length > 0 && (
+                  <datalist id={`container-${index}-volumes`}>
+                    {volumeNames.map((name) => (
+                      <option key={name} value={name} />
+                    ))}
+                  </datalist>
+                )}
+                <button
+                  className="button button--ghost"
+                  onClick={() =>
+                    patch(index, "volumeMounts", [
+                      ...mounts,
+                      { name: volumeNames[0] ?? "", mountPath: "" },
+                    ])
+                  }
+                >
+                  + Add mount
+                </button>
+              </div>
+            </div>
           </div>
         );
       })}
@@ -739,6 +858,119 @@ function ContainersEditor({
         onClick={() => onChange([...value, { name: "", image: "" }])}
       >
         + Add container
+      </button>
+    </div>
+  );
+}
+
+const ACCESS_MODES = ["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany", "ReadWriteOncePod"];
+
+/**
+ * StatefulSet-only: one PVC per replica, provisioned from each template.
+ *
+ * Distinct from the pod-level Volumes field, which references a claim that
+ * already exists — a template instead tells the cluster to create one, and
+ * only StatefulSet has this. Access mode is modelled as one choice because
+ * that is what every template in practice uses; a multi-mode claim can still
+ * be built in the YAML tab.
+ */
+function VolumeClaimTemplatesEditor({
+  value,
+  onChange,
+}: {
+  value: Obj[];
+  onChange: (next: Obj[]) => void;
+}) {
+  const name = (t: Obj) => String(((t.metadata as Obj)?.name as string) ?? "");
+  const capacity = (t: Obj) =>
+    String((((t.spec as Obj)?.resources as Obj)?.requests as Obj)?.storage ?? "");
+  const storageClass = (t: Obj) => String((t.spec as Obj)?.storageClassName ?? "");
+  const accessMode = (t: Obj) => {
+    const modes = (t.spec as Obj)?.accessModes;
+    return Array.isArray(modes) && typeof modes[0] === "string" ? modes[0] : "ReadWriteOnce";
+  };
+
+  const patch = (index: number, next: Obj) => {
+    const all = value.slice();
+    all[index] = next;
+    onChange(all);
+  };
+  const patchName = (index: number, next: string) =>
+    patch(index, { ...value[index], metadata: { ...(value[index]!.metadata as Obj), name: next } });
+  const patchSpec = (index: number, key: string, val: unknown) => {
+    const spec = { ...((value[index]!.spec as Obj) ?? {}) };
+    if (val === undefined || val === "") delete spec[key];
+    else spec[key] = val;
+    patch(index, { ...value[index], spec });
+  };
+  const patchCapacity = (index: number, storage: string) => {
+    const spec = { ...((value[index]!.spec as Obj) ?? {}) };
+    const resources = { ...((spec.resources as Obj) ?? {}) };
+    const requests = { ...((resources.requests as Obj) ?? {}) };
+    if (storage === "") delete requests.storage;
+    else requests.storage = storage;
+    patch(index, { ...value[index], spec: { ...spec, resources: { ...resources, requests } } });
+  };
+
+  return (
+    <div className="ports">
+      <div className="ports__head">
+        <span>Name</span>
+        <span>Capacity</span>
+        <span>Storage class</span>
+        <span>Access mode</span>
+        <span />
+      </div>
+      {value.map((template, index) => (
+        <div className="ports__row" key={index}>
+          <input value={name(template)} onChange={(e) => patchName(index, e.target.value)} />
+          <input
+            value={capacity(template)}
+            placeholder="10Gi"
+            onChange={(e) => patchCapacity(index, e.target.value)}
+          />
+          <LookupField
+            id={`vct-${index}-storageclass`}
+            source="storageClasses"
+            allowCustom
+            placeholder="(default)"
+            value={storageClass(template)}
+            onChange={(next) => patchSpec(index, "storageClassName", next)}
+          />
+          <select
+            value={accessMode(template)}
+            onChange={(e) => patchSpec(index, "accessModes", [e.target.value])}
+          >
+            {ACCESS_MODES.map((mode) => (
+              <option key={mode} value={mode}>
+                {mode}
+              </option>
+            ))}
+          </select>
+          <button
+            className="icon-button"
+            onClick={() => onChange(value.filter((_, i) => i !== index))}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      <button
+        className="button button--ghost"
+        onClick={() =>
+          onChange([
+            ...value,
+            {
+              metadata: { name: "data" },
+              spec: {
+                accessModes: ["ReadWriteOnce"],
+                resources: { requests: { storage: "1Gi" } },
+              },
+            },
+          ])
+        }
+      >
+        + Add volume claim template
       </button>
     </div>
   );
