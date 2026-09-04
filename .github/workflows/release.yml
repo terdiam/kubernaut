@@ -19,16 +19,16 @@ jobs:
     permissions:
       contents: write
 
-    # Windows only for now. The other three entries are kept below, commented
-    # out, because removing them loses the platform strings rather than the
-    # intent:
+    # Windows + Linux (amd64/arm64) for now. macOS is kept below, commented
+    # out, because removing it loses the platform strings rather than the
+    # intent: it needs a Developer ID certificate, and with APPLE_CERTIFICATE
+    # empty tauri-action still attempts the keychain import and the job dies
+    # with "failed to import keychain certificate" after ~11 minutes — at the
+    # 10x billing multiplier a private repository pays for.
     #
-    #   macOS needs a Developer ID certificate. With APPLE_CERTIFICATE empty,
-    #   tauri-action still attempts the keychain import and the job dies with
-    #   "failed to import keychain certificate" after ~11 minutes — at the 10x
-    #   billing multiplier a private repository pays for.
-    #
-    #   Linux builds fine; it is out only because nothing needs it yet.
+    # ubuntu-22.04-arm is a GitHub-hosted arm64 runner, so this is a native
+    # build, not a cross-compile — no extra linker/target setup needed beyond
+    # the same Linux system deps step used for amd64.
     strategy:
       fail-fast: false
       matrix:
@@ -37,6 +37,14 @@ jobs:
             target: x86_64-pc-windows-msvc
             helm_platform: windows-amd64
             trivy_platform: windows-64bit
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            helm_platform: linux-amd64
+            trivy_platform: Linux-64bit
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            helm_platform: linux-arm64
+            trivy_platform: Linux-ARM64
           # - os: macos-14
           #   target: aarch64-apple-darwin
           #   helm_platform: darwin-arm64
@@ -45,10 +53,6 @@ jobs:
           #   target: x86_64-apple-darwin
           #   helm_platform: darwin-amd64
           #   trivy_platform: macOS-64bit
-          # - os: ubuntu-22.04
-          #   target: x86_64-unknown-linux-gnu
-          #   helm_platform: linux-amd64
-          #   trivy_platform: Linux-64bit
     runs-on: ${{ matrix.os }}
 
     steps:
