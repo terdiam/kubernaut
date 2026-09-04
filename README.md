@@ -74,12 +74,14 @@ clusters connected; every one is added explicitly.
 ### Create, edit and import
 
 - **Create** — a floating **+** button on every list creates that kind, as a
-  form or as YAML; switching between them keeps the draft. 16 starting
-  templates plus a generic skeleton for any kind, including CRDs. Reference
-  fields — image pull secrets, volumes, ingress backend service and port,
-  ingress class, storage class, service account, node, priority class, HPA
-  scale target — are read from the cluster and offered as selects, not typed
-  by hand.
+  form or as YAML; switching between them keeps the draft. The form walks
+  through the kind's sections one at a time — a step rail up top, Back/Next
+  below — rather than one long page. 16 starting templates plus a generic
+  skeleton for any kind, including CRDs. Reference fields — image pull
+  secrets, volumes, the governing Service on a StatefulSet, ingress backend
+  service and port, ingress class, storage class, service account, node,
+  priority class, HPA scale target — are read from the cluster and offered as
+  selects, not typed by hand.
 - **Import YAML** applies a file as it stands: server-owned fields
   (`resourceVersion`, `managedFields`, `status`, …) are stripped so an
   exported object can be re-applied, `ownerReferences` are flagged rather than

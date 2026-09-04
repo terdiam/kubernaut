@@ -3,11 +3,11 @@ import { parse, stringify } from "yaml";
 import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
 import { api } from "../api";
 import { useStore } from "../store";
-import { formSections, type Section } from "../formSpec";
+import { formSections } from "../formSpec";
 import { getPath, setPath } from "../path";
 import { templateForKind } from "../manifestTemplates";
-import { FieldRow } from "./FormEditor";
 import { FormContext } from "../formContext";
+import { Wizard } from "./Wizard";
 import { PlanTable, ResultTable } from "./ManifestOutcome";
 import type { DocResult, ManifestPlan, ResourceDescriptor } from "../types";
 
@@ -277,22 +277,9 @@ function CreateForm({
           <FormContext.Provider
             value={{ cluster, namespace: descriptor.namespaced ? namespace || null : null, draft }}
           >
-          <div className="form__body create__form">
-            {sections.map((section: Section) => (
-              <fieldset key={section.title} className="form__section">
-                <legend>{section.title}</legend>
-                {section.description && <p className="muted form__note">{section.description}</p>}
-                {section.fields.map((field) => (
-                  <FieldRow
-                    key={field.path}
-                    field={field}
-                    value={getPath(draft, field.path)}
-                    onChange={update}
-                  />
-                ))}
-              </fieldset>
-            ))}
-          </div>
+            <div className="create__form">
+              <Wizard sections={sections} draft={draft} onChange={update} />
+            </div>
           </FormContext.Provider>
         ) : (
           <div className="manifest__editor" ref={host} />

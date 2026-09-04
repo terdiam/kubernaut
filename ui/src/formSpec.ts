@@ -196,7 +196,14 @@ const STATEFULSET: Section[] = [
     title: "Scale & rollout",
     fields: [
       { kind: "number", path: "spec.replicas", label: "Replicas", min: 0 },
-      { kind: "text", path: "spec.serviceName", label: "Governing service" },
+      {
+        kind: "lookup",
+        path: "spec.serviceName",
+        label: "Governing service",
+        source: "services",
+        allowCustom: true,
+        help: "The headless Service that gives each pod its network identity — often created in the same batch, so a name not yet in the cluster can still be typed.",
+      },
       {
         kind: "select",
         path: "spec.podManagementPolicy",
@@ -422,6 +429,51 @@ const HPA: Section[] = [
   METADATA,
 ];
 
+const NETWORK_POLICY: Section[] = [
+  {
+    title: "Selector",
+    fields: [
+      {
+        kind: "keyValue",
+        path: "spec.podSelector.matchLabels",
+        label: "Applies to pods matching",
+        help: "Empty selects every pod in the namespace.",
+      },
+      {
+        kind: "stringList",
+        path: "spec.policyTypes",
+        label: "Policy types",
+        help: "Ingress, Egress, or both. Leave empty and Kubernetes infers it from which rules below are set.",
+      },
+    ],
+  },
+  {
+    title: "Ingress rules",
+    description: "Traffic allowed in. An empty list here with Ingress in policy types blocks all inbound traffic.",
+    fields: [
+      {
+        kind: "textarea",
+        path: "spec.ingress",
+        label: "Rules (JSON)",
+        help: 'Array of NetworkPolicyIngressRule, e.g. [{"from":[{"podSelector":{"matchLabels":{"app":"api"}}}],"ports":[{"port":8080}]}]',
+      },
+    ],
+  },
+  {
+    title: "Egress rules",
+    description: "Traffic allowed out. An empty list here with Egress in policy types blocks all outbound traffic.",
+    fields: [
+      {
+        kind: "textarea",
+        path: "spec.egress",
+        label: "Rules (JSON)",
+        help: 'Array of NetworkPolicyEgressRule, same shape as ingress rules with "to" instead of "from".',
+      },
+    ],
+  },
+  METADATA,
+];
+
 const NAMESPACE: Section[] = [METADATA];
 
 const SERVICE_ACCOUNT: Section[] = [
@@ -448,6 +500,7 @@ const LAYOUTS: Record<string, Section[]> = {
   "batch/Job": JOB,
   "/Service": SERVICE,
   "networking.k8s.io/Ingress": INGRESS,
+  "networking.k8s.io/NetworkPolicy": NETWORK_POLICY,
   "/ConfigMap": CONFIGMAP,
   "/Secret": SECRET,
   "/PersistentVolumeClaim": PVC,
