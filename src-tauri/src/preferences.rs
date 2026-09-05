@@ -83,8 +83,9 @@ pub struct Preferences {
     /// cannot be scaled, drained, deleted or uninstalled from the app at all.
     pub protected_contexts: Vec<String>,
 
-    /// Check for a new release on startup. Off by default: the app must not
-    /// talk to the network until asked.
+    /// Check for a new release on startup. On by default — the only outbound
+    /// request the app makes on its own — but a single toggle in Settings, and
+    /// checking is never installing: nothing downloads without an explicit click.
     pub check_updates_on_startup: bool,
 
     /// Per-cluster settings, keyed by context name.
@@ -101,7 +102,7 @@ impl Default for Preferences {
             timezone: "system".to_string(),
             show_absolute_times: false,
             protected_contexts: Vec::new(),
-            check_updates_on_startup: false,
+            check_updates_on_startup: true,
             cluster_profiles: std::collections::BTreeMap::new(),
         }
     }
@@ -187,8 +188,8 @@ mod tests {
         let preferences = Preferences::default();
         assert_eq!(preferences.theme, Theme::System);
         assert!(
-            !preferences.check_updates_on_startup,
-            "no network by default"
+            preferences.check_updates_on_startup,
+            "update checks are the one outbound request made without being asked"
         );
     }
 

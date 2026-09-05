@@ -170,11 +170,13 @@ own annotations, so neither CLI is required.
 - Destructive actions — delete, scale to zero, drain, rollback, uninstall —
   each behind a typed confirmation (the object's name for one, the count of
   the set for many), and refused outright on a protected context.
-- **No telemetry.** With auto-update off, the app makes no outbound request of
-  its own — everything it talks to is a cluster you added yourself. Local
+- **No telemetry.** The only outbound request the app makes on its own is
+  checking GitHub for a newer release on startup (a Settings toggle turns it
+  off) — everything else it talks to is a cluster you added yourself. Local
   crash logs only, kept for 7 days, surfaced in Settings.
-- Signed, opt-in auto-updates; installing is always an explicit click, so an
-  editor with unsaved YAML is never restarted underneath you.
+- Signed auto-updates; checking happens on its own, but installing is always
+  an explicit click, so an editor with unsaved YAML is never restarted
+  underneath you.
 
 ## Build
 

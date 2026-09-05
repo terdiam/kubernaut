@@ -24,6 +24,7 @@ export function UpdateBanner() {
     if (!preferences?.checkUpdatesOnStartup || stage !== "idle") return;
     let cancelled = false;
     setStage("checking");
+    setError(null);
 
     void check()
       .then((found) => {
@@ -37,8 +38,9 @@ export function UpdateBanner() {
       })
       .catch((err) => {
         if (cancelled) return;
-        // A failed check is not worth interrupting anyone; it is reported only
-        // if they went looking.
+        // Stage goes back to "idle" — nothing is downloading — but the error
+        // itself has to survive that, or a failed check is indistinguishable
+        // from "no update" and no one would ever know to look at Settings.
         setError(String(err));
         setStage("idle");
       });
@@ -48,7 +50,19 @@ export function UpdateBanner() {
     };
   }, [preferences?.checkUpdatesOnStartup]);
 
-  if (!update || dismissed || stage === "idle" || stage === "checking") return null;
+  if (dismissed || stage === "checking") return null;
+
+  if (!update) {
+    if (!error) return null;
+    return (
+      <div className="banner banner--update banner--warn">
+        <span>Could not check for updates: {error}</span>
+        <button className="icon-button" onClick={() => setDismissed(true)} title="Dismiss">
+          ✕
+        </button>
+      </div>
+    );
+  }
 
   const install = async () => {
     setStage("downloading");

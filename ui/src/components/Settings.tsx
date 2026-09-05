@@ -276,8 +276,8 @@ export function Settings() {
             Check for a new release on startup
           </label>
           <p className="muted settings__help">
-            Off by default. With it off the app makes no network request of its own — everything
-            it talks to is a cluster you chose.
+            On by default — the only network request the app makes of its own. Turn it off and
+            everything it talks to is a cluster you chose.
           </p>
         </section>
 
