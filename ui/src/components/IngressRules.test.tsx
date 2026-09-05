@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FormContext, invalidateLookups } from "../formContext";
-import { IngressRulesField, portValue } from "./IngressRules";
+import { IngressRulesField, IngressTlsField, portValue } from "./IngressRules";
 import type { LookupOption } from "../types";
 
 const lookupOptions =
@@ -211,5 +211,54 @@ describe("portValue", () => {
     expect(portValue({ number: 80 })).toBe("80");
     expect(portValue({ name: "http" })).toBe("http");
     expect(portValue({})).toBe("");
+  });
+});
+
+describe("IngressTlsField", () => {
+  const TLS_SECRETS: LookupOption[] = [
+    { value: "example-tls", label: "example-tls", detail: "kubernetes.io/tls" },
+  ];
+
+  function tls(onChange = vi.fn(), value: unknown = undefined) {
+    lookupOptions.mockImplementation((_c, source) =>
+      source === "tlsSecrets" ? Promise.resolve(TLS_SECRETS) : Promise.resolve([]),
+    );
+    render(
+      <FormContext.Provider value={{ cluster: "default", namespace: "app", draft: {} }}>
+        <IngressTlsField value={value} onChange={onChange} />
+      </FormContext.Provider>,
+    );
+    return onChange;
+  }
+
+  it("parses a comma-separated host list into an array", async () => {
+    const onChange = tls(vi.fn(), [{ secretName: "example-tls" }]);
+    await waitFor(() => expect(lookupOptions).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByPlaceholderText(/hosts/), {
+      target: { value: "a.example.com, b.example.com" },
+    });
+    expect(onChange).toHaveBeenCalledWith([
+      { secretName: "example-tls", hosts: ["a.example.com", "b.example.com"] },
+    ]);
+  });
+
+  it("only offers Secrets of type kubernetes.io/tls, from the cluster", async () => {
+    const onChange = tls(vi.fn(), [{ hosts: ["example.local"], secretName: "" }]);
+    await waitFor(() => expect(lookupOptions).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "example-tls" } });
+    expect(onChange).toHaveBeenCalledWith([
+      { hosts: ["example.local"], secretName: "example-tls" },
+    ]);
+    // Nothing else was asked for — the point of a dedicated source, not the
+    // general (unfiltered) `secrets` lookup.
+    expect(lookupOptions).toHaveBeenCalledWith("default", "tlsSecrets", "app", null);
+  });
+
+  it("adds and removes TLS entries", () => {
+    const onChange = tls();
+    fireEvent.click(screen.getByText("Add TLS entry"));
+    expect(onChange).toHaveBeenCalledWith([{ hosts: undefined, secretName: "" }]);
   });
 });

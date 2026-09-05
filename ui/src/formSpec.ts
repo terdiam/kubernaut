@@ -41,12 +41,15 @@ export type Field =
   /** Pod volumes backed by a claim, chosen from the claims that exist. */
   | { kind: "volumes"; path: string; label: string; help?: string }
   /** StatefulSet-only: templates that provision one PVC per replica. */
-  | { kind: "volumeClaimTemplates"; path: string; label: string; help?: string };
+  | { kind: "volumeClaimTemplates"; path: string; label: string; help?: string }
+  /** Ingress TLS termination: hosts, and the Secret holding the certificate. */
+  | { kind: "ingressTls"; path: string; label: string; help?: string };
 
 /** Where a reference field's options come from. Matches the Rust lookup. */
 export type LookupSource =
   | "secrets"
   | "dockerConfigSecrets"
+  | "tlsSecrets"
   | "configMaps"
   | "serviceAccounts"
   | "persistentVolumeClaims"
@@ -359,7 +362,7 @@ const INGRESS: Section[] = [
         help: "Which controller serves this Ingress. A class no controller claims leaves the rules inert.",
       },
       { kind: "ingressRules", path: "spec.rules", label: "Rules" },
-      { kind: "textarea", path: "spec.tls", label: "TLS (JSON)" },
+      { kind: "ingressTls", path: "spec.tls", label: "TLS" },
     ],
   },
   METADATA,

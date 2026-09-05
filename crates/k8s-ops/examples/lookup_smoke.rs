@@ -23,6 +23,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let sources = [
         "dockerConfigSecrets",
+        "tlsSecrets",
         "secrets",
         "configMaps",
         "serviceAccounts",

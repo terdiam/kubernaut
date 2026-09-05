@@ -64,6 +64,10 @@ impl LookupOption {
 /// `imagePullSecrets` entry can usefully name.
 const DOCKER_CONFIG: &str = "kubernetes.io/dockerconfigjson";
 
+/// Secret type that holds a certificate and key — the only kind an Ingress
+/// `tls[].secretName` entry can usefully name.
+const TLS_SECRET: &str = "kubernetes.io/tls";
+
 /// Marks the StorageClass used when a claim names none.
 const DEFAULT_CLASS: &str = "storageclass.kubernetes.io/is-default-class";
 
@@ -90,13 +94,17 @@ pub async fn lookup(
     };
 
     let mut out: Vec<LookupOption> = match source {
-        "secrets" | "dockerConfigSecrets" => {
+        "secrets" | "dockerConfigSecrets" | "tlsSecrets" => {
             let api: Api<Secret> = Api::namespaced(cluster.client.clone(), &namespaced("secrets")?);
-            let only_registry = source == "dockerConfigSecrets";
+            let want_type = match source {
+                "dockerConfigSecrets" => Some(DOCKER_CONFIG),
+                "tlsSecrets" => Some(TLS_SECRET),
+                _ => None,
+            };
             api.list(&params())
                 .await?
                 .iter()
-                .filter(|secret| !only_registry || secret.type_.as_deref() == Some(DOCKER_CONFIG))
+                .filter(|secret| want_type.is_none_or(|t| secret.type_.as_deref() == Some(t)))
                 .map(|secret| {
                     LookupOption::new(secret.name_any())
                         .detail(secret.type_.clone().unwrap_or_default())

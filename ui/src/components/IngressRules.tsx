@@ -1,4 +1,5 @@
 import { useLookup } from "../formContext";
+import { LookupField } from "./LookupFields";
 import type { LookupOption } from "../types";
 
 type Obj = Record<string, unknown>;
@@ -266,4 +267,74 @@ export function portValue(port: Obj): string {
   if (typeof port.number === "number") return String(port.number);
   if (typeof port.name === "string") return port.name;
   return "";
+}
+
+/**
+ * TLS termination: which hosts, and the Secret holding the certificate.
+ *
+ * The Secret has to be of type `kubernetes.io/tls` and already live in this
+ * namespace — an Ingress cannot create one for itself — so it is offered from
+ * the cluster rather than typed, same as everything else here that names
+ * another object.
+ */
+export function IngressTlsField({
+  value,
+  onChange,
+}: {
+  value: unknown;
+  onChange: (next: Obj[] | undefined) => void;
+}) {
+  const entries = Array.isArray(value) ? (value as Obj[]) : [];
+
+  const write = (next: Obj[]) => onChange(next.length ? next : undefined);
+  const update = (index: number, patch: Obj) => {
+    const next = entries.slice();
+    next[index] = { ...next[index], ...patch };
+    write(next);
+  };
+  const hostsOf = (entry: Obj) => (Array.isArray(entry.hosts) ? (entry.hosts as string[]) : []);
+
+  return (
+    <div className="tls">
+      {entries.map((entry, index) => (
+        <div key={index} className="tls__row">
+          <input
+            value={hostsOf(entry).join(", ")}
+            placeholder="hosts (comma-separated, empty = any not otherwise matched)"
+            onChange={(e) => {
+              const hosts = e.target.value
+                .split(",")
+                .map((host) => host.trim())
+                .filter(Boolean);
+              update(index, { hosts: hosts.length ? hosts : undefined });
+            }}
+          />
+          <LookupField
+            id={`tls-${index}-secret`}
+            source="tlsSecrets"
+            allowCustom
+            placeholder="Secret"
+            value={entry.secretName}
+            onChange={(next) => update(index, { secretName: next })}
+          />
+          <button
+            type="button"
+            className="icon-button"
+            onClick={() => write(entries.filter((_, at) => at !== index))}
+            aria-label="Remove"
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+
+      <button
+        type="button"
+        className="button button--ghost"
+        onClick={() => write([...entries, { hosts: undefined, secretName: "" }])}
+      >
+        Add TLS entry
+      </button>
+    </div>
+  );
 }

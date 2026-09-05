@@ -1500,10 +1500,11 @@ body.resizing { cursor: col-resize; user-select: none; }
 .lookup select, .lookup input { flex: 1; min-width: 0; }
 .lookup__note { font-size: 11px; }
 
-.reflist, .volumes, .rules { display: flex; flex-direction: column; gap: 6px; }
-.reflist__row, .volumes__row { display: flex; align-items: center; gap: 6px; }
-.reflist__row .lookup, .volumes__row .lookup { flex: 1; }
+.reflist, .volumes, .rules, .tls { display: flex; flex-direction: column; gap: 6px; }
+.reflist__row, .volumes__row, .tls__row { display: flex; align-items: center; gap: 6px; }
+.reflist__row .lookup, .volumes__row .lookup, .tls__row .lookup { flex: 1; }
 .volumes__row > input { width: 160px; }
+.tls__row > input { flex: 1; min-width: 0; }
 
 .rules__host {
   border: 1px solid var(--border);

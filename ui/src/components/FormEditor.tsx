@@ -5,7 +5,7 @@ import { getPath, setPath } from "../path";
 import { prunedApply } from "../applyPrune";
 import { FormContext, useFormScope } from "../formContext";
 import { LookupField, RefListField, VolumesField } from "./LookupFields";
-import { IngressRulesField } from "./IngressRules";
+import { IngressRulesField, IngressTlsField } from "./IngressRules";
 import type { DiffResult, FieldConflict } from "../types";
 
 interface Props {
@@ -395,6 +395,14 @@ export function FieldRow({
         <div className="field field--wide">
           {label}
           <IngressRulesField value={value} onChange={(next) => onChange(field.path, next)} />
+        </div>
+      );
+
+    case "ingressTls":
+      return (
+        <div className="field field--wide">
+          {label}
+          <IngressTlsField value={value} onChange={(next) => onChange(field.path, next)} />
         </div>
       );
 
