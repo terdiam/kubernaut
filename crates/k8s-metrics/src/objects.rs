@@ -127,6 +127,29 @@ pub struct NamespaceUsage {
     pub has_unset_requests: bool,
 }
 
+/// Current usage of one pod against what it declares.
+///
+/// Limits are what a container is killed or throttled at, requests are what the
+/// scheduler reserved; a bar against a limit says "how close to the edge", and
+/// a pod with no limit has no edge to be close to.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PodUsage {
+    pub namespace: String,
+    pub name: String,
+    /// Cores.
+    pub cpu_usage: f64,
+    pub cpu_requests: f64,
+    pub cpu_limits: f64,
+    /// Bytes.
+    pub memory_usage: f64,
+    pub memory_requests: f64,
+    pub memory_limits: f64,
+    /// False when metrics-server has not reported this pod (just started, not
+    /// running, or metrics-server absent), so zero can be told from "unknown".
+    pub usage_available: bool,
+}
+
 /// Live figures for one node, merged from the node object and metrics.
 ///
 /// The node object knows what the machine has; `metrics.k8s.io` knows what is

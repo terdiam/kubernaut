@@ -130,6 +130,7 @@ pub fn run() {
             metrics_commands::metrics_sources,
             metrics_commands::topology,
             metrics_commands::node_summaries,
+            metrics_commands::pod_usages,
             metrics_commands::workload_sizing,
             helm_commands::helm_info,
             helm_commands::helm_releases,

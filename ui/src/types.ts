@@ -364,6 +364,22 @@ export interface NamespaceUsage {
   hasUnsetRequests: boolean;
 }
 
+/** Current usage of one pod against what it declares. */
+export interface PodUsage {
+  namespace: string;
+  name: string;
+  /** Cores. */
+  cpuUsage: number;
+  cpuRequests: number;
+  cpuLimits: number;
+  /** Bytes. */
+  memoryUsage: number;
+  memoryRequests: number;
+  memoryLimits: number;
+  /** False when metrics-server has not reported this pod yet. */
+  usageAvailable: boolean;
+}
+
 export interface NodeSummary {
   name: string;
   cpuUsage: number;

@@ -9,8 +9,8 @@
 import { createElement, useEffect, useState, type ReactNode } from "react";
 import { api } from "./api";
 
-import { UsageBar } from "./components/UsageBar";
-import type { ColumnSpec, NodeSummary, ResourceDescriptor, Row } from "./types";
+import { PodUsageValue, UsageBar } from "./components/UsageBar";
+import type { ColumnSpec, NodeSummary, PodUsage, ResourceDescriptor, Row } from "./types";
 
 /**
  * One cell. `text` is what sorting, filtering and the tooltip use; `node` is
@@ -42,7 +42,34 @@ export function useLiveColumns(
   resource: ResourceDescriptor | null,
 ): LiveColumns {
   const isNode = resource?.kind === "Node" && resource.group === "";
+  const isPod = resource?.kind === "Pod" && resource.group === "";
   const [summaries, setSummaries] = useState<Map<string, NodeSummary>>(new Map());
+  const [pods, setPods] = useState<Map<string, PodUsage>>(new Map());
+
+  useEffect(() => {
+    if (!cluster || !isPod) {
+      setPods(new Map());
+      return;
+    }
+    let cancelled = false;
+
+    const refresh = () =>
+      void api
+        .podUsages(cluster, null)
+        .then((rows) => {
+          if (!cancelled) {
+            setPods(new Map(rows.map((row) => [`${row.namespace}/${row.name}`, row])));
+          }
+        })
+        .catch(() => {});
+
+    refresh();
+    const id = window.setInterval(refresh, POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [cluster, isPod]);
 
   useEffect(() => {
     if (!cluster || !isNode) {
@@ -70,6 +97,7 @@ export function useLiveColumns(
     };
   }, [cluster, isNode]);
 
+  if (isPod) return podColumns(pods);
   if (!isNode) return EMPTY;
 
   const columns: ColumnSpec[] = [
@@ -155,5 +183,77 @@ export function useLiveColumns(
     ];
   };
 
-  return { columns, cells };
+  return { columns: POD_COLUMNS, cells };
+}
+
+/**
+ * Fixed for the life of the module: the table re-derives its column widths whenever
+ * the column list changes identity, so a fresh array per render would re-run that
+ * every render.
+ */
+const POD_COLUMNS: ColumnSpec[] = [
+  {
+    name: "CPU",
+    kind: "string",
+    priority: 0,
+    description: "Cores in use; the bar is against the pod's limit, when it has one",
+  },
+  {
+    name: "Memory",
+    kind: "string",
+    priority: 0,
+    description: "Memory in use; the bar is against the pod's limit, when it has one",
+  },
+];
+
+/** A pod the sampler has not heard about yet, or the first fetch still in flight. */
+function unreported(format: "cores" | "bytes"): LiveCell {
+  return {
+    text: "",
+    node: createElement(PodUsageValue, {
+      used: 0,
+      request: 0,
+      limit: 0,
+      format,
+      available: false,
+    }),
+  };
+}
+
+/**
+ * CPU and memory beside each pod.
+ *
+ * Sorting compares the cell text, so it carries the raw figure (millicores, MiB)
+ * rather than the formatted one — "9.5MiB" would sort after "100MiB" as text.
+ */
+function podColumns(pods: Map<string, PodUsage>): LiveColumns {
+  const cells = (row: Row): LiveCell[] => {
+    const usage = pods.get(`${row.namespace ?? ""}/${row.name}`);
+    if (!usage) return [unreported("cores"), unreported("bytes")];
+
+    return [
+      {
+        text: usage.usageAvailable ? (usage.cpuUsage * 1000).toFixed(0) : "",
+        node: createElement(PodUsageValue, {
+          used: usage.cpuUsage,
+          request: usage.cpuRequests,
+          limit: usage.cpuLimits,
+          format: "cores",
+          available: usage.usageAvailable,
+        }),
+      },
+      {
+        text: usage.usageAvailable ? (usage.memoryUsage / 1024 / 1024).toFixed(1) : "",
+        node: createElement(PodUsageValue, {
+          used: usage.memoryUsage,
+          request: usage.memoryRequests,
+          limit: usage.memoryLimits,
+          format: "bytes",
+          available: usage.usageAvailable,
+        }),
+      },
+    ];
+  };
+
+  return { columns: POD_COLUMNS, cells };
 }

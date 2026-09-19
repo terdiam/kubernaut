@@ -94,7 +94,7 @@ fn pod_resources(spec: &PodSpec, key: &str) -> (f64, f64) {
 
 /// Pods that still occupy a slot on a node. Succeeded/Failed pods have released
 /// their resources, so counting them would inflate every gauge.
-fn occupies_node(pod: &Pod) -> bool {
+pub fn occupies_node(pod: &Pod) -> bool {
     !matches!(
         pod.status.as_ref().and_then(|s| s.phase.as_deref()),
         Some("Succeeded") | Some("Failed")

@@ -34,6 +34,7 @@ import type {
   NamespaceUsage,
   NodeScope,
   NodeSummary,
+  PodUsage,
   ObjectMetrics,
   ObjectPayload,
   OverviewPayload,
@@ -263,6 +264,8 @@ export const api = {
   overviewHistory: (cluster: string, scope: NodeScope, windowMs: number) =>
     invoke<Sample[]>("overview_history", { cluster, scope, windowMs }),
   nodeSummaries: (cluster: string) => invoke<NodeSummary[]>("node_summaries", { cluster }),
+  podUsages: (cluster: string, namespace: string | null) =>
+    invoke<PodUsage[]>("pod_usages", { cluster, namespace }),
   workloadSizing: (cluster: string, namespace: string, resource: string, name: string) =>
     invoke<SizingReport>("workload_sizing", { cluster, namespace, resource, name }),
   namespaceUsage: (cluster: string) =>

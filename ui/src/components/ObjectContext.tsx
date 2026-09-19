@@ -5,7 +5,8 @@ import { conditionsOf, propertiesFor, type PropertySection } from "../properties
 import { useStore } from "../store";
 import { toneForValue } from "../statusTone";
 import { formatDateTime } from "../time";
-import type { EventRow, NodeSummary, Related, RelatedRef } from "../types";
+import { PodUsageValue } from "./UsageBar";
+import type { EventRow, NodeSummary, PodUsage, Related, RelatedRef } from "../types";
 
 interface Props {
   cluster: string;
@@ -25,6 +26,7 @@ export function ObjectContext(props: Props) {
   const [related, setRelated] = useState<Related | null>(null);
   const [events, setEvents] = useState<EventRow[]>([]);
   const [node, setNode] = useState<NodeSummary | null>(null);
+  const [podUsage, setPodUsage] = useState<Map<string, PodUsage>>(new Map());
   const [error, setError] = useState<string | null>(null);
 
   // A node's usage is not in its manifest; it comes from metrics-server and the
@@ -51,6 +53,33 @@ export function ObjectContext(props: Props) {
       window.clearInterval(id);
     };
   }, [cluster, kind, name]);
+
+  // Pod usage is likewise metrics-server's, not the manifest's. A pod shows its
+  // own; a workload shows one figure per pod it owns, so a hot replica stands
+  // out from its siblings instead of averaging away.
+  const hasPods = kind === "Pod" || (related?.pods.length ?? 0) > 0;
+  useEffect(() => {
+    if (!namespace || !hasPods) {
+      setPodUsage(new Map());
+      return;
+    }
+    let cancelled = false;
+
+    const refresh = () =>
+      void api
+        .podUsages(cluster, namespace)
+        .then((rows) => {
+          if (!cancelled) setPodUsage(new Map(rows.map((row) => [row.name, row])));
+        })
+        .catch(() => {});
+
+    refresh();
+    const id = window.setInterval(refresh, 5000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [cluster, namespace, hasPods]);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,8 +116,10 @@ export function ObjectContext(props: Props) {
 
   const zone = useStore((s) => s.preferences?.timezone ?? "system");
 
+  const ownPod = kind === "Pod" ? podUsage.get(name) : undefined;
   const sections: PropertySection[] = [
     ...(node ? [usageSection(node)] : []),
+    ...(ownPod ? [podUsageSection(ownPod)] : []),
     ...(object ? propertiesFor(kind, object) : []),
   ];
   const conditions = object ? conditionsOf(object) : [];
@@ -144,7 +175,7 @@ export function ObjectContext(props: Props) {
         </section>
       )}
 
-      {related && <RelatedBlocks related={related} />}
+      {related && <RelatedBlocks related={related} usage={kind === "Pod" ? undefined : podUsage} />}
 
       <section className="context__block">
         <h3>Recent events</h3>
@@ -271,6 +302,38 @@ function usageSection(node: NodeSummary): PropertySection {
   return { title: "Usage", properties };
 }
 
+/// A pod's live usage against what it asked for and is allowed.
+function podUsageSection(pod: PodUsage): PropertySection {
+  const line = (used: number, request: number, limit: number, fmt: (v: number) => string) => {
+    const declared = [
+      request > 0 ? `requests ${fmt(request)}` : "no request",
+      limit > 0 ? `limit ${fmt(limit)} (${Math.round((used / limit) * 100)}%)` : "no limit",
+    ].join(", ");
+    return `${fmt(used)} — ${declared}`;
+  };
+
+  return {
+    title: "Usage",
+    properties: [
+      {
+        label: "CPU",
+        value: pod.usageAvailable
+          ? line(pod.cpuUsage, pod.cpuRequests, pod.cpuLimits, cores)
+          : "metrics-server has not reported this pod yet",
+        muted: !pod.usageAvailable,
+        help: "Cores in use right now, summed over the pod's containers.",
+      },
+      {
+        label: "Memory",
+        value: pod.usageAvailable
+          ? line(pod.memoryUsage, pod.memoryRequests, pod.memoryLimits, bytes)
+          : "",
+        help: "Working set, which is what the kernel counts against the limit.",
+      },
+    ].filter((property) => property.value !== ""),
+  };
+}
+
 const GROUPS: { key: keyof Related; title: string }[] = [
   { key: "controllers", title: "Controlled by" },
   { key: "pods", title: "Pods" },
@@ -282,22 +345,54 @@ const GROUPS: { key: keyof Related; title: string }[] = [
   { key: "nodes", title: "Nodes" },
 ];
 
-function RelatedBlocks({ related }: { related: Related }) {
+function RelatedBlocks({
+  related,
+  usage,
+}: {
+  related: Related;
+  /** Live usage by pod name; rows for pods gain CPU and memory when present. */
+  usage?: Map<string, PodUsage>;
+}) {
   const openObject = useStore((s) => s.openObject);
 
-  const row = (entry: RelatedRef) => (
-    <li key={`${entry.kind}-${entry.namespace}-${entry.name}`}>
-      <button
-        className={`related__item related__item--${entry.health}`}
-        disabled={entry.resource === ""}
-        onClick={() => void openObject(entry.resource, entry.namespace, entry.name)}
-      >
-        <span className="related__kind">{entry.kind}</span>
-        <span className="related__name">{entry.name}</span>
-        <span className="muted related__detail">{entry.detail ?? ""}</span>
-      </button>
-    </li>
-  );
+  const row = (entry: RelatedRef) => {
+    const pod = entry.kind === "Pod" ? usage?.get(entry.name) : undefined;
+    return (
+      <li key={`${entry.kind}-${entry.namespace}-${entry.name}`}>
+        <button
+          className={`related__item related__item--${entry.health}${
+            pod ? " related__item--usage" : ""
+          }`}
+          disabled={entry.resource === ""}
+          title={pod ? [entry.name, entry.detail].filter(Boolean).join(" — ") : undefined}
+          onClick={() => void openObject(entry.resource, entry.namespace, entry.name)}
+        >
+          <span className="related__kind">{entry.kind}</span>
+          <span className="related__name">{entry.name}</span>
+          {/* Usage takes the room the status text had; the text moves to the tooltip. */}
+          {!pod && <span className="muted related__detail">{entry.detail ?? ""}</span>}
+          {pod && (
+            <span className="related__usage">
+              <PodUsageValue
+                used={pod.cpuUsage}
+                request={pod.cpuRequests}
+                limit={pod.cpuLimits}
+                format="cores"
+                available={pod.usageAvailable}
+              />
+              <PodUsageValue
+                used={pod.memoryUsage}
+                request={pod.memoryRequests}
+                limit={pod.memoryLimits}
+                format="bytes"
+                available={pod.usageAvailable}
+              />
+            </span>
+          )}
+        </button>
+      </li>
+    );
+  };
 
   return (
     <>

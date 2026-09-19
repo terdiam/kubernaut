@@ -938,6 +938,10 @@ body.resizing { cursor: col-resize; user-select: none; }
 .related__item--error { border-left-color: var(--error); }
 .related__kind { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.04em; }
 .related__name, .related__detail { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A pod row with live usage gains a fourth column, and the kind label yields
+   the width for it: "Pod" needs far less than the 110px a "PersistentVolumeClaim" does. */
+.related__item--usage { grid-template-columns: 44px minmax(0, 1fr) auto; }
+.related__usage { display: flex; align-items: center; gap: 14px; }
 
 .events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .events__row {
@@ -1027,6 +1031,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 .usage__fill--warn { background: var(--warn); }
 .usage__fill--critical { background: var(--error); }
 .usage__value { flex: none; font-variant-numeric: tabular-nums; font-size: 11.5px; min-width: 38px; text-align: right; }
+.usage__value--wide { min-width: 52px; text-align: left; }
 
 /* ---- status colouring ---- */
 .status--ok { color: var(--ok); }

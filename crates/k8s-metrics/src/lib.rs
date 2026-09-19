@@ -12,7 +12,9 @@ pub mod sampler;
 pub mod topology;
 
 pub use model::{ClusterOverview, Issue, NodeScope, ResourceGauge, Sample, Severity};
-pub use objects::{MetricSource, MetricTarget, NamespaceUsage, NodeSummary, ObjectMetrics, Point};
+pub use objects::{
+    MetricSource, MetricTarget, NamespaceUsage, NodeSummary, ObjectMetrics, PodUsage, Point,
+};
 pub use prometheus::PrometheusTarget;
 pub use recommend::{Confidence, Recommendation};
 pub use sampler::{ClusterSampler, MetricsManager};

@@ -2,7 +2,7 @@
 
 use k8s_metrics::recommend::{self, Recommendation};
 use k8s_metrics::{
-    ClusterOverview, MetricTarget, NamespaceUsage, NodeScope, NodeSummary, ObjectMetrics,
+    ClusterOverview, MetricTarget, NamespaceUsage, NodeScope, NodeSummary, ObjectMetrics, PodUsage,
     PrometheusTarget, Sample, Topology,
 };
 use serde::Serialize;
@@ -129,6 +129,19 @@ pub async fn node_summaries(
     let handle = state.clusters.require(&cluster)?;
     let sampler = state.metrics.ensure(&handle);
     Ok(sampler.node_summaries())
+}
+
+/// Live CPU and memory per pod, against what each declares, for the pod list and
+/// for a workload's pod breakdown. `namespace: None` covers every namespace.
+#[tauri::command]
+pub async fn pod_usages(
+    state: State<'_, AppState>,
+    cluster: String,
+    namespace: Option<String>,
+) -> CommandResult<Vec<PodUsage>> {
+    let handle = state.clusters.require(&cluster)?;
+    let sampler = state.metrics.ensure(&handle);
+    Ok(sampler.pod_usages(namespace.as_deref()))
 }
 
 #[derive(Debug, Serialize)]

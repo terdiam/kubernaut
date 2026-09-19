@@ -45,3 +45,58 @@ export function UsageBar({ used, total, format, unavailable, unavailableReason }
     </span>
   );
 }
+
+interface PodUsageProps {
+  used: number;
+  request: number;
+  limit: number;
+  format: "cores" | "bytes";
+  /** False until metrics-server has reported this pod. */
+  available: boolean;
+}
+
+/**
+ * One pod's CPU or memory.
+ *
+ * Unlike a node, a pod has no fixed capacity to fill: the number that matters is
+ * how much it is using, and the bar (drawn only when a limit exists) says how
+ * close that is to the point where it is throttled or killed. A pod with no
+ * limit shows the number alone rather than a bar against an invented ceiling.
+ */
+export function PodUsageValue({ used, request, limit, format, available }: PodUsageProps) {
+  if (!available) {
+    return (
+      <span className="usage usage--empty" title="metrics-server has not reported this pod yet">
+        —
+      </span>
+    );
+  }
+
+  const render = format === "cores" ? cores : bytes;
+  const declared = [
+    request > 0 ? `requests ${render(request)}` : "no request",
+    limit > 0 ? `limit ${render(limit)}` : "no limit",
+  ].join(" · ");
+
+  if (limit <= 0) {
+    return (
+      <span className="usage" title={declared}>
+        <span className="usage__value usage__value--wide">{render(used)}</span>
+      </span>
+    );
+  }
+
+  const percent = Math.min(used / limit, 1) * 100;
+  const tone = percent >= 90 ? "critical" : percent >= 75 ? "warn" : "ok";
+  return (
+    <span
+      className="usage"
+      title={`${render(used)} of ${render(limit)} limit (${percent.toFixed(0)}%) · ${declared}`}
+    >
+      <span className="usage__track">
+        <span className={`usage__fill usage__fill--${tone}`} style={{ width: `${percent}%` }} />
+      </span>
+      <span className="usage__value usage__value--wide">{render(used)}</span>
+    </span>
+  );
+}

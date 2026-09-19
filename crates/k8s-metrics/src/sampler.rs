@@ -230,6 +230,53 @@ impl ClusterSampler {
             .copied()
     }
 
+    /// Latest usage against declared requests and limits for every live pod,
+    /// optionally within one namespace.
+    ///
+    /// Asking is what keeps pod metrics being polled, and a cold first call wakes
+    /// the sampler so the column does not sit empty for a whole interval.
+    pub fn pod_usages(&self, namespace: Option<&str>) -> Vec<crate::objects::PodUsage> {
+        if !self.pod_metrics_wanted() || self.pod_usage.lock().is_empty() {
+            self.wake.notify_one();
+        }
+        self.request_pod_metrics();
+
+        let usage = self.pod_usage.lock().clone();
+        self.pods
+            .state()
+            .iter()
+            .filter(|pod| overview::occupies_node(pod))
+            .filter(|pod| namespace.is_none_or(|ns| pod.metadata.namespace.as_deref() == Some(ns)))
+            .map(|pod| {
+                let namespace = pod.metadata.namespace.clone().unwrap_or_default();
+                let name = pod.metadata.name.clone().unwrap_or_default();
+                let (cpu_requests, cpu_limits, memory_requests, memory_limits) = pod
+                    .spec
+                    .as_ref()
+                    .map(|spec| {
+                        let (cpu_request, cpu_limit) = overview::pod_resources_public(spec, "cpu");
+                        let (memory_request, memory_limit) =
+                            overview::pod_resources_public(spec, "memory");
+                        (cpu_request, cpu_limit, memory_request, memory_limit)
+                    })
+                    .unwrap_or_default();
+                let measured = usage.get(&format!("{namespace}/{name}")).copied();
+                let (cpu_usage, memory_usage) = measured.unwrap_or_default();
+                crate::objects::PodUsage {
+                    namespace,
+                    name,
+                    cpu_usage,
+                    cpu_requests,
+                    cpu_limits,
+                    memory_usage,
+                    memory_requests,
+                    memory_limits,
+                    usage_available: measured.is_some(),
+                }
+            })
+            .collect()
+    }
+
     /// History accumulated for a charted target, marking it as still wanted.
     pub fn target_history(&self, target: &MetricTarget) -> Vec<Point> {
         let key = target.key();
