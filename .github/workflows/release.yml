@@ -19,12 +19,16 @@ jobs:
     permissions:
       contents: write
 
-    # Windows + Linux (amd64/arm64) for now. macOS is kept below, commented
-    # out, because removing it loses the platform strings rather than the
-    # intent: it needs a Developer ID certificate, and with APPLE_CERTIFICATE
-    # empty tauri-action still attempts the keychain import and the job dies
-    # with "failed to import keychain certificate" after ~11 minutes — at the
-    # 10x billing multiplier a private repository pays for.
+    # Windows + Linux (amd64/arm64) for now. The macOS half of each release is
+    # built by hand and added to this workflow's draft with
+    # scripts/release-macos.sh.
+    #
+    # macOS is kept below, commented out, because removing it loses the
+    # platform strings rather than the intent: it needs a Developer ID
+    # certificate, and with APPLE_CERTIFICATE empty tauri-action still attempts
+    # the keychain import and the job dies with "failed to import keychain
+    # certificate" after ~11 minutes — at the 10x billing multiplier a private
+    # repository pays for.
     #
     # ubuntu-22.04-arm is a GitHub-hosted arm64 runner, so this is a native
     # build, not a cross-compile — no extra linker/target setup needed beyond
