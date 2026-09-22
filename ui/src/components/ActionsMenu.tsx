@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { api } from "../api";
+import { samePin, useStore } from "../store";
 import type { ResourceDescriptor, Row } from "../types";
 
 interface Props {
@@ -50,9 +51,27 @@ export function ActionsMenu({ cluster, resource, row, onForward, onDone }: Props
   const isPod = resource.kind === "Pod";
   const scalable = SCALABLE.has(resource.kind);
 
+  const preferences = useStore((s) => s.preferences);
+  const togglePin = useStore((s) => s.togglePin);
+  const pin = {
+    cluster,
+    resourceKey: resource.key,
+    namespace: row.namespace,
+    name: row.name,
+    label: null,
+  };
+  const isPinned = preferences?.pinned.some((p) => samePin(p, pin)) ?? false;
+
   return (
     <div className="actions">
       <div className="actions__row">
+        <button
+          className="icon-button"
+          title={isPinned ? "Unpin" : "Pin"}
+          onClick={() => void togglePin(pin)}
+        >
+          {isPinned ? "★" : "☆"}
+        </button>
         {scalable && (
           <button
             className="button"

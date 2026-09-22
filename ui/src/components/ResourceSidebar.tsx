@@ -30,6 +30,9 @@ export function ResourceSidebar() {
   const refreshDiscovery = useStore((s) => s.refreshDiscovery);
   const showOverview = useStore((s) => s.showOverview);
   const showView = useStore((s) => s.showView);
+  const preferences = useStore((s) => s.preferences);
+  const activeCluster = useStore((s) => s.activeCluster);
+  const openObject = useStore((s) => s.openObject);
 
   const [query, setQuery] = useState("");
   const [collapsed, setCollapsed] = useState<Set<string>>(
@@ -219,6 +222,28 @@ export function ResourceSidebar() {
           <Icon name="overview" />
           Overview
         </button>
+
+        {(() => {
+          const pinned = preferences?.pinned.filter((p) => p.cluster === activeCluster) ?? [];
+          if (pinned.length === 0) return null;
+          return (
+            <>
+              <p className="sidebar__section">Pinned</p>
+              <ul>
+                {pinned.map((pin) => (
+                  <li key={`${pin.resourceKey}/${pin.namespace ?? ""}/${pin.name}`}>
+                    <button
+                      className="tree-item"
+                      onClick={() => void openObject(pin.resourceKey, pin.namespace, pin.name)}
+                    >
+                      {pin.label ?? pin.name}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          );
+        })()}
 
         {buckets.filter((bucket) => bucket.section === "cluster").map(bucketNode)}
 

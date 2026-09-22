@@ -3,6 +3,7 @@ import { api } from "../api";
 import { useStore } from "../store";
 import { availableZones, effectiveZone, formatDateTime, zoneLabel } from "../time";
 import type {
+  AuditEntry,
   CrashReport,
   Diagnostics,
   ManagedKubeconfig,
@@ -24,6 +25,7 @@ export function Settings() {
   const [draft, setDraft] = useState<Preferences | null>(preferences);
   const [diagnostics, setDiagnostics] = useState<Diagnostics | null>(null);
   const [crash, setCrash] = useState<CrashReport | null>(null);
+  const [audit, setAudit] = useState<AuditEntry[]>([]);
   const [managed, setManaged] = useState<ManagedKubeconfig[]>([]);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -33,6 +35,7 @@ export function Settings() {
   useEffect(() => {
     void api.diagnostics().then(setDiagnostics).catch(() => {});
     void api.lastCrash().then(setCrash).catch(() => {});
+    void api.listAuditEntries().then(setAudit).catch(() => {});
     void api.managedKubeconfigs().then(setManaged).catch(() => {});
   }, []);
 
@@ -262,6 +265,41 @@ export function Settings() {
             </>
           ) : (
             <p className="muted settings__help">No crash recorded in the current log.</p>
+          )}
+        </section>
+
+        <section className="context__block">
+          <h3>Audit log</h3>
+          <p className="muted settings__help">
+            Destructive actions taken from this app, kept locally for 7 days.
+          </p>
+          {audit.length > 0 ? (
+            <table className="settings__audit">
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Cluster</th>
+                  <th>Action</th>
+                  <th>Target</th>
+                  <th>Outcome</th>
+                </tr>
+              </thead>
+              <tbody>
+                {audit.map((entry, index) => (
+                  <tr key={`${entry.timestamp}-${index}`}>
+                    <td>{formatDateTime(entry.timestamp, draft.timezone)}</td>
+                    <td>{entry.cluster}</td>
+                    <td>{entry.action}</td>
+                    <td>{entry.target}</td>
+                    <td className={entry.outcome === "ok" ? "muted" : "warning"}>
+                      {entry.outcome}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="muted settings__help">No actions recorded yet.</p>
           )}
         </section>
 

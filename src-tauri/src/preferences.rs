@@ -51,6 +51,19 @@ pub struct ClusterProfile {
     pub proxy_url: Option<String>,
 }
 
+/// A resource pinned for one-click access, independent of the live watch that
+/// lists it — identified by name rather than `uid` since a pin can outlive
+/// any particular watch session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PinnedObject {
+    pub cluster: String,
+    pub resource_key: String,
+    pub namespace: Option<String>,
+    pub name: String,
+    pub label: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Preferences {
@@ -90,6 +103,9 @@ pub struct Preferences {
 
     /// Per-cluster settings, keyed by context name.
     pub cluster_profiles: std::collections::BTreeMap<String, ClusterProfile>,
+
+    /// Resources pinned for one-click access from the sidebar.
+    pub pinned: Vec<PinnedObject>,
 }
 
 impl Default for Preferences {
@@ -104,6 +120,7 @@ impl Default for Preferences {
             protected_contexts: Vec::new(),
             check_updates_on_startup: true,
             cluster_profiles: std::collections::BTreeMap::new(),
+            pinned: Vec::new(),
         }
     }
 }

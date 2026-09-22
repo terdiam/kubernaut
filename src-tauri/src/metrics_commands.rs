@@ -2,13 +2,16 @@
 
 use k8s_metrics::recommend::{self, Recommendation};
 use k8s_metrics::{
-    ClusterOverview, MetricTarget, NamespaceUsage, NodeScope, NodeSummary, ObjectMetrics, PodUsage,
-    PrometheusTarget, Sample, Topology,
+    ClusterOverview, MetricTarget, NamespaceQuotaInfo, NamespaceUsage, NodeScope, NodeSummary,
+    ObjectMetrics, PodUsage, PrometheusTarget, Sample, Topology,
 };
 use serde::Serialize;
 use tauri::State;
 
-use crate::{error::CommandResult, state::AppState};
+use crate::{
+    error::{CommandError, CommandResult},
+    state::AppState,
+};
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,6 +71,20 @@ pub async fn namespace_usage(
     // here is what keeps the heatmap fed.
     sampler.request_pod_metrics();
     Ok(sampler.namespace_usage())
+}
+
+/// A namespace's own `ResourceQuota`/`LimitRange` objects: declared hard
+/// limits and current usage, and the default limits new pods get.
+#[tauri::command]
+pub async fn namespace_quota(
+    state: State<'_, AppState>,
+    cluster: String,
+    namespace: String,
+) -> CommandResult<NamespaceQuotaInfo> {
+    let handle = state.clusters.require(&cluster)?;
+    k8s_metrics::quota::namespace_quota(&handle, &namespace)
+        .await
+        .map_err(CommandError::new)
 }
 
 /// Charts for one pod, node, namespace or workload.

@@ -10,6 +10,7 @@ import { ForwardDialog } from "./ForwardsPanel";
 import { LogsPane } from "./LogsPane";
 import { ObjectContext } from "./ObjectContext";
 import { ObjectMetricsPane } from "./ObjectMetricsPane";
+import { QuotaPane } from "./QuotaPane";
 import { SizingPane } from "./SizingPane";
 import type { LogTarget, MetricTarget, StepAction } from "../types";
 
@@ -20,7 +21,16 @@ const TerminalPane = lazy(() =>
 );
 const YamlEditor = lazy(() => import("./YamlEditor").then((m) => ({ default: m.YamlEditor })));
 
-type Tab = "overview" | "diagnose" | "form" | "yaml" | "metrics" | "sizing" | "logs" | "terminal";
+type Tab =
+  | "overview"
+  | "diagnose"
+  | "form"
+  | "yaml"
+  | "metrics"
+  | "quota"
+  | "sizing"
+  | "logs"
+  | "terminal";
 
 /** Kinds with a pod template, where sizing advice applies. */
 const SIZEABLE = new Set(["Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "Job"]);
@@ -154,6 +164,7 @@ export function DetailDrawer() {
     { id: "form", label: "Form", enabled: hasForm && resource.editable },
     { id: "yaml", label: "YAML", enabled: true },
     { id: "metrics", label: "Metrics", enabled: metricTarget !== null },
+    { id: "quota", label: "Quota", enabled: resource.kind === "Namespace" },
     {
       id: "sizing",
       label: "Sizing",
@@ -329,6 +340,10 @@ export function DetailDrawer() {
 
       {tab === "metrics" && metricTarget && (
         <ObjectMetricsPane cluster={cluster} target={metricTarget} />
+      )}
+
+      {tab === "quota" && resource.kind === "Namespace" && (
+        <QuotaPane cluster={cluster} namespace={selected.name} />
       )}
 
       {tab === "sizing" && selected.namespace && (

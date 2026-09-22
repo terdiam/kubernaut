@@ -3,6 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use k8s_core::{ClusterManager, SchemaCache, WatchManager, watch::SubscriptionId};
 use k8s_helm::Helm;
 
+use crate::audit::AuditLog;
 use crate::preferences::Preferences;
 use k8s_metrics::MetricsManager;
 use k8s_ops::{
@@ -22,6 +23,7 @@ pub struct AppState {
     pub forwards: Arc<ForwardManager>,
     pub schemas: Arc<SchemaCache>,
     pub metrics: Arc<MetricsManager>,
+    pub audit: AuditLog,
     preferences: parking_lot::RwLock<Preferences>,
     /// Resolved lazily: helm may be absent, and that must not stop the app
     /// from starting or from listing releases (which needs no binary).
@@ -49,6 +51,7 @@ impl AppState {
             forwards: Arc::new(ForwardManager::new()),
             schemas: Arc::new(SchemaCache::new()),
             metrics: Arc::new(MetricsManager::new()),
+            audit: AuditLog::new(),
             preferences: parking_lot::RwLock::new(Preferences::load()),
             helm: parking_lot::Mutex::new(None),
             helm_sidecar_dir: parking_lot::Mutex::new(None),

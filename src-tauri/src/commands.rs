@@ -387,6 +387,15 @@ pub fn last_crash() -> Option<crate::logging::CrashReport> {
     crate::logging::last_crash()
 }
 
+/// Local trail of destructive actions this app has taken, newest first.
+#[tauri::command]
+pub fn list_audit_entries(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Vec<crate::audit::AuditEntry> {
+    state.audit.recent(limit.unwrap_or(200))
+}
+
 #[tauri::command]
 pub fn get_preferences(state: State<'_, AppState>) -> crate::preferences::Preferences {
     state.preferences()

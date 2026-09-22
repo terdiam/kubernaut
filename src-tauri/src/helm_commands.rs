@@ -15,6 +15,7 @@ use tauri::State;
 
 use crate::{
     error::{CommandError, CommandResult},
+    ops_commands::record_audit,
     state::AppState,
 };
 
@@ -237,9 +238,17 @@ pub async fn helm_rollback(
         .clusters
         .minified_kubeconfig(&cluster, Some(&namespace))?;
 
-    helm.rollback(&handle, &kubeconfig, &release, &namespace, revision)
-        .await
-        .map_err(CommandError::new)
+    let result = helm
+        .rollback(&handle, &kubeconfig, &release, &namespace, revision)
+        .await;
+    record_audit(
+        &state,
+        &cluster,
+        "helmRollback",
+        &format!("{namespace}/{release}"),
+        &result,
+    );
+    result.map_err(CommandError::new)
 }
 
 #[tauri::command]
@@ -259,13 +268,21 @@ pub async fn helm_uninstall(
         .clusters
         .minified_kubeconfig(&cluster, Some(&namespace))?;
 
-    helm.uninstall(
-        &handle,
-        &kubeconfig,
-        &release,
-        &namespace,
-        keep_history.unwrap_or(false),
-    )
-    .await
-    .map_err(CommandError::new)
+    let result = helm
+        .uninstall(
+            &handle,
+            &kubeconfig,
+            &release,
+            &namespace,
+            keep_history.unwrap_or(false),
+        )
+        .await;
+    record_audit(
+        &state,
+        &cluster,
+        "helmUninstall",
+        &format!("{namespace}/{release}"),
+        &result,
+    );
+    result.map_err(CommandError::new)
 }
