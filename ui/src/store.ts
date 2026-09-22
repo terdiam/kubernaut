@@ -3,6 +3,7 @@ import { api, startWatch } from "./api";
 import type {
   ClusterStatus,
   Preferences,
+  PinnedObject,
   ClusterSummary,
   ContextEntry,
   DiscoveryCache,
@@ -12,6 +13,16 @@ import type {
   WatchBatch,
   WatchState,
 } from "./types";
+
+/** Identity used to compare pins — `uid` isn't known ahead of a watch listing. */
+export function samePin(a: PinnedObject, b: PinnedObject): boolean {
+  return (
+    a.cluster === b.cluster &&
+    a.resourceKey === b.resourceKey &&
+    (a.namespace ?? "") === (b.namespace ?? "") &&
+    a.name === b.name
+  );
+}
 
 interface ActiveWatch {
   subscriptionId: number;
@@ -77,6 +88,8 @@ interface AppState {
   ) => void;
   loadPreferences: () => Promise<void>;
   savePreferences: (preferences: Preferences) => Promise<void>;
+  /** Pin or unpin a resource for one-click access from the sidebar. */
+  togglePin: (pin: PinnedObject) => Promise<void>;
   /** Navigate to another object by resource key, name and namespace. */
   openObject: (resource: string, namespace: string | null, name: string) => Promise<void>;
   /** Create dialog, opened by the floating + button. Creates the kind in view. */
@@ -388,6 +401,15 @@ export const useStore = create<AppState>((set, get) => ({
     const saved = await api.setPreferences(preferences);
     set({ preferences: saved });
     applyTheme(saved.theme);
+  },
+
+  togglePin: async (pin) => {
+    const current = get().preferences;
+    if (!current) return;
+    const pinned = current.pinned.some((p) => samePin(p, pin))
+      ? current.pinned.filter((p) => !samePin(p, pin))
+      : [...current.pinned, pin];
+    await get().savePreferences({ ...current, pinned });
   },
 
   openCreate: () => set({ createOpen: true }),

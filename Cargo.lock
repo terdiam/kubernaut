@@ -2452,6 +2452,7 @@ dependencies = [
  "k8s-core",
  "k8s-helm",
  "k8s-metrics",
+ "k8s-openapi",
  "k8s-ops",
  "k8s-security",
  "parking_lot",

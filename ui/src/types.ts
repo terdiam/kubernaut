@@ -135,6 +135,16 @@ export interface CrashReport {
   excerpt: string;
 }
 
+/** One entry in the local audit trail of destructive actions. */
+export interface AuditEntry {
+  timestamp: string;
+  cluster: string;
+  action: string;
+  target: string;
+  /** "ok", or the error message when the action failed. */
+  outcome: string;
+}
+
 // ---- P1: operations -------------------------------------------------------
 
 export interface ContainerInfo {
@@ -362,6 +372,28 @@ export interface NamespaceUsage {
   memoryLimits: number;
   /** Some container in the namespace declares no request. */
   hasUnsetRequests: boolean;
+}
+
+/** One `ResourceQuota` object: quantity strings as the API reports them. */
+export interface QuotaResource {
+  name: string;
+  hard: Record<string, string>;
+  used: Record<string, string>;
+}
+
+/** One entry of a `LimitRange`'s `spec.limits`. */
+export interface LimitRangeItem {
+  kind: string;
+  default: Record<string, string>;
+  defaultRequest: Record<string, string>;
+  max: Record<string, string>;
+  min: Record<string, string>;
+}
+
+export interface NamespaceQuotaInfo {
+  namespace: string;
+  quotas: QuotaResource[];
+  limitRanges: LimitRangeItem[];
 }
 
 /** Current usage of one pod against what it declares. */
@@ -759,6 +791,15 @@ export interface ClusterProfile {
   proxyUrl: string | null;
 }
 
+/** A resource pinned for one-click access from the sidebar. */
+export interface PinnedObject {
+  cluster: string;
+  resourceKey: string;
+  namespace: string | null;
+  name: string;
+  label: string | null;
+}
+
 export interface Preferences {
   theme: Theme;
   language: Language;
@@ -773,6 +814,7 @@ export interface Preferences {
   protectedContexts: string[];
   checkUpdatesOnStartup: boolean;
   clusterProfiles: Record<string, ClusterProfile>;
+  pinned: PinnedObject[];
 }
 
 // ---- cluster imports ------------------------------------------------------

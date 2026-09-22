@@ -22,9 +22,37 @@ use serde::Serialize;
 use tauri::{State, ipc::Channel};
 
 use crate::{
+    audit::AuditEntry,
     error::{CommandError, CommandResult},
     state::AppState,
 };
+
+/// `resource/[namespace/]name`, for the audit-log target column.
+fn target_label(target: &TargetRef) -> String {
+    match &target.namespace {
+        Some(ns) => format!("{}/{ns}/{}", target.resource, target.name),
+        None => format!("{}/{}", target.resource, target.name),
+    }
+}
+
+pub(crate) fn record_audit<T, E: std::fmt::Display>(
+    state: &AppState,
+    cluster: &str,
+    action: &str,
+    target: &str,
+    result: &Result<T, E>,
+) {
+    state.audit.record(&AuditEntry {
+        timestamp: k8s_openapi::jiff::Timestamp::now().to_string(),
+        cluster: cluster.to_string(),
+        action: action.to_string(),
+        target: target.to_string(),
+        outcome: match result {
+            Ok(_) => "ok".to_string(),
+            Err(err) => err.to_string(),
+        },
+    });
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -337,9 +365,9 @@ pub async fn scale_workload(
 ) -> CommandResult<i32> {
     state.ensure_writable(&cluster).map_err(CommandError::new)?;
     let handle = state.clusters.require(&cluster)?;
-    actions::scale(&handle, &target, replicas)
-        .await
-        .map_err(CommandError::new)
+    let result = actions::scale(&handle, &target, replicas).await;
+    record_audit(&state, &cluster, "scale", &target_label(&target), &result);
+    result.map_err(CommandError::new)
 }
 
 #[tauri::command]
@@ -362,9 +390,9 @@ pub async fn restart_workload(
 ) -> CommandResult<()> {
     state.ensure_writable(&cluster).map_err(CommandError::new)?;
     let handle = state.clusters.require(&cluster)?;
-    actions::restart(&handle, &target)
-        .await
-        .map_err(CommandError::new)
+    let result = actions::restart(&handle, &target).await;
+    record_audit(&state, &cluster, "restart", &target_label(&target), &result);
+    result.map_err(CommandError::new)
 }
 
 #[tauri::command]
@@ -376,9 +404,10 @@ pub async fn set_node_cordoned(
 ) -> CommandResult<()> {
     state.ensure_writable(&cluster).map_err(CommandError::new)?;
     let handle = state.clusters.require(&cluster)?;
-    actions::set_cordoned(&handle, &node, cordoned)
-        .await
-        .map_err(CommandError::new)
+    let result = actions::set_cordoned(&handle, &node, cordoned).await;
+    let action = if cordoned { "cordon" } else { "uncordon" };
+    record_audit(&state, &cluster, action, &format!("nodes/{node}"), &result);
+    result.map_err(CommandError::new)
 }
 
 #[tauri::command]
@@ -390,9 +419,9 @@ pub async fn drain_node(
 ) -> CommandResult<DrainReport> {
     state.ensure_writable(&cluster).map_err(CommandError::new)?;
     let handle = state.clusters.require(&cluster)?;
-    actions::drain(&handle, &node, &options)
-        .await
-        .map_err(CommandError::new)
+    let result = actions::drain(&handle, &node, &options).await;
+    record_audit(&state, &cluster, "drain", &format!("nodes/{node}"), &result);
+    result.map_err(CommandError::new)
 }
 
 #[tauri::command]
@@ -403,9 +432,9 @@ pub async fn delete_object(
 ) -> CommandResult<()> {
     state.ensure_writable(&cluster).map_err(CommandError::new)?;
     let handle = state.clusters.require(&cluster)?;
-    actions::delete(&handle, &request)
-        .await
-        .map_err(CommandError::new)
+    let result = actions::delete(&handle, &request).await;
+    record_audit(&state, &cluster, "delete", &target_label(&request.target), &result);
+    result.map_err(CommandError::new)
 }
 
 #[tauri::command]
@@ -418,9 +447,15 @@ pub async fn evict_pod(
 ) -> CommandResult<()> {
     state.ensure_writable(&cluster).map_err(CommandError::new)?;
     let handle = state.clusters.require(&cluster)?;
-    actions::evict_pod(&handle, &namespace, &name, &confirmation)
-        .await
-        .map_err(CommandError::new)
+    let result = actions::evict_pod(&handle, &namespace, &name, &confirmation).await;
+    record_audit(
+        &state,
+        &cluster,
+        "evict",
+        &format!("pods/{namespace}/{name}"),
+        &result,
+    );
+    result.map_err(CommandError::new)
 }
 
 // ------------------------------------------------------------ context
@@ -499,9 +534,21 @@ pub async fn delete_objects(
 ) -> CommandResult<Vec<BulkOutcome>> {
     state.ensure_writable(&cluster).map_err(CommandError::new)?;
     let handle = state.clusters.require(&cluster)?;
-    actions::delete_many(&handle, &targets, &confirmation)
-        .await
-        .map_err(CommandError::new)
+    let result = actions::delete_many(&handle, &targets, &confirmation).await;
+    if let Ok(outcomes) = &result {
+        for outcome in outcomes {
+            let target = match &outcome.namespace {
+                Some(ns) => format!("{}/{ns}/{}", outcome.resource, outcome.name),
+                None => format!("{}/{}", outcome.resource, outcome.name),
+            };
+            let outcome_result: Result<(), &str> = match &outcome.error {
+                Some(err) => Err(err.as_str()),
+                None => Ok(()),
+            };
+            record_audit(&state, &cluster, "delete", &target, &outcome_result);
+        }
+    }
+    result.map_err(CommandError::new)
 }
 
 /// Roll several workloads.
@@ -513,9 +560,21 @@ pub async fn restart_workloads(
 ) -> CommandResult<Vec<BulkOutcome>> {
     state.ensure_writable(&cluster).map_err(CommandError::new)?;
     let handle = state.clusters.require(&cluster)?;
-    actions::restart_many(&handle, &targets)
-        .await
-        .map_err(CommandError::new)
+    let result = actions::restart_many(&handle, &targets).await;
+    if let Ok(outcomes) = &result {
+        for outcome in outcomes {
+            let target = match &outcome.namespace {
+                Some(ns) => format!("{}/{ns}/{}", outcome.resource, outcome.name),
+                None => format!("{}/{}", outcome.resource, outcome.name),
+            };
+            let outcome_result: Result<(), &str> = match &outcome.error {
+                Some(err) => Err(err.as_str()),
+                None => Ok(()),
+            };
+            record_audit(&state, &cluster, "restart", &target, &outcome_result);
+        }
+    }
+    result.map_err(CommandError::new)
 }
 
 /// Read objects and write them into a zip archive at `path`.

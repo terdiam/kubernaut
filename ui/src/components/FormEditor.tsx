@@ -344,6 +344,17 @@ export function FieldRow({
         />
       );
 
+    case "taints":
+      return (
+        <div className="field field--wide">
+          {label}
+          <TaintsEditor
+            value={Array.isArray(value) ? (value as Obj[]) : []}
+            onChange={(next) => onChange(field.path, next.length ? next : undefined)}
+          />
+        </div>
+      );
+
     case "servicePorts":
       return (
         <div className="field field--wide">
@@ -567,6 +578,65 @@ function StringListEditor({
       ))}
       <button className="button button--ghost" onClick={() => onChange([...value, ""])}>
         + Add
+      </button>
+    </div>
+  );
+}
+
+const TAINT_EFFECTS = ["NoSchedule", "PreferNoSchedule", "NoExecute"];
+
+function TaintsEditor({
+  value,
+  onChange,
+}: {
+  value: Obj[];
+  onChange: (next: Obj[]) => void;
+}) {
+  const patch = (index: number, key: string, val: unknown) => {
+    const next = value.slice();
+    next[index] = { ...(next[index] ?? {}), [key]: val };
+    onChange(next);
+  };
+
+  return (
+    <div className="kv">
+      {value.map((taint, index) => (
+        <div className="kv__row" key={index}>
+          <input
+            placeholder="key"
+            value={String(taint.key ?? "")}
+            onChange={(e) => patch(index, "key", e.target.value)}
+          />
+          <input
+            className="kv__value"
+            placeholder="value (optional)"
+            value={String(taint.value ?? "")}
+            onChange={(e) => patch(index, "value", e.target.value || undefined)}
+          />
+          <select
+            value={String(taint.effect ?? TAINT_EFFECTS[0])}
+            onChange={(e) => patch(index, "effect", e.target.value)}
+          >
+            {TAINT_EFFECTS.map((effect) => (
+              <option key={effect} value={effect}>
+                {effect}
+              </option>
+            ))}
+          </select>
+          <button
+            className="icon-button"
+            title="Remove"
+            onClick={() => onChange(value.filter((_, i) => i !== index))}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      <button
+        className="button button--ghost"
+        onClick={() => onChange([...value, { key: "", effect: TAINT_EFFECTS[0] }])}
+      >
+        + Add taint
       </button>
     </div>
   );

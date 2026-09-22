@@ -61,7 +61,9 @@ export type Field =
   /** StatefulSet-only: templates that provision one PVC per replica. */
   | { kind: "volumeClaimTemplates"; path: string; label: string; help?: string }
   /** Ingress TLS termination: hosts, and the Secret holding the certificate. */
-  | { kind: "ingressTls"; path: string; label: string; help?: string };
+  | { kind: "ingressTls"; path: string; label: string; help?: string }
+  /** A Node's `spec.taints`: key/value/effect rows. */
+  | { kind: "taints"; path: string; label: string; help?: string };
 
 /** Where a reference field's options come from. Matches the Rust lookup. */
 export type LookupSource =
@@ -514,6 +516,21 @@ const NETWORK_POLICY: Section[] = [
 
 const NAMESPACE: Section[] = [METADATA];
 
+const NODE: Section[] = [
+  METADATA,
+  {
+    title: "Scheduling",
+    fields: [
+      {
+        kind: "taints",
+        path: "spec.taints",
+        label: "Taints",
+        help: "NoSchedule/PreferNoSchedule keep new pods off the node; NoExecute also evicts pods already running there that don't tolerate it.",
+      },
+    ],
+  },
+];
+
 const SERVICE_ACCOUNT: Section[] = [
   {
     title: "Service account",
@@ -545,6 +562,7 @@ const LAYOUTS: Record<string, Section[]> = {
   "autoscaling/HorizontalPodAutoscaler": HPA,
   "/Namespace": NAMESPACE,
   "/ServiceAccount": SERVICE_ACCOUNT,
+  "/Node": NODE,
 };
 
 /** Layout for a kind, or `null` when only the YAML editor applies. */

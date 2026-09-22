@@ -32,6 +32,26 @@ pub async fn get(
     Ok(api.get(name).await?)
 }
 
+/// List objects of a kind, optionally scoped to a namespace.
+pub async fn list(
+    cluster: &Arc<ClusterHandle>,
+    resource_key: &str,
+    namespace: Option<&str>,
+) -> Result<Vec<DynamicObject>> {
+    let discovery = match cluster.discovery() {
+        Some(d) => d,
+        None => cluster.refresh_discovery().await?,
+    };
+    let descriptor = discovery.require(resource_key)?;
+    let ar = descriptor.api_resource();
+
+    let api: Api<DynamicObject> = match (namespace, descriptor.namespaced) {
+        (Some(ns), true) => Api::namespaced_with(cluster.client.clone(), ns, &ar),
+        _ => Api::all_with(cluster.client.clone(), &ar),
+    };
+    Ok(api.list(&ListParams::default()).await?.items)
+}
+
 /// Namespaces the user can see, for the namespace picker.
 ///
 /// Falls back to the context's default namespace when listing is forbidden —

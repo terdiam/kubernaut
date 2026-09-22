@@ -1,3 +1,4 @@
+mod audit;
 mod clusters;
 mod commands;
 mod error;
@@ -79,6 +80,7 @@ pub fn run() {
             commands::diagnostics,
             commands::get_preferences,
             commands::last_crash,
+            commands::list_audit_entries,
             commands::managed_kubeconfigs,
             commands::system_kubeconfig_contexts,
             commands::import_system_contexts,
@@ -131,6 +133,7 @@ pub fn run() {
             metrics_commands::cluster_overview,
             metrics_commands::overview_history,
             metrics_commands::namespace_usage,
+            metrics_commands::namespace_quota,
             metrics_commands::object_metrics,
             metrics_commands::metrics_sources,
             metrics_commands::topology,

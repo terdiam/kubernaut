@@ -2,6 +2,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   ApplyOutcome,
+  AuditEntry,
   ClusterStatus,
   ClusterSummary,
   BulkOutcome,
@@ -31,6 +32,7 @@ import type {
   LookupOption,
   MetricsSources,
   MetricTarget,
+  NamespaceQuotaInfo,
   NamespaceUsage,
   NodeScope,
   NodeSummary,
@@ -96,6 +98,7 @@ export const api = {
   diagnostics: () => invoke<Diagnostics>("diagnostics"),
   getPreferences: () => invoke<Preferences>("get_preferences"),
   lastCrash: () => invoke<CrashReport | null>("last_crash"),
+  listAuditEntries: (limit?: number) => invoke<AuditEntry[]>("list_audit_entries", { limit }),
 
   managedKubeconfigs: () => invoke<ManagedKubeconfig[]>("managed_kubeconfigs"),
   systemKubeconfigContexts: () => invoke<ContextEntry[]>("system_kubeconfig_contexts"),
@@ -270,6 +273,8 @@ export const api = {
     invoke<SizingReport>("workload_sizing", { cluster, namespace, resource, name }),
   namespaceUsage: (cluster: string) =>
     invoke<NamespaceUsage[]>("namespace_usage", { cluster }),
+  namespaceQuota: (cluster: string, namespace: string) =>
+    invoke<NamespaceQuotaInfo>("namespace_quota", { cluster, namespace }),
   objectMetrics: (cluster: string, target: MetricTarget, windowMs: number) =>
     invoke<ObjectMetrics>("object_metrics", { cluster, target, windowMs }),
   metricsSources: (cluster: string) =>

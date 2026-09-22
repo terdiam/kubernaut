@@ -20,6 +20,7 @@ k8s-helm.workspace = true
 k8s-metrics.workspace = true
 k8s-ops.workspace = true
 k8s-security.workspace = true
+k8s-openapi.workspace = true
 
 tauri.workspace = true
 

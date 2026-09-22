@@ -6,6 +6,7 @@ pub mod objects;
 pub mod overview;
 pub mod prometheus;
 pub mod quantity;
+pub mod quota;
 pub mod recommend;
 pub mod resolve;
 pub mod sampler;
@@ -16,6 +17,7 @@ pub use objects::{
     MetricSource, MetricTarget, NamespaceUsage, NodeSummary, ObjectMetrics, PodUsage, Point,
 };
 pub use prometheus::PrometheusTarget;
+pub use quota::{LimitRangeItem, NamespaceQuotaInfo, QuotaResource};
 pub use recommend::{Confidence, Recommendation};
 pub use sampler::{ClusterSampler, MetricsManager};
 pub use topology::{Topology, TopologyEdge, TopologyNode};
