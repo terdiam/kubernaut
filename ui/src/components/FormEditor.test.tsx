@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FormEditor } from "./FormEditor";
+import { secretFromForm, secretToForm } from "../secret";
 import type { ApplyOutcome, EditRequest } from "../types";
 
 const applyEdit = vi.fn<(cluster: string, request: EditRequest) => Promise<ApplyOutcome>>();
@@ -339,5 +340,90 @@ describe("FormEditor", () => {
     expect(sent.spec.template.spec.containers[0].envFrom).toEqual([
       { secretRef: { name: "app-secrets" }, prefix: "APP_" },
     ]);
+  });
+
+  // Regression for a real bug report: an <input> strips \r/\n from its value
+  // the moment it's touched, so editing a TLS Secret's cert/key through a
+  // single-line field silently flattened it to one line — no longer valid PEM,
+  // which is why the certificate a browser or ingress controller then saw was
+  // whatever *that* falls back to on an unparseable secret, not this app's
+  // doing directly. See CERT below: a mid-document line count is exactly what
+  // an <input>'s sanitization would erase.
+  describe("editing a TLS Secret", () => {
+    const CERT =
+      "-----BEGIN CERTIFICATE-----\nMIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8A\nMIDDLE-LINE-CONTENT\n-----END CERTIFICATE-----\n";
+    const KEY = "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCA\n-----END PRIVATE KEY-----\n";
+
+    const tlsSecret = () => ({
+      apiVersion: "v1",
+      kind: "Secret",
+      type: "kubernetes.io/tls",
+      metadata: { name: "web-tls", namespace: "production" },
+      data: {
+        "tls.crt": btoa(CERT),
+        "tls.key": btoa(KEY),
+      },
+    });
+
+    function mountTlsSecret() {
+      const initial = secretToForm(tlsSecret());
+      return render(
+        <FormEditor
+          cluster="default"
+          resource="core/v1/secrets"
+          group=""
+          kind="Secret"
+          namespace="production"
+          name="web-tls"
+          initial={initial}
+          serialize={secretFromForm}
+          onApplied={vi.fn()}
+        />,
+      );
+    }
+
+    it("shows the certificate in a textarea, not a single-line input", () => {
+      mountTlsSecret();
+      // Masked by default; a multi-line value has no honest single-line stand-in.
+      expect(screen.queryByDisplayValue(CERT)).toBeNull();
+
+      const rows = document.querySelectorAll(".kv__row--multiline");
+      const certRow = Array.from(rows).find(
+        (row) => (row.querySelector("input") as HTMLInputElement).value === "tls.crt",
+      )!;
+      fireEvent.click(within(certRow as HTMLElement).getByTitle("Reveal value"));
+
+      const textarea = certRow.querySelector("textarea") as HTMLTextAreaElement;
+      expect(textarea).toBeTruthy();
+      expect(textarea.value).toBe(CERT);
+    });
+
+    it("keeps the certificate's newlines through an edit and save", async () => {
+      applyEdit.mockResolvedValue({ status: "applied", yaml: "", resourceVersion: "9" });
+      mountTlsSecret();
+
+      const rows = document.querySelectorAll(".kv__row--multiline");
+      const certRow = Array.from(rows).find(
+        (row) => (row.querySelector("input") as HTMLInputElement).value === "tls.crt",
+      )! as HTMLElement;
+      fireEvent.click(within(certRow).getByTitle("Reveal value"));
+      const textarea = certRow.querySelector("textarea") as HTMLTextAreaElement;
+
+      // A genuine edit — appending a comment line — while every existing
+      // newline must survive; an <input> in the same spot would have already
+      // dropped them on this very change event.
+      const edited = CERT.replace("MIDDLE-LINE-CONTENT", "MIDDLE-LINE-CONTENT\nEXTRA-LINE");
+      fireEvent.change(textarea, { target: { value: edited } });
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+      await vi.waitFor(() => expect(applyEdit).toHaveBeenCalledTimes(1));
+      const sent = JSON.parse(applyEdit.mock.calls[0]![1].yaml);
+      const decoded = atob(sent.data["tls.crt"]);
+      expect(decoded).toBe(edited);
+      expect(decoded.split("\n").length).toBeGreaterThan(1);
+      // The key was never touched, so it is not part of the patch at all —
+      // proof this isn't quietly re-flattening every field on save.
+      expect(sent.data["tls.key"]).toBeUndefined();
+    });
   });
 });

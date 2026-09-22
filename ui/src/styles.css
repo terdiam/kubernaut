@@ -516,7 +516,19 @@ body.resizing { cursor: col-resize; user-select: none; }
 
 .kv { display: flex; flex-direction: column; gap: 4px; }
 .kv__row { display: flex; gap: 4px; }
+.kv__row--multiline { align-items: flex-start; }
 .kv__row input { flex: 1; min-width: 0; }
+.kv__row .kv__value { flex: 2; }
+textarea.kv__value {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px; font-family: ui-monospace, Menlo, monospace; font-size: 11.5px;
+  resize: vertical;
+}
+.kv__value--masked {
+  flex: 2; min-width: 0; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-hover); color: var(--muted); font-family: ui-monospace, Menlo, monospace;
+  letter-spacing: 2px; user-select: none;
+}
 
 .ports { display: flex; flex-direction: column; gap: 4px; }
 .ports__head, .ports__row {

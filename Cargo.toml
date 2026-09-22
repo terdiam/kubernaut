@@ -60,6 +60,9 @@ chrono = { version = "0.4", features = ["serde"] }
 humantime = "2"
 regex = "1"
 base64 = "0.22"
+# Parses a TLS Secret's certificate for display (domains, expiry) — no
+# verification, so the verify/ring/aws-lc-rs features are switched off.
+x509-parser = { version = "0.18", default-features = false }
 similar = "2"
 # Archive format for bulk export: openable by double-click on both macOS and
 # Windows, unlike a tarball.

@@ -313,6 +313,7 @@ export function FieldRow({
           <KeyValueEditor
             value={(value ?? {}) as Record<string, string>}
             masked={field.masked === true}
+            multiline={field.multiline === true}
             onChange={(next) => onChange(field.path, Object.keys(next).length ? next : undefined)}
           />
         </div>
@@ -454,10 +455,13 @@ function JsonArea({ value, onChange }: { value: unknown; onChange: (next: unknow
 function KeyValueEditor({
   value,
   masked = false,
+  multiline = false,
   onChange,
 }: {
   value: Record<string, string>;
   masked?: boolean;
+  /** A `<textarea>` per value — see the `multiline` doc on the `keyValue` field kind. */
+  multiline?: boolean;
   onChange: (next: Record<string, string>) => void;
 }) {
   const entries = Object.entries(value);
@@ -478,32 +482,55 @@ function KeyValueEditor({
 
   return (
     <div className="kv">
-      {entries.map(([key, val], index) => (
-        <div className="kv__row" key={`${key}-${index}`}>
-          <input value={key} onChange={(e) => replace(index, e.target.value, val)} />
-          <input
-            value={String(val)}
-            type={masked && !revealed.has(key) ? "password" : "text"}
-            onChange={(e) => replace(index, key, e.target.value)}
-          />
-          {masked && (
+      {entries.map(([key, val], index) => {
+        const isMasked = masked && !revealed.has(key);
+        return (
+          <div className={`kv__row${multiline ? " kv__row--multiline" : ""}`} key={`${key}-${index}`}>
+            <input value={key} onChange={(e) => replace(index, e.target.value, val)} />
+            {multiline ? (
+              isMasked ? (
+                // Not wired to onChange: a masked multi-line value has no honest
+                // single-line stand-in, so editing it requires revealing it first
+                // rather than mangling newlines through an <input> in between.
+                <div className="kv__value kv__value--masked" title="Hidden — reveal to view or edit">
+                  {"•".repeat(24)}
+                </div>
+              ) : (
+                <textarea
+                  className="kv__value"
+                  value={String(val)}
+                  spellCheck={false}
+                  rows={Math.min(12, Math.max(3, String(val).split("\n").length))}
+                  onChange={(e) => replace(index, key, e.target.value)}
+                />
+              )
+            ) : (
+              <input
+                className="kv__value"
+                value={String(val)}
+                type={isMasked ? "password" : "text"}
+                onChange={(e) => replace(index, key, e.target.value)}
+              />
+            )}
+            {masked && (
+              <button
+                className="icon-button"
+                title={revealed.has(key) ? "Hide value" : "Reveal value"}
+                onClick={() => toggle(key)}
+              >
+                {revealed.has(key) ? "🙈" : "👁"}
+              </button>
+            )}
             <button
               className="icon-button"
-              title={revealed.has(key) ? "Hide value" : "Reveal value"}
-              onClick={() => toggle(key)}
+              title="Remove"
+              onClick={() => onChange(Object.fromEntries(entries.filter((_, i) => i !== index)))}
             >
-              {revealed.has(key) ? "🙈" : "👁"}
+              ✕
             </button>
-          )}
-          <button
-            className="icon-button"
-            title="Remove"
-            onClick={() => onChange(Object.fromEntries(entries.filter((_, i) => i !== index)))}
-          >
-            ✕
-          </button>
-        </div>
-      ))}
+          </div>
+        );
+      })}
       <button className="button button--ghost" onClick={() => onChange({ ...value, "": "" })}>
         + Add
       </button>

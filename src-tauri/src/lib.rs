@@ -14,6 +14,11 @@ use state::AppState;
 
 /// Entry point shared by the desktop binary.
 pub fn run() {
+    // Must happen before WebKitGTK initializes, which starts somewhere inside
+    // `tauri::Builder::run()` below — see the function for why.
+    #[cfg(target_os = "linux")]
+    apply_webkit_workarounds();
+
     // Held for the life of the process: dropping the guard stops the log being
     // flushed, which loses exactly the lines a crash report needs.
     let _log_guard = logging::init();
@@ -156,6 +161,34 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to start Kubernaut");
+}
+
+/// Work around a WebKitGTK bug where the webview paints nothing at all: an
+/// empty window, correct size and title, no error anywhere — reported on
+/// Arch and other rolling distros, on GPU/driver combinations where
+/// WebKitGTK's hardware-accelerated compositor (its DMA-BUF renderer, in
+/// recent versions) never produces a frame. Forcing the software compositor
+/// trades a little GPU offload for a window that actually shows content,
+/// which is the standard fix for this class of bug.
+///
+/// Only sets a variable the user has not already set themselves, so someone
+/// who has their own workaround in place — or wants to try without this one —
+/// is not overridden.
+///
+/// Must run before WebKitGTK reads these on startup, and while the process is
+/// still single-threaded — `run()` calls this before anything else.
+#[cfg(target_os = "linux")]
+fn apply_webkit_workarounds() {
+    for (key, value) in [
+        ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+        ("WEBKIT_DISABLE_DMABUF_RENDERER", "1"),
+    ] {
+        if std::env::var_os(key).is_none() {
+            // SAFETY: the first thing `run()` does, before any thread exists
+            // besides this one.
+            unsafe { std::env::set_var(key, value) };
+        }
+    }
 }
 
 fn hydrate_path(extra: &[std::path::PathBuf]) -> Vec<std::path::PathBuf> {

@@ -13,7 +13,25 @@ export type Field =
   | { kind: "boolean"; path: string; label: string; help?: string }
   | { kind: "select"; path: string; label: string; options: string[]; help?: string }
   | { kind: "textarea"; path: string; label: string; help?: string }
-  | { kind: "keyValue"; path: string; label: string; help?: string; masked?: boolean }
+  | {
+      kind: "keyValue";
+      path: string;
+      label: string;
+      help?: string;
+      masked?: boolean;
+      /**
+       * A `<textarea>` per value instead of a single-line `<input>`.
+       *
+       * An `<input>`'s value sanitization strips CR/LF the moment it is
+       * touched — a multi-line value (a cert, a key, a config file) silently
+       * collapses to one line with no newlines at all. For a TLS Secret this
+       * produces a `tls.crt`/`tls.key` that no longer parses as PEM; nothing
+       * that reads it errors loudly, so what actually surfaces is whatever
+       * the consumer falls back to when the certificate is unusable — an
+       * ingress controller's own self-signed default, for one.
+       */
+      multiline?: boolean;
+    }
   | { kind: "stringList"; path: string; label: string; help?: string }
   | { kind: "containers"; path: string; label: string; help?: string }
   | { kind: "servicePorts"; path: string; label: string; help?: string }
@@ -372,7 +390,7 @@ const CONFIGMAP: Section[] = [
   {
     title: "Data",
     fields: [
-      { kind: "keyValue", path: "data", label: "Entries" },
+      { kind: "keyValue", path: "data", label: "Entries", multiline: true },
       {
         kind: "boolean",
         path: "immutable",
@@ -391,7 +409,7 @@ const SECRET: Section[] = [
       "Values are shown decoded and re-encoded on save. They are masked until revealed.",
     fields: [
       { kind: "text", path: "type", label: "Type", placeholder: "Opaque" },
-      { kind: "keyValue", path: "stringData", label: "Entries", masked: true },
+      { kind: "keyValue", path: "stringData", label: "Entries", masked: true, multiline: true },
     ],
   },
   METADATA,

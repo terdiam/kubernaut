@@ -67,6 +67,10 @@ clusters connected; every one is added explicitly.
   columns).
 - Shared, ref-counted watches batched over a Tauri IPC channel, so many open
   tabs on the same resource cost one watch, not several.
+- A `kubernetes.io/tls` Secret's own certificate read straight off the row:
+  domains from its Subject Alternative Name and when it expires, with the row
+  turning amber inside its last two weeks and red once past due — no `openssl
+  x509 -noout -text` required.
 - **Row selection** — checkbox column with select-all and shift-click ranges,
   a bulk bar for delete / restart / export, and a fuzzy command palette (⌘K)
   across clusters, resource types and live objects.
@@ -93,7 +97,10 @@ clusters connected; every one is added explicitly.
   ownership).
 - **Form editing** for common kinds over the same server-side apply path —
   only the fields that changed are sent, so an edit never claims ownership of
-  the rest of the object. Secrets decode for editing and re-encode on save.
+  the rest of the object. Secrets decode for editing and re-encode on save,
+  through a multi-line field for anything that is (a certificate, a key, a
+  config file) — a single-line one would silently strip its newlines the
+  moment it was touched.
 - **Bulk export** — selected rows, or everything a filter leaves visible, as a
   zip through the OS save dialog: one YAML file per object, grouped
   `<namespace>/<kind>/<name>.yaml`.

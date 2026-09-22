@@ -6,15 +6,22 @@
 
 use std::collections::BTreeMap;
 
+use base64::Engine as _;
 use k8s_openapi::jiff::Timestamp;
 use kube::api::DynamicObject;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use x509_parser::{extensions::GeneralName, pem::Pem};
 
 use crate::{
     discovery::{ColumnDef, ResourceDescriptor},
     jsonpath::{self, JsonPath},
 };
+
+/// `Secret.type` for a TLS keypair — matches `k8s-ops`' own constant of the
+/// same value; not shared, because pulling in `k8s-ops` here to save one
+/// string would run a crate dependency the wrong direction.
+const TLS_SECRET_TYPE: &str = "kubernetes.io/tls";
 
 /// Coarse health used to colour a row. Deliberately small: the detail pane
 /// explains *why*, the table only needs to draw attention.
@@ -253,9 +260,16 @@ fn builtin_columns(group: &str, kind: &str) -> Vec<ColumnDef> {
             col("Status", ".status.phase", "string"),
             col("Storage Class", ".spec.storageClassName", "string"),
         ],
-        ("", "ConfigMap") | ("", "Secret") => vec![
+        ("", "ConfigMap") => vec![
             cc("Data", "data_count", "integer"),
             col("Type", ".type", "string"),
+        ],
+        ("", "Secret") => vec![
+            cc("Data", "data_count", "integer"),
+            col("Type", ".type", "string"),
+            // Blank for every Secret type except kubernetes.io/tls.
+            cc("Domains", "tls_domains", "string"),
+            cc("Expires", "tls_expires", "string"),
         ],
         ("", "ServiceAccount") => vec![cc("Secrets", "secrets_count", "integer")],
         ("", "Event") => vec![
@@ -329,6 +343,8 @@ fn computed_cell(_kind: &str, path: &str) -> Option<fn(&Value) -> String> {
         "service_ports" => service_ports,
         "access_modes" => access_modes,
         "data_count" => data_count,
+        "tls_domains" => tls_domains,
+        "tls_expires" => tls_expires,
         "secrets_count" => secrets_count,
         "event_object" => event_object,
         "workload_ready" => workload_ready,
@@ -531,6 +547,125 @@ fn data_count(v: &Value) -> String {
     (data + binary).to_string()
 }
 
+/// What a `kubernetes.io/tls` Secret's own leaf certificate claims about
+/// itself — read for display, not verified: no chain, signature or hostname
+/// check happens here, only decoding what the certificate says.
+struct TlsCertificate {
+    /// SAN DNS names, or the subject's Common Name when there is no SAN —
+    /// most TLS clients ignore the CN once a SAN exists, but plenty of
+    /// still-valid certificates predate that convention.
+    domains: Vec<String>,
+    /// Unix seconds.
+    not_after: i64,
+}
+
+/// Decodes and parses a Secret's `data["tls.crt"]`, if it is one.
+///
+/// A chain is leaf-first by convention, and the leaf is what "this
+/// certificate" means to a reader of the table, so later PEM blocks (any
+/// intermediates) are ignored.
+fn tls_leaf_certificate(v: &Value) -> Option<TlsCertificate> {
+    if v.get("type").and_then(Value::as_str) != Some(TLS_SECRET_TYPE) {
+        return None;
+    }
+    let encoded = v.get("data")?.get("tls.crt")?.as_str()?;
+    let der = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()?;
+    let pem = Pem::iter_from_buffer(&der).next()?.ok()?;
+    let cert = pem.parse_x509().ok()?;
+
+    let sans: Vec<String> = cert
+        .subject_alternative_name()
+        .ok()
+        .flatten()
+        .into_iter()
+        .flat_map(|ext| {
+            ext.value
+                .general_names
+                .iter()
+                .filter_map(|name| match name {
+                    GeneralName::DNSName(name) => Some((*name).to_string()),
+                    _ => None,
+                })
+        })
+        .collect();
+    let domains = if !sans.is_empty() {
+        sans
+    } else {
+        cert.subject()
+            .iter_common_name()
+            .filter_map(|cn| cn.as_str().ok())
+            .map(str::to_string)
+            .collect()
+    };
+
+    Some(TlsCertificate {
+        domains,
+        not_after: cert.validity().not_after.timestamp(),
+    })
+}
+
+fn tls_domains(v: &Value) -> String {
+    tls_leaf_certificate(v)
+        .map(|cert| cert.domains.join(","))
+        .unwrap_or_default()
+}
+
+/// The expiry date plus how far away it is — "2027-03-14 · in 172d" or,
+/// past due, "2026-01-02 · expired 40d ago". Day-granularity, like
+/// `humanize_age`, rather than the RFC3339 instant `not_after` actually is:
+/// nobody scanning a table needs the certificate's expiry to the second.
+fn tls_expires(v: &Value) -> String {
+    let Some(cert) = tls_leaf_certificate(v) else {
+        return String::new();
+    };
+    let Ok(target) = Timestamp::from_second(cert.not_after) else {
+        return String::new();
+    };
+    let days = target.duration_since(Timestamp::now()).as_secs() / 86_400;
+    format_expiry(&target.to_string(), days)
+}
+
+/// Pure formatting, split out from [`tls_expires`] so the day-boundary
+/// wording can be tested directly — a certificate fixture generated to sit
+/// right at a boundary would itself have drifted past it by the time the
+/// test runs again.
+fn format_expiry(rfc3339: &str, days: i64) -> String {
+    let date = rfc3339.split('T').next().unwrap_or(rfc3339);
+    match days {
+        0 => format!("{date} · expires today"),
+        d if d > 0 => format!("{date} · in {d}d"),
+        d => format!("{date} · expired {}d ago", -d),
+    }
+}
+
+/// `Unknown` for anything that isn't a TLS Secret — same as every other
+/// Secret always was — `Error` once expired, `Warning` inside its last two
+/// weeks, `Ok` otherwise.
+fn tls_secret_health(v: &Value) -> RowHealth {
+    let Some(cert) = tls_leaf_certificate(v) else {
+        return RowHealth::Unknown;
+    };
+    let Ok(target) = Timestamp::from_second(cert.not_after) else {
+        return RowHealth::Unknown;
+    };
+    let days = target.duration_since(Timestamp::now()).as_secs() / 86_400;
+    health_for_days_until_expiry(days)
+}
+
+/// Pure threshold, split out from [`tls_secret_health`] for the same reason
+/// as [`format_expiry`].
+fn health_for_days_until_expiry(days: i64) -> RowHealth {
+    if days < 0 {
+        RowHealth::Error
+    } else if days < 14 {
+        RowHealth::Warning
+    } else {
+        RowHealth::Ok
+    }
+}
+
 fn secrets_count(v: &Value) -> String {
     arr(v, &["secrets"]).len().to_string()
 }
@@ -639,6 +774,7 @@ fn health_fn(kind: &str) -> fn(&Value) -> RowHealth {
         "Job" => job_health,
         "PersistentVolumeClaim" | "PersistentVolume" | "Namespace" => phase_health,
         "Event" => event_health,
+        "Secret" => tls_secret_health,
         _ => condition_health,
     }
 }
@@ -843,5 +979,97 @@ mod tests {
         let now: Timestamp = "2026-01-02T00:00:00Z".parse().unwrap();
         let created: Timestamp = "2026-01-01T21:30:00Z".parse().unwrap();
         assert_eq!(humanize_age(created, now), "2h30m");
+    }
+
+    // Self-signed, SAN example.com/www.example.com, 10-year validity — long
+    // enough that "not expired" stays true for the life of this test file;
+    // notAfter (2036-09-19T08:54:59Z / 2105427299) is asserted against
+    // `openssl x509 -noout -enddate`'s own report on the same certificate,
+    // not derived from it, so a parsing regression can't cancel itself out.
+    const TLS_CERT: &str = "-----BEGIN CERTIFICATE-----
+MIIDNjCCAh6gAwIBAgIUaMor7W9Ly2TPr47CyZtxyu7YjNcwDQYJKoZIhvcNAQEL
+BQAwFjEUMBIGA1UEAwwLZXhhbXBsZS5jb20wHhcNMjYwOTIyMDg1NDU5WhcNMzYw
+OTE5MDg1NDU5WjAWMRQwEgYDVQQDDAtleGFtcGxlLmNvbTCCASIwDQYJKoZIhvcN
+AQEBBQADggEPADCCAQoCggEBAJ/oaHPMj8WKGgAOAPeDy+5EGg7GYG7WFaPNToIP
+ERo+IjOCSnRFr37qP50wrf30nCk2/iQa7//XNKmizfyU/lkcZeEPLyfRIkRJbexo
+k/V4fjKDJQefjjrbHVxZsR5s1/uJWhg+xaTs8cTI8hq6UDV7OUEIBSNXdDNBDkSJ
+kIJ/URX5AV4VqDgbJ4AdPwWd4NYL5xzi29dISsqpJV2y9ybGziS2fegj4mCz1+FS
+SqKxntygacB4pQDZeSqEQkP8rmx0BKfyoj2s/bDHqTukUXNIksh+pyf/xfsU1MGB
+zxKO61PpUa78KSQHyBIJuT2LHknTouWOOACxZt9wcUVvGFECAwEAAaN8MHowHQYD
+VR0OBBYEFI5gk7+8ZBe4lcs49QgVV/lBgjvGMB8GA1UdIwQYMBaAFI5gk7+8ZBe4
+lcs49QgVV/lBgjvGMA8GA1UdEwEB/wQFMAMBAf8wJwYDVR0RBCAwHoILZXhhbXBs
+ZS5jb22CD3d3dy5leGFtcGxlLmNvbTANBgkqhkiG9w0BAQsFAAOCAQEAc71A4Tdd
+WzmZ7kDifX7MuO17ToGyBD+m/VZiNCEGGzZAwndrvjLx6ZAou5NpXDDK2V3SN3rU
+E8M50CqqClklaUQC348vUXMZSmjT6q+E6y3DlL1FJx/CT2QOVX2XNk3LA2OonLit
+OALBDQ+TnJ2CE4Xgy2Or4xYovnH/zo8AYGcklJi8CfcAsoAuOsF0ADaot7kJa0bz
+ZtuKbYB9MOdpnAGNxiC1rd8UIYaTBslXWunMyeYDAh+zEmgqYjr0SqnSHYRqSSRI
+T2VVErzihHM7S6o8wbhFAeHwPrGYPUIt2Se8A5nfRtrw640KDu+7es9PByU5MqDY
+yS+PLK7+A7QJyw==
+-----END CERTIFICATE-----
+";
+
+    fn tls_secret(cert_pem: &str, secret_type: &str) -> Value {
+        json!({
+            "type": secret_type,
+            "data": {
+                "tls.crt": base64::engine::general_purpose::STANDARD.encode(cert_pem),
+                "tls.key": base64::engine::general_purpose::STANDARD.encode("not read by this code path"),
+            }
+        })
+    }
+
+    #[test]
+    fn tls_domains_and_expiry_come_from_the_leaf_certificate() {
+        let secret = tls_secret(TLS_CERT, TLS_SECRET_TYPE);
+        assert_eq!(tls_domains(&secret), "example.com,www.example.com");
+
+        let cert = tls_leaf_certificate(&secret).expect("a well-formed cert parses");
+        assert_eq!(cert.not_after, 2_105_427_299);
+        // The day count is relative to whenever the test runs; only the date
+        // and "still years out" shape are fixed.
+        assert!(tls_expires(&secret).starts_with("2036-09-19 · in "));
+    }
+
+    #[test]
+    fn non_tls_secret_gets_no_certificate_columns() {
+        // The bytes happen to be valid PEM — proof this is gated on `.type`,
+        // not on whether something merely parses.
+        let secret = tls_secret(TLS_CERT, "Opaque");
+        assert_eq!(tls_domains(&secret), "");
+        assert_eq!(tls_expires(&secret), "");
+        assert_eq!(tls_secret_health(&secret), RowHealth::Unknown);
+    }
+
+    #[test]
+    fn malformed_tls_secret_fails_closed_rather_than_panicking() {
+        let secret = json!({"type": TLS_SECRET_TYPE, "data": {"tls.crt": "not base64 pem at all"}});
+        assert_eq!(tls_domains(&secret), "");
+        assert_eq!(tls_expires(&secret), "");
+        assert_eq!(tls_secret_health(&secret), RowHealth::Unknown);
+    }
+
+    #[test]
+    fn expiry_wording_reads_naturally_on_both_sides_of_the_deadline() {
+        assert_eq!(
+            format_expiry("2030-01-01T00:00:00Z", 172),
+            "2030-01-01 · in 172d"
+        );
+        assert_eq!(
+            format_expiry("2020-01-01T00:00:00Z", 0),
+            "2020-01-01 · expires today"
+        );
+        assert_eq!(
+            format_expiry("2020-01-01T00:00:00Z", -40),
+            "2020-01-01 · expired 40d ago"
+        );
+    }
+
+    #[test]
+    fn health_switches_at_the_two_week_warning_and_the_expiry_itself() {
+        assert_eq!(health_for_days_until_expiry(365), RowHealth::Ok);
+        assert_eq!(health_for_days_until_expiry(14), RowHealth::Ok);
+        assert_eq!(health_for_days_until_expiry(13), RowHealth::Warning);
+        assert_eq!(health_for_days_until_expiry(0), RowHealth::Warning);
+        assert_eq!(health_for_days_until_expiry(-1), RowHealth::Error);
     }
 }
