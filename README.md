@@ -74,6 +74,8 @@ clusters connected; every one is added explicitly.
 - **Row selection** — checkbox column with select-all and shift-click ranges,
   a bulk bar for delete / restart / export, and a fuzzy command palette (⌘K)
   across clusters, resource types and live objects.
+- **Pin** any object for one-click access from the sidebar, independent of
+  whatever table or filter happens to be open.
 
 ### Create, edit and import
 
@@ -101,6 +103,8 @@ clusters connected; every one is added explicitly.
   through a multi-line field for anything that is (a certificate, a key, a
   config file) — a single-line one would silently strip its newlines the
   moment it was touched.
+- **Node labels and taints** through the same Form tab — key/value/effect
+  rows, no hand-edited YAML for a scheduling rule.
 - **Bulk export** — selected rows, or everything a filter leaves visible, as a
   zip through the OS save dialog: one YAML file per object, grouped
   `<namespace>/<kind>/<name>.yaml`.
@@ -142,6 +146,8 @@ next step that opens straight into logs, a shell, or the editor.
 - Reads `metrics.k8s.io`, and auto-discovers a Prometheus-compatible endpoint
   (Thanos, VictoriaMetrics, Mimir all answer the same API) queried through the
   apiserver proxy — no port-forward, no extra credentials.
+- A namespace's own `ResourceQuota`/`LimitRange` on its own Quota tab — hard
+  limits against current usage, and the defaults new pods get.
 
 ### Helm
 
@@ -181,6 +187,9 @@ own annotations, so neither CLI is required.
   checking GitHub for a newer release on startup (a Settings toggle turns it
   off) — everything else it talks to is a cluster you added yourself. Local
   crash logs only, kept for 7 days, surfaced in Settings.
+- A local audit log of every destructive action taken from the app —
+  timestamp, cluster, target, outcome — kept for 7 days, viewable in
+  Settings. Nothing leaves the machine.
 - Signed auto-updates; checking happens on its own, but installing is always
   an explicit click, so an editor with unsaved YAML is never restarted
   underneath you.
