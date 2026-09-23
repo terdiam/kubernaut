@@ -433,7 +433,13 @@ pub async fn delete_object(
     state.ensure_writable(&cluster).map_err(CommandError::new)?;
     let handle = state.clusters.require(&cluster)?;
     let result = actions::delete(&handle, &request).await;
-    record_audit(&state, &cluster, "delete", &target_label(&request.target), &result);
+    record_audit(
+        &state,
+        &cluster,
+        "delete",
+        &target_label(&request.target),
+        &result,
+    );
     result.map_err(CommandError::new)
 }
 
