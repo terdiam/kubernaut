@@ -179,7 +179,13 @@ export function SecurityCenter() {
       ))}
 
       {panel === "images" ? (
-        <ImagePanel cluster={cluster} namespace={namespace} images={images} scanner={scanner} />
+        <ImagePanel
+          cluster={cluster}
+          namespace={namespace}
+          images={images}
+          scanner={scanner}
+          onScannerChange={setScanner}
+        />
       ) : (
         <div className="sec__body">
           {visible.length === 0 ? (
@@ -267,25 +273,24 @@ function ImagePanel({
   cluster,
   namespace,
   images,
-  scanner: initialScanner,
+  scanner,
+  onScannerChange,
 }: {
   cluster: string;
   namespace: string | null;
   images: ImageUsage[];
   scanner: Scanner | null;
+  onScannerChange: (scanner: Scanner) => void;
 }) {
-  const [scanner, setScanner] = useState(initialScanner);
   const [preparing, setPreparing] = useState(false);
   const [prepareError, setPrepareError] = useState<string | null>(null);
   const [limit, setLimit] = useState(DEFAULT_SCAN_LIMIT);
-
-  useEffect(() => setScanner(initialScanner), [initialScanner]);
 
   const prepare = async () => {
     setPreparing(true);
     setPrepareError(null);
     try {
-      setScanner(await api.downloadVulnerabilityDatabase(cluster));
+      onScannerChange(await api.downloadVulnerabilityDatabase(cluster));
     } catch (err) {
       setPrepareError(String(err));
     } finally {
