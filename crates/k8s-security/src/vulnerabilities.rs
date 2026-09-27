@@ -69,6 +69,12 @@ pub enum Scanner {
         /// False until the vulnerability database has been downloaded. The
         /// first download is large, so the UI offers it as its own step rather
         /// than hiding it inside a scan.
+        ///
+        /// `rename_all` on the enum only cases the `kind` tag, not a struct
+        /// variant's own fields (serde renames those per-variant) — without
+        /// this, the wire field stayed `database_ready` and the frontend's
+        /// `scanner.databaseReady` read `undefined` forever.
+        #[serde(rename = "databaseReady")]
         database_ready: bool,
     },
     /// Nothing available; `reason` explains what to install.
