@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  Alert,
   ApplyOutcome,
   AuditEntry,
   ClusterStatus,
@@ -53,6 +54,7 @@ import type {
   ScanReport,
   Scanner,
   Sample,
+  SilenceRequest,
   SizingReport,
   Topology,
   SessionHandle,
@@ -189,8 +191,12 @@ export const api = {
     invoke<Scanner>("vulnerability_scanner", { cluster }),
   downloadVulnerabilityDatabase: (cluster: string) =>
     invoke<Scanner>("download_vulnerability_database", { cluster }),
-  vulnerabilityScan: (cluster: string, namespace: string | null, limit: number) =>
-    invoke<VulnerabilityReport>("vulnerability_scan", { cluster, namespace, limit }),
+  vulnerabilityScan: (
+    cluster: string,
+    namespace: string | null,
+    limit: number,
+    forceRescan?: boolean,
+  ) => invoke<VulnerabilityReport>("vulnerability_scan", { cluster, namespace, limit, forceRescan }),
 
   // ---- helm
   helmInfo: () => invoke<HelmInfo | null>("helm_info"),
@@ -256,6 +262,7 @@ export const api = {
     namespace: string | null,
     param: string | null,
   ) => invoke<LookupOption[]>("lookup_options", { cluster, source, namespace, param }),
+  kustomizeBuild: (path: string) => invoke<string>("kustomize_build", { path }),
   planManifest: (cluster: string, yaml: string, namespace: string | null, force: boolean) =>
     invoke<ManifestPlan>("plan_manifest", { cluster, yaml, namespace, force }),
   applyManifest: (cluster: string, yaml: string, namespace: string | null, force: boolean) =>
@@ -281,6 +288,10 @@ export const api = {
     invoke<MetricsSources>("metrics_sources", { cluster }),
   topology: (cluster: string, namespaces: string[]) =>
     invoke<Topology>("topology", { cluster, namespaces }),
+  alertmanagerAlerts: (cluster: string) => invoke<Alert[]>("alertmanager_alerts", { cluster }),
+  silenceAlert: (cluster: string, silence: SilenceRequest) =>
+    invoke<string>("silence_alert", { cluster, silence }),
+  deleteSilence: (cluster: string, id: string) => invoke<void>("delete_silence", { cluster, id }),
 
   // ---- actions
   currentScale: (cluster: string, target: TargetRef) =>

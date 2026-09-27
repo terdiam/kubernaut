@@ -297,11 +297,11 @@ function ImagePanel({
   const [report, setReport] = useState<ScanReport | null>(null);
   const [vulnerabilities, setVulnerabilities] = useState<Vulnerability[]>([]);
 
-  const scanImages = async () => {
+  const scanImages = async (forceRescan?: boolean) => {
     setBusy(true);
     setError(null);
     try {
-      const result = await api.vulnerabilityScan(cluster, namespace, limit);
+      const result = await api.vulnerabilityScan(cluster, namespace, limit, forceRescan);
       setReport(result.report);
       setVulnerabilities(result.vulnerabilities);
     } catch (err) {
@@ -371,9 +371,23 @@ function ImagePanel({
                 ))}
               </select>
             </label>
-            <button className="button button--primary" disabled={busy} onClick={() => void scanImages()}>
+            <button
+              className="button button--primary"
+              disabled={busy}
+              onClick={() => void scanImages()}
+            >
               {busy ? "Scanning…" : "Scan images"}
             </button>
+            {report && (
+              <button
+                className="button"
+                title="Skip the cache and re-scan every image"
+                disabled={busy}
+                onClick={() => void scanImages(true)}
+              >
+                Rescan
+              </button>
+            )}
             {error && <span className="error">{error}</span>}
           </div>
         </>

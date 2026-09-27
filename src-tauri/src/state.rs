@@ -5,10 +5,12 @@ use k8s_helm::Helm;
 
 use crate::audit::AuditLog;
 use crate::preferences::Preferences;
+use crate::scan_cache::ScanCache;
 use k8s_metrics::MetricsManager;
 use k8s_ops::{
     exec::{SessionId as TerminalId, TerminalManager, TerminalSession},
     forward::ForwardManager,
+    kustomize::Kustomize,
     logs::{LogManager, LogSession, SessionId as LogId},
 };
 use tauri::async_runtime::JoinHandle;
@@ -24,10 +26,13 @@ pub struct AppState {
     pub schemas: Arc<SchemaCache>,
     pub metrics: Arc<MetricsManager>,
     pub audit: AuditLog,
+    pub scan_cache: ScanCache,
     preferences: parking_lot::RwLock<Preferences>,
     /// Resolved lazily: helm may be absent, and that must not stop the app
     /// from starting or from listing releases (which needs no binary).
     helm: parking_lot::Mutex<Option<Arc<Helm>>>,
+    /// Resolved lazily, same reasoning as `helm`.
+    kustomize: parking_lot::Mutex<Option<Arc<Kustomize>>>,
     /// Directory holding the bundled sidecars, when the app was packaged.
     helm_sidecar_dir: parking_lot::Mutex<Option<std::path::PathBuf>>,
 
@@ -52,8 +57,10 @@ impl AppState {
             schemas: Arc::new(SchemaCache::new()),
             metrics: Arc::new(MetricsManager::new()),
             audit: AuditLog::new(),
+            scan_cache: ScanCache::new(),
             preferences: parking_lot::RwLock::new(Preferences::load()),
             helm: parking_lot::Mutex::new(None),
+            kustomize: parking_lot::Mutex::new(None),
             helm_sidecar_dir: parking_lot::Mutex::new(None),
             watch_forwarders: Mutex::new(HashMap::new()),
             log_sessions: Mutex::new(HashMap::new()),
@@ -103,6 +110,18 @@ impl AppState {
         let helm = Arc::new(Helm::resolve(dir.as_deref())?);
         *self.helm.lock() = Some(helm.clone());
         Ok(helm)
+    }
+
+    /// The kustomize binary, resolved on first use. Shares the same bundled
+    /// sidecar directory as helm and trivy.
+    pub fn kustomize(&self) -> k8s_ops::error::Result<Arc<Kustomize>> {
+        if let Some(existing) = self.kustomize.lock().clone() {
+            return Ok(existing);
+        }
+        let dir = self.helm_sidecar_dir.lock().clone();
+        let kustomize = Arc::new(Kustomize::resolve(dir.as_deref())?);
+        *self.kustomize.lock() = Some(kustomize.clone());
+        Ok(kustomize)
     }
 
     pub async fn register_forwarder(&self, id: SubscriptionId, handle: JoinHandle<()>) {

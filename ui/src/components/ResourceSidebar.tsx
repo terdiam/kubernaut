@@ -16,10 +16,15 @@ interface Bucket {
 }
 
 /** Views that are not backed by a Kubernetes kind. */
-const TOOLS: { view: "helmReleases" | "gitops" | "security"; label: string; icon: IconName }[] = [
+const TOOLS: {
+  view: "helmReleases" | "gitops" | "security" | "alerts";
+  label: string;
+  icon: IconName;
+}[] = [
   { view: "helmReleases", label: "Helm", icon: "helm" },
   { view: "gitops", label: "GitOps", icon: "gitops" },
   { view: "security", label: "Security Center", icon: "security" },
+  { view: "alerts", label: "Alerts", icon: "events" },
 ];
 
 export function ResourceSidebar() {

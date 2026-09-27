@@ -193,6 +193,21 @@ export function ClusterSettings({
 
           <div className="field">
             <label className="field__label">
+              Workspace
+              <span className="field__help">
+                Free-text group shown as a divider in the cluster rail — e.g. "Production",
+                "Staging". Purely a label; switching and shortcuts are unaffected.
+              </span>
+            </label>
+            <input
+              value={profile.workspace ?? ""}
+              placeholder="none"
+              onChange={(e) => patch({ workspace: e.target.value || null })}
+            />
+          </div>
+
+          <div className="field">
+            <label className="field__label">
               Accent colour
               <span className="field__help">
                 Making production look different is the cheapest guard against acting on the wrong

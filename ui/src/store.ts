@@ -53,7 +53,15 @@ interface AppState {
   selected: Row | null;
   error: string | null;
   /** Which main view is showing. */
-  view: "overview" | "resources" | "helmReleases" | "helmRepos" | "security" | "gitops" | "settings";
+  view:
+    | "overview"
+    | "resources"
+    | "helmReleases"
+    | "helmRepos"
+    | "security"
+    | "gitops"
+    | "alerts"
+    | "settings";
   preferences: Preferences | null;
   /** Node scope for the overview dashboard. */
   overviewScope: "all" | "controlPlane" | "workers";
@@ -84,6 +92,7 @@ interface AppState {
       | "helmRepos"
       | "security"
       | "gitops"
+      | "alerts"
       | "settings",
   ) => void;
   loadPreferences: () => Promise<void>;
@@ -298,6 +307,7 @@ export const useStore = create<AppState>((set, get) => ({
               namespace: scope,
               labelSelector: null,
               fieldSelector: null,
+              customColumns: get().preferences?.customColumns?.[`${resource.group}/${resource.kind}`] ?? [],
             },
             (batch) => {
               const watch = activeWatches.find((w) => w.subscriptionId === handle.subscriptionId);

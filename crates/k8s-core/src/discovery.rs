@@ -28,7 +28,7 @@ pub fn resource_key(group: &str, version: &str, plural: &str) -> String {
 
 /// One printer column, either from a CRD's `additionalPrinterColumns` or from
 /// our built-in table for well-known kinds.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ColumnDef {
     pub name: String,

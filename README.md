@@ -248,7 +248,9 @@ cargo run -p k8s-ops --example diagnose_smoke -- <context> <namespace>
 cargo run -p k8s-ops --example lookup_smoke -- <context> <namespace>
 cargo run -p k8s-ops --example manifest_smoke -- <context> <namespace>
 cargo run -p k8s-ops --example gitops_smoke -- <context>
+cargo run -p k8s-ops --example kustomize_smoke -- <overlay-path>
 cargo run -p k8s-metrics --example metrics_smoke -- <context>
+cargo run -p k8s-metrics --example alertmanager_smoke -- <context>
 cargo run -p k8s-metrics --example sizing_smoke -- <context> <namespace> <deployment>
 cargo run -p k8s-helm --example helm_smoke -- <context>
 cargo run -p k8s-security --example security_smoke -- <context>

@@ -17,6 +17,12 @@ interface Props {
   node?: string;
   /** Modes offered in the picker. */
   modes: Mode[];
+  /** Auto-connect in this mode instead of waiting for the user to pick one. */
+  initialMode?: Mode;
+  /** Typed into the shell (with Enter) once connected — a custom action's
+   * templated command, already substituted. Only meaningful with
+   * `initialMode: "localShell"`, which needs no confirmation to auto-start. */
+  initialCommand?: string;
 }
 
 const MODE_LABEL: Record<Mode, string> = {
@@ -28,9 +34,17 @@ const MODE_LABEL: Record<Mode, string> = {
 
 const DEFAULT_IMAGE = "busybox:1.36";
 
-export function TerminalPane({ cluster, namespace, pod, node, modes }: Props) {
+export function TerminalPane({
+  cluster,
+  namespace,
+  pod,
+  node,
+  modes,
+  initialMode,
+  initialCommand,
+}: Props) {
   const host = useRef<HTMLDivElement>(null);
-  const [mode, setMode] = useState<Mode>(modes[0] ?? "podExec");
+  const [mode, setMode] = useState<Mode>(initialMode ?? modes[0] ?? "podExec");
   const [containers, setContainers] = useState<ContainerInfo[]>([]);
   const [container, setContainer] = useState<string | null>(null);
   const [image, setImage] = useState(DEFAULT_IMAGE);
@@ -38,8 +52,9 @@ export function TerminalPane({ cluster, namespace, pod, node, modes }: Props) {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [closed, setClosed] = useState<string | null>(null);
-  /** Bumped to (re)connect; 0 means nothing has been started yet. */
-  const [attempt, setAttempt] = useState(0);
+  /** Bumped to (re)connect; 0 means nothing has been started yet. `localShell`
+   * needs no confirmation, so a custom action can auto-connect immediately. */
+  const [attempt, setAttempt] = useState(() => (initialMode === "localShell" ? 1 : 0));
   const [pendingConfirm, setPendingConfirm] = useState(false);
 
   useEffect(() => {
@@ -173,6 +188,7 @@ export function TerminalPane({ cluster, namespace, pod, node, modes }: Props) {
         session = opened;
         setDescriptor(opened.descriptor);
         term.focus();
+        if (initialCommand) void api.terminalWrite(opened.descriptor.sessionId, `${initialCommand}\n`);
       })
       .catch((err) => !disposed && setError(String(err)));
 

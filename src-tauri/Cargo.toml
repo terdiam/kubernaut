@@ -37,5 +37,6 @@ thiserror.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 directories.workspace = true
+rusqlite.workspace = true
 tracing-subscriber.workspace = true
 tracing-appender.workspace = true

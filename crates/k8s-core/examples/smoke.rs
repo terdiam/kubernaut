@@ -105,6 +105,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 namespace: namespace.clone(),
                 label_selector: None,
                 field_selector: None,
+                custom_columns: Vec::new(),
             },
         )
         .await?;

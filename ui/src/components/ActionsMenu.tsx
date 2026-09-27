@@ -9,6 +9,8 @@ interface Props {
   row: Row;
   onForward: () => void;
   onDone: () => void;
+  /** Opens the Terminal tab and types this templated command in. */
+  onRunAction: (command: string) => void;
 }
 
 type Pending =
@@ -20,7 +22,7 @@ type Pending =
 const SCALABLE = new Set(["Deployment", "StatefulSet", "ReplicaSet"]);
 
 /** Row actions. Everything destructive routes through a typed confirmation. */
-export function ActionsMenu({ cluster, resource, row, onForward, onDone }: Props) {
+export function ActionsMenu({ cluster, resource, row, onForward, onDone, onRunAction }: Props) {
   const [pending, setPending] = useState<Pending>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -61,6 +63,16 @@ export function ActionsMenu({ cluster, resource, row, onForward, onDone }: Props
     label: null,
   };
   const isPinned = preferences?.pinned.some((p) => samePin(p, pin)) ?? false;
+
+  const customActions = (preferences?.customActions ?? []).filter(
+    (action) => action.appliesTo === null || action.appliesTo === resource.kind,
+  );
+  const runCustomAction = (template: string) => {
+    const command = template
+      .replaceAll("{namespace}", row.namespace ?? "")
+      .replaceAll("{name}", row.name);
+    onRunAction(command);
+  };
 
   return (
     <div className="actions">
@@ -127,6 +139,16 @@ export function ActionsMenu({ cluster, resource, row, onForward, onDone }: Props
             Delete
           </button>
         )}
+        {customActions.map((action) => (
+          <button
+            key={action.name}
+            className="button"
+            title={action.commandTemplate}
+            onClick={() => runCustomAction(action.commandTemplate)}
+          >
+            {action.name}
+          </button>
+        ))}
       </div>
 
       {status && <p className="muted">{status}</p>}

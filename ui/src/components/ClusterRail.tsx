@@ -43,52 +43,75 @@ export function ClusterRail() {
 
   const profileOf = (name: string) => preferences?.clusterProfiles?.[name];
 
+  // `⌘N` always indexes the flat `contexts` array (App.tsx's hotkey handler
+  // does the same) — grouping below only changes visual order, never this.
+  const hotkeyIndex = new Map(contexts.map((context, index) => [context.name, index]));
+
+  const groups: { workspace: string | null; contexts: ContextEntry[] }[] = [];
+  for (const context of contexts) {
+    const workspace = profileOf(context.name)?.workspace ?? null;
+    const group = groups.find((g) => g.workspace === workspace);
+    if (group) group.contexts.push(context);
+    else groups.push({ workspace, contexts: [context] });
+  }
+  const showLabels = groups.length > 1;
+
+  const renderTile = (context: ContextEntry) => {
+    const summary = clusters[context.name];
+    const state = summary?.status.state ?? "disconnected";
+    const isActive = active === context.name;
+    const busy = connecting === context.name;
+    const profile = profileOf(context.name);
+    const label = profile?.displayName || context.name;
+    const index = hotkeyIndex.get(context.name) ?? -1;
+
+    const title = [
+      label,
+      label === context.name ? "" : `context: ${context.name}`,
+      context.server ?? "",
+      context.missingExecPlugin
+        ? `⚠ auth plugin "${context.execCommand}" not found on PATH`
+        : "",
+      index >= 0 && index < 9 ? `⌘${index + 1}` : "",
+      "right-click for options",
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    return (
+      <button
+        key={context.name}
+        className={`rail__tile${isActive ? " rail__tile--active" : ""}`}
+        style={
+          profile?.colour
+            ? ({ "--tile-accent": profile.colour } as React.CSSProperties)
+            : undefined
+        }
+        title={title}
+        disabled={busy}
+        onClick={() => void connect(context.name)}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setMenu({ context, x: event.clientX, y: event.clientY });
+        }}
+      >
+        <span className="rail__initials">{initials(label)}</span>
+        <span className={busy ? "dot dot--pending" : dotClass[state]} />
+        {context.missingExecPlugin && <span className="rail__warn">!</span>}
+      </button>
+    );
+  };
+
   return (
     <nav className="rail" aria-label="Clusters">
-      {contexts.map((context, index) => {
-        const summary = clusters[context.name];
-        const state = summary?.status.state ?? "disconnected";
-        const isActive = active === context.name;
-        const busy = connecting === context.name;
-        const profile = profileOf(context.name);
-        const label = profile?.displayName || context.name;
-
-        const title = [
-          label,
-          label === context.name ? "" : `context: ${context.name}`,
-          context.server ?? "",
-          context.missingExecPlugin
-            ? `⚠ auth plugin "${context.execCommand}" not found on PATH`
-            : "",
-          index < 9 ? `⌘${index + 1}` : "",
-          "right-click for options",
-        ]
-          .filter(Boolean)
-          .join("\n");
-
-        return (
-          <button
-            key={context.name}
-            className={`rail__tile${isActive ? " rail__tile--active" : ""}`}
-            style={
-              profile?.colour
-                ? ({ "--tile-accent": profile.colour } as React.CSSProperties)
-                : undefined
-            }
-            title={title}
-            disabled={busy}
-            onClick={() => void connect(context.name)}
-            onContextMenu={(event) => {
-              event.preventDefault();
-              setMenu({ context, x: event.clientX, y: event.clientY });
-            }}
-          >
-            <span className="rail__initials">{initials(label)}</span>
-            <span className={busy ? "dot dot--pending" : dotClass[state]} />
-            {context.missingExecPlugin && <span className="rail__warn">!</span>}
-          </button>
-        );
-      })}
+      {groups.map((group) => (
+        <div className="rail__group" key={group.workspace ?? "\u0000ungrouped"}>
+          {showLabels && (
+            <div className="rail__group-label">{group.workspace ?? "Ungrouped"}</div>
+          )}
+          {group.contexts.map(renderTile)}
+        </div>
+      ))}
 
       <button
         className="rail__tile rail__tile--add"

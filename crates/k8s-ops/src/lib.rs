@@ -7,6 +7,7 @@ pub mod error;
 pub mod exec;
 pub mod forward;
 pub mod gitops;
+pub mod kustomize;
 pub mod logs;
 pub mod lookup;
 pub mod manifest;

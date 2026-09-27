@@ -108,6 +108,7 @@ pub async fn vulnerability_scan(
     cluster: String,
     namespace: Option<String>,
     limit: Option<usize>,
+    force_rescan: Option<bool>,
 ) -> CommandResult<VulnerabilityReport> {
     let handle = state.clusters.require(&cluster)?;
     let scanner = vulnerabilities::detect(&handle, state.sidecar_dir().as_deref()).await;
@@ -126,11 +127,23 @@ pub async fn vulnerability_scan(
             let binary = std::path::PathBuf::from(path);
             let limit = limit.unwrap_or(10).min(images.len());
             let mut found = Vec::new();
+            let bypass_cache = force_rescan.unwrap_or(false);
+            // A day is generous for a CVE database that itself updates once a
+            // day at most, and short enough that a freshly-fixed image is
+            // re-scanned well within a normal working session.
+            const MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
             // Sequential on purpose: trivy is IO- and CPU-heavy, and running a
             // dozen at once makes the machine unusable for no gain.
             for usage in images.iter().take(limit) {
+                if !bypass_cache && let Some(cached) = state.scan_cache.get(&usage.image, MAX_AGE) {
+                    found.extend(cached);
+                    continue;
+                }
                 match vulnerabilities::scan_image(&binary, &usage.image).await {
-                    Ok(mut result) => found.append(&mut result),
+                    Ok(result) => {
+                        state.scan_cache.put(&usage.image, &result);
+                        found.extend(result);
+                    }
                     Err(err) => tracing::warn!(image = %usage.image, %err, "image scan failed"),
                 }
             }

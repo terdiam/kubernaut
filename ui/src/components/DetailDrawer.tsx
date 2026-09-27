@@ -65,6 +65,11 @@ export function DetailDrawer() {
     previous: boolean;
     seq: number;
   } | null>(null);
+  // Set when a custom action opens the Terminal tab with a templated command
+  // already typed in. The counter forces a remount so a second action applies.
+  const [pendingCommand, setPendingCommand] = useState<{ command: string; seq: number } | null>(
+    null,
+  );
 
   const isPod = resource?.kind === "Pod";
   const isSecret = resource?.kind === "Secret" && resource.group === "";
@@ -74,6 +79,7 @@ export function DetailDrawer() {
   useEffect(() => {
     setTab("overview");
     setLogsPreset(null);
+    setPendingCommand(null);
   }, [selected?.uid]);
 
   // Esc closes the drawer, but must not fire while a dialog is open or while
@@ -248,6 +254,10 @@ export function DetailDrawer() {
             row={selected}
             onForward={() => setForwarding(true)}
             onDone={() => setReload((n) => n + 1)}
+            onRunAction={(command) => {
+              setPendingCommand((current) => ({ command, seq: (current?.seq ?? 0) + 1 }));
+              setTab("terminal");
+            }}
           />
 
           <dl className="facts">
@@ -370,6 +380,7 @@ export function DetailDrawer() {
       {tab === "terminal" && (
         <Suspense fallback={<p className="muted drawer__body">Loading terminal…</p>}>
           <TerminalPane
+            key={pendingCommand?.seq ?? 0}
             cluster={cluster}
             namespace={selected.namespace ?? undefined}
             pod={isPod ? selected.name : undefined}
@@ -381,6 +392,8 @@ export function DetailDrawer() {
                   ? ["nodeShell", "localShell"]
                   : ["localShell"]
             }
+            initialMode={pendingCommand ? "localShell" : undefined}
+            initialCommand={pendingCommand?.command}
           />
         </Suspense>
       )}

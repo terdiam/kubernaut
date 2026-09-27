@@ -7,6 +7,7 @@
 
 use std::path::PathBuf;
 
+use k8s_core::discovery::ColumnDef;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -40,6 +41,10 @@ pub struct ClusterProfile {
     /// Accent for this cluster's tile. Making production look different is the
     /// cheapest guard against acting on the wrong one.
     pub colour: Option<String>,
+    /// Free-text group shown as a divider in the cluster rail (e.g.
+    /// "Production", "Staging"). Purely a display grouping — connecting,
+    /// switching and the `⌘N` hotkeys are unaffected.
+    pub workspace: Option<String>,
 
     /// `kubectl --as`
     pub impersonate_user: Option<String>,
@@ -62,6 +67,19 @@ pub struct PinnedObject {
     pub namespace: Option<String>,
     pub name: String,
     pub label: Option<String>,
+}
+
+/// A user-defined row action that opens the local kubectl shell with a
+/// templated command already typed in — `{namespace}`/`{name}` are
+/// substituted per row. Runs inside the same kubeconfig-pinned shell every
+/// other terminal session uses; no separate execution surface.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CustomAction {
+    pub name: String,
+    pub command_template: String,
+    /// Resource kind this action applies to (e.g. "Pod"), or `None` for every kind.
+    pub applies_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,6 +124,12 @@ pub struct Preferences {
 
     /// Resources pinned for one-click access from the sidebar.
     pub pinned: Vec<PinnedObject>,
+
+    /// User-defined table columns, keyed by `"{group}/{kind}"` (empty group
+    /// for core/v1, matching `formSpec.ts`'s `LAYOUTS` convention).
+    pub custom_columns: std::collections::BTreeMap<String, Vec<ColumnDef>>,
+    /// User-defined row actions (Settings → Actions).
+    pub custom_actions: Vec<CustomAction>,
 }
 
 impl Default for Preferences {
@@ -121,6 +145,8 @@ impl Default for Preferences {
             check_updates_on_startup: true,
             cluster_profiles: std::collections::BTreeMap::new(),
             pinned: Vec::new(),
+            custom_columns: std::collections::BTreeMap::new(),
+            custom_actions: Vec::new(),
         }
     }
 }

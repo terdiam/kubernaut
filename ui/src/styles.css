@@ -118,6 +118,20 @@ button, input, select {
 .rail__tile:hover { border-color: var(--accent); }
 .rail__tile:disabled { opacity: 0.6; cursor: progress; }
 .rail__tile--active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.rail__group { display: flex; flex-direction: column; align-items: center; gap: 8px; width: 100%; }
+.rail__group-label {
+  width: 100%;
+  text-align: center;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 4px;
+}
 .rail__initials { font-size: 11px; font-weight: 600; letter-spacing: 0.03em; }
 .rail__warn {
   position: absolute; top: -4px; left: -4px;

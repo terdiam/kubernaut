@@ -30,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     cluster::ClusterHandle,
+    discovery::ColumnDef,
     error::{CoreError, Result},
     row::{Row, RowProjector, TableSpec},
 };
@@ -52,6 +53,12 @@ pub struct WatchRequest {
     pub namespace: Option<String>,
     pub label_selector: Option<String>,
     pub field_selector: Option<String>,
+    /// User-defined columns (Settings → Columns), appended after the
+    /// resource's own printer columns. Part of the sharing key on purpose: a
+    /// change to this list starts a fresh watch with the new columns rather
+    /// than reusing one built from stale ones.
+    #[serde(default)]
+    pub custom_columns: Vec<ColumnDef>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -277,7 +284,10 @@ impl WatchManager {
             config = config.fields(sel);
         }
 
-        let projector = Arc::new(RowProjector::for_resource(&descriptor));
+        let projector = Arc::new(RowProjector::for_resource(
+            &descriptor,
+            &request.custom_columns,
+        ));
         let spec = projector.spec();
         let writer = reflector::store::Writer::<DynamicObject>::new(api_resource);
         let store = writer.as_reader();

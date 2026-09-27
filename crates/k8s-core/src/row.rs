@@ -90,12 +90,15 @@ pub struct RowProjector {
 impl RowProjector {
     /// CRD printer columns win when present (the author knows their type best);
     /// otherwise fall back to our built-in table, then to name/age only.
-    pub fn for_resource(desc: &ResourceDescriptor) -> Self {
-        let defs: Vec<ColumnDef> = if !desc.printer_columns.is_empty() {
+    /// `extra` — user-defined columns from Settings — are appended after
+    /// either source, evaluated the exact same way.
+    pub fn for_resource(desc: &ResourceDescriptor, extra: &[ColumnDef]) -> Self {
+        let mut defs: Vec<ColumnDef> = if !desc.printer_columns.is_empty() {
             desc.printer_columns.clone()
         } else {
             builtin_columns(&desc.group, &desc.kind)
         };
+        defs.extend(extra.iter().cloned());
 
         let mut columns = Vec::with_capacity(defs.len());
         let mut sources = Vec::with_capacity(defs.len());
@@ -972,6 +975,57 @@ mod tests {
     fn crd_conditions_drive_generic_health() {
         let obj = json!({"status": {"conditions": [{"type": "Ready", "status": "False"}]}});
         assert_eq!(condition_health(&obj), RowHealth::Error);
+    }
+
+    #[test]
+    fn custom_columns_append_after_builtins_and_evaluate() {
+        let desc = ResourceDescriptor {
+            key: "apps/v1/deployments".into(),
+            group: "apps".into(),
+            version: "v1".into(),
+            kind: "Deployment".into(),
+            plural: "deployments".into(),
+            api_version: "apps/v1".into(),
+            namespaced: true,
+            verbs: vec![],
+            short_names: vec![],
+            is_crd: false,
+            printer_columns: vec![],
+            watchable: true,
+            editable: true,
+            deletable: true,
+        };
+        let extra = vec![ColumnDef {
+            name: "Replicas".into(),
+            json_path: ".spec.replicas".into(),
+            kind: "integer".into(),
+            priority: 0,
+            description: None,
+        }];
+        let projector = RowProjector::for_resource(&desc, &extra);
+        assert!(
+            projector
+                .spec()
+                .columns
+                .iter()
+                .any(|c| c.name == "Replicas")
+        );
+
+        let obj: DynamicObject = serde_json::from_value(json!({
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": "demo-app", "namespace": "demo"},
+            "spec": {"replicas": 3}
+        }))
+        .unwrap();
+        let row = projector.project(&obj);
+        let index = projector
+            .spec()
+            .columns
+            .iter()
+            .position(|c| c.name == "Replicas")
+            .unwrap();
+        assert_eq!(row.cells[index], "3");
     }
 
     #[test]

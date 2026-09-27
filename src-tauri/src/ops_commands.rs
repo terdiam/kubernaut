@@ -632,6 +632,17 @@ pub async fn lookup_options(
 
 // ------------------------------------------------------------ manifests
 
+/// Build a local kustomize overlay into plain YAML, for the same plan/apply
+/// pipeline as a pasted or imported manifest. Touches no cluster.
+#[tauri::command]
+pub async fn kustomize_build(state: State<'_, AppState>, path: String) -> CommandResult<String> {
+    let kustomize = state.kustomize().map_err(CommandError::new)?;
+    kustomize
+        .build(std::path::Path::new(&path))
+        .await
+        .map_err(CommandError::new)
+}
+
 /// What applying a manifest would do, per document. Never writes.
 #[tauri::command]
 pub async fn plan_manifest(

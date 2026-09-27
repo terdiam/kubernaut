@@ -2,8 +2,9 @@
 
 use k8s_metrics::recommend::{self, Recommendation};
 use k8s_metrics::{
-    ClusterOverview, MetricTarget, NamespaceQuotaInfo, NamespaceUsage, NodeScope, NodeSummary,
-    ObjectMetrics, PodUsage, PrometheusTarget, Sample, Topology,
+    Alert, ClusterOverview, MetricTarget, NamespaceQuotaInfo, NamespaceUsage, NodeScope,
+    NodeSummary, ObjectMetrics, PodUsage, PrometheusTarget, Sample, SilenceRequest, Topology,
+    alertmanager,
 };
 use serde::Serialize;
 use tauri::State;
@@ -120,6 +121,52 @@ pub async fn metrics_sources(
         prometheus: sampler.prometheus(),
         checked: sampler.prometheus_checked(),
     })
+}
+
+/// Active alerts from the cluster's Alertmanager, if one is discoverable.
+/// Absence is not an error — most clusters have no Prometheus stack at all.
+#[tauri::command]
+pub async fn alertmanager_alerts(
+    state: State<'_, AppState>,
+    cluster: String,
+) -> CommandResult<Vec<Alert>> {
+    let handle = state.clusters.require(&cluster)?;
+    let Some(target) = alertmanager::discover(&handle).await else {
+        return Ok(Vec::new());
+    };
+    alertmanager::list_alerts(&handle, &target)
+        .await
+        .map_err(CommandError::new)
+}
+
+#[tauri::command]
+pub async fn silence_alert(
+    state: State<'_, AppState>,
+    cluster: String,
+    silence: SilenceRequest,
+) -> CommandResult<String> {
+    let handle = state.clusters.require(&cluster)?;
+    let target = alertmanager::discover(&handle)
+        .await
+        .ok_or_else(|| CommandError::new("no Alertmanager found in this cluster"))?;
+    alertmanager::post_silence(&handle, &target, &silence)
+        .await
+        .map_err(CommandError::new)
+}
+
+#[tauri::command]
+pub async fn delete_silence(
+    state: State<'_, AppState>,
+    cluster: String,
+    id: String,
+) -> CommandResult<()> {
+    let handle = state.clusters.require(&cluster)?;
+    let target = alertmanager::discover(&handle)
+        .await
+        .ok_or_else(|| CommandError::new("no Alertmanager found in this cluster"))?;
+    alertmanager::delete_silence(&handle, &target, &id)
+        .await
+        .map_err(CommandError::new)
 }
 
 /// Ingress → Service → Workload → Pod → Node graph for some namespaces.

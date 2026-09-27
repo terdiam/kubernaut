@@ -1,5 +1,6 @@
 //! Cluster metrics: gauges, history and the issue list behind the overview.
 
+pub mod alertmanager;
 pub mod kubelet;
 pub mod model;
 pub mod objects;
@@ -12,6 +13,7 @@ pub mod resolve;
 pub mod sampler;
 pub mod topology;
 
+pub use alertmanager::{Alert, AlertmanagerTarget, SilenceRequest};
 pub use model::{ClusterOverview, Issue, NodeScope, ResourceGauge, Sample, Severity};
 pub use objects::{
     MetricSource, MetricTarget, NamespaceUsage, NodeSummary, ObjectMetrics, PodUsage, Point,

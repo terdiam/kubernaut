@@ -107,6 +107,7 @@ export interface WatchRequest {
   namespace: string | null;
   labelSelector: string | null;
   fieldSelector: string | null;
+  customColumns: ColumnDef[];
 }
 
 export interface WatchHandle {
@@ -453,6 +454,26 @@ export interface MetricsSources {
   checked: boolean;
 }
 
+export interface Alert {
+  fingerprint: string;
+  labels: Record<string, string>;
+  annotations: Record<string, string>;
+  startsAt: string;
+  endsAt: string;
+  /** "active" | "suppressed" | "unprocessed". */
+  state: string;
+  silencedBy: string[];
+}
+
+export interface SilenceRequest {
+  matcherName: string;
+  matcherValue: string;
+  /** RFC3339. Alertmanager rejects a silence that has already ended. */
+  endsAt: string;
+  createdBy: string;
+  comment: string;
+}
+
 export interface TopologyNode {
   id: string;
   kind: string;
@@ -784,6 +805,8 @@ export interface ClusterProfile {
   /** Shown instead of the context name; the context name itself is unchanged. */
   displayName: string | null;
   colour: string | null;
+  /** Free-text group shown as a divider in the cluster rail. */
+  workspace: string | null;
   impersonateUser: string | null;
   impersonateGroups: string[];
   defaultNamespace: string | null;
@@ -798,6 +821,15 @@ export interface PinnedObject {
   namespace: string | null;
   name: string;
   label: string | null;
+}
+
+/** A user-defined row action that opens the local shell with a templated
+ * command already typed in — `{namespace}`/`{name}` are substituted per row. */
+export interface CustomAction {
+  name: string;
+  commandTemplate: string;
+  /** Resource kind this action applies to, or null for every kind. */
+  appliesTo: string | null;
 }
 
 export interface Preferences {
@@ -815,6 +847,9 @@ export interface Preferences {
   checkUpdatesOnStartup: boolean;
   clusterProfiles: Record<string, ClusterProfile>;
   pinned: PinnedObject[];
+  /** User-defined table columns, keyed by `"{group}/{kind}"`. */
+  customColumns: Record<string, ColumnDef[]>;
+  customActions: CustomAction[];
 }
 
 // ---- cluster imports ------------------------------------------------------

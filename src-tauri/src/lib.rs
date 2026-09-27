@@ -7,6 +7,7 @@ mod logging;
 mod metrics_commands;
 mod ops_commands;
 mod preferences;
+mod scan_cache;
 mod security_commands;
 mod state;
 
@@ -125,6 +126,7 @@ pub fn run() {
             ops_commands::export_objects,
             ops_commands::export_objects_to_file,
             ops_commands::lookup_options,
+            ops_commands::kustomize_build,
             ops_commands::plan_manifest,
             ops_commands::apply_manifest,
             ops_commands::gitops_survey,
@@ -134,6 +136,9 @@ pub fn run() {
             metrics_commands::overview_history,
             metrics_commands::namespace_usage,
             metrics_commands::namespace_quota,
+            metrics_commands::alertmanager_alerts,
+            metrics_commands::silence_alert,
+            metrics_commands::delete_silence,
             metrics_commands::object_metrics,
             metrics_commands::metrics_sources,
             metrics_commands::topology,

@@ -71,6 +71,9 @@ json-patch = "4"
 jsonptr = "0.7"
 sha2 = "0.10"
 flate2 = "1"
+# Trivy scan-result cache. `bundled` compiles SQLite in rather than requiring
+# a system library, so the release build gains no new external dependency.
+rusqlite = { version = "0.32", features = ["bundled"] }
 tempfile = "3"
 portable-pty = "0.9"
 rand = "0.10"

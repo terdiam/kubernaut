@@ -7,6 +7,7 @@ import { HelmReleases } from "./components/HelmReleases";
 import { HelmRepositories } from "./components/HelmRepositories";
 import { GitOps } from "./components/GitOps";
 import { SecurityCenter } from "./components/SecurityCenter";
+import { AlertmanagerPanel } from "./components/AlertmanagerPanel";
 import { Settings } from "./components/Settings";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { DetailDrawer } from "./components/DetailDrawer";
@@ -184,6 +185,7 @@ export default function App() {
             {view === "helmRepos" && <HelmRepositories />}
             {view === "gitops" && <GitOps />}
             {view === "security" && <SecurityCenter />}
+            {view === "alerts" && activeCluster && <AlertmanagerPanel cluster={activeCluster} />}
             {view === "settings" && <Settings />}
             {forwardsOpen && <ForwardsPanel onClose={toggleForwards} />}
 

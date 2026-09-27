@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import type * as Monaco from "monaco-editor/esm/vs/editor/editor.api";
 import { api } from "../api";
 import { useStore } from "../store";
@@ -88,6 +89,24 @@ export function ImportDialog({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const buildFromDirectory = async () => {
+    const picked = await open({ directory: true, title: "Choose a kustomize overlay directory" });
+    if (typeof picked !== "string") return;
+    setBusy(true);
+    setError(null);
+    try {
+      const yaml = await api.kustomizeBuild(picked);
+      editor.current?.setValue(yaml);
+      setSource(picked);
+      setPlan(null);
+      setResults(null);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const run = async (apply: boolean) => {
     if (!cluster) return;
     setBusy(true);
@@ -126,6 +145,10 @@ export function ImportDialog({ onClose }: { onClose: () => void }) {
               onChange={(e) => void openFile(e.target.files?.[0])}
             />
           </label>
+
+          <button className="button" disabled={busy} onClick={() => void buildFromDirectory()}>
+            Build from directory…
+          </button>
 
           <label className="manifest__ns">
             Default namespace

@@ -10,6 +10,7 @@ on:
 env:
   HELM_VERSION: v3.19.0
   TRIVY_VERSION: 0.74.0
+  KUSTOMIZE_VERSION: v5.8.1
 
 jobs:
   bundle:
@@ -41,22 +42,27 @@ jobs:
             target: x86_64-pc-windows-msvc
             helm_platform: windows-amd64
             trivy_platform: windows-64bit
+            kustomize_platform: windows_amd64
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             helm_platform: linux-amd64
             trivy_platform: Linux-64bit
+            kustomize_platform: linux_amd64
           - os: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
             helm_platform: linux-arm64
             trivy_platform: Linux-ARM64
+            kustomize_platform: linux_arm64
           # - os: macos-14
           #   target: aarch64-apple-darwin
           #   helm_platform: darwin-arm64
           #   trivy_platform: macOS-ARM64
+          #   kustomize_platform: darwin_arm64
           # - os: macos-14
           #   target: x86_64-apple-darwin
           #   helm_platform: darwin-amd64
           #   trivy_platform: macOS-64bit
+          #   kustomize_platform: darwin_amd64
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -154,6 +160,43 @@ jobs:
             chmod +x src-tauri/binaries/trivy
           fi
           src-tauri/binaries/trivy* --version
+
+      # Same shape as trivy: one checksums.txt over every asset, binary at the
+      # archive root (no platform subfolder, unlike helm).
+      - name: Fetch and verify kustomize
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/${KUSTOMIZE_VERSION}"
+          ext=$([ "${{ runner.os }}" = "Windows" ] && echo zip || echo tar.gz)
+          archive="kustomize_${KUSTOMIZE_VERSION}_${{ matrix.kustomize_platform }}.${ext}"
+
+          curl -fsSLO "${base}/${archive}"
+          curl -fsSL "${base}/checksums.txt" -o kustomize-checksums.txt
+          grep " ${archive}\$" kustomize-checksums.txt > expected-kustomize.txt
+
+          if command -v sha256sum >/dev/null; then
+            sha256sum -c expected-kustomize.txt
+          else
+            actual=$(shasum -a 256 "${archive}" | awk '{print $1}')
+            expected=$(awk '{print $1}' expected-kustomize.txt)
+            [ "${actual}" = "${expected}" ] || { echo "checksum mismatch"; exit 1; }
+          fi
+
+          mkdir -p src-tauri/binaries
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            if command -v unzip >/dev/null; then
+              unzip -q "${archive}" kustomize.exe
+            else
+              powershell -Command "Expand-Archive -Path '${archive}' -DestinationPath . -Force"
+            fi
+            mv kustomize.exe src-tauri/binaries/kustomize.exe
+          else
+            tar -xzf "${archive}" kustomize
+            mv kustomize src-tauri/binaries/kustomize
+            chmod +x src-tauri/binaries/kustomize
+          fi
+          src-tauri/binaries/kustomize* version
 
       - run: npm ci
 

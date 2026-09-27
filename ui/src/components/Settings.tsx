@@ -4,7 +4,9 @@ import { useStore } from "../store";
 import { availableZones, effectiveZone, formatDateTime, zoneLabel } from "../time";
 import type {
   AuditEntry,
+  ColumnDef,
   CrashReport,
+  CustomAction,
   Diagnostics,
   ManagedKubeconfig,
   Preferences,
@@ -222,6 +224,33 @@ export function Settings() {
         </section>
 
         <section className="context__block">
+          <h3>Columns</h3>
+          <p className="muted settings__help">
+            Extra table columns evaluated with the same JSONPath engine used for a CRD's own
+            printer columns. Applies to a specific kind, e.g. <code>apps/Deployment</code> (empty
+            group for core/v1, e.g. <code>/Pod</code>).
+          </p>
+          <CustomColumnsEditor
+            columns={draft.customColumns}
+            onChange={(customColumns) => patch({ customColumns })}
+          />
+        </section>
+
+        <section className="context__block">
+          <h3>Actions</h3>
+          <p className="muted settings__help">
+            A row action that opens the local kubectl shell with a templated command already
+            typed in. <code>{"{namespace}"}</code> and <code>{"{name}"}</code> are substituted per
+            row. Runs in the same shell every terminal session uses — no separate execution
+            surface.
+          </p>
+          <CustomActionsEditor
+            actions={draft.customActions}
+            onChange={(customActions) => patch({ customActions })}
+          />
+        </section>
+
+        <section className="context__block">
           <h3>Logs</h3>
           <div className="field">
             <label className="field__label">
@@ -359,6 +388,143 @@ export function Settings() {
         {status && !dirty && <span className="muted">{status}</span>}
         {error && <span className="error">{error}</span>}
       </footer>
+    </div>
+  );
+}
+
+interface ColumnRow {
+  kind: string;
+  name: string;
+  jsonPath: string;
+}
+
+function flattenColumns(map: Record<string, ColumnDef[]>): ColumnRow[] {
+  return Object.entries(map).flatMap(([kind, columns]) =>
+    columns.map((column) => ({ kind, name: column.name, jsonPath: column.jsonPath })),
+  );
+}
+
+function unflattenColumns(rows: ColumnRow[]): Record<string, ColumnDef[]> {
+  const map: Record<string, ColumnDef[]> = {};
+  for (const row of rows) {
+    // No filtering here, including on a fully blank row: this map is rebuilt
+    // from `rows` on every keystroke, so a row still being filled in (or the
+    // fresh blank one "+ Add column" just appended) must survive the
+    // round-trip unchanged, or it vanishes the instant it's added.
+    (map[row.kind] ??= []).push({
+      name: row.name,
+      jsonPath: row.jsonPath,
+      kind: "string",
+      priority: 0,
+      description: null,
+    });
+  }
+  return map;
+}
+
+function CustomColumnsEditor({
+  columns,
+  onChange,
+}: {
+  columns: Record<string, ColumnDef[]>;
+  onChange: (next: Record<string, ColumnDef[]>) => void;
+}) {
+  const rows = flattenColumns(columns);
+  const patchRow = (index: number, change: Partial<ColumnRow>) => {
+    const next = rows.slice();
+    next[index] = { ...next[index]!, ...change };
+    onChange(unflattenColumns(next));
+  };
+
+  return (
+    <div className="kv">
+      {rows.map((row, index) => (
+        <div className="kv__row" key={index}>
+          <input
+            value={row.kind}
+            placeholder="group/Kind"
+            onChange={(e) => patchRow(index, { kind: e.target.value })}
+          />
+          <input
+            value={row.name}
+            placeholder="Column name"
+            onChange={(e) => patchRow(index, { name: e.target.value })}
+          />
+          <input
+            className="kv__value"
+            value={row.jsonPath}
+            placeholder=".spec.replicas"
+            onChange={(e) => patchRow(index, { jsonPath: e.target.value })}
+          />
+          <button
+            className="icon-button"
+            onClick={() => onChange(unflattenColumns(rows.filter((_, i) => i !== index)))}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      <button
+        className="button button--ghost"
+        onClick={() =>
+          onChange(unflattenColumns([...rows, { kind: "", name: "", jsonPath: "" }]))
+        }
+      >
+        + Add column
+      </button>
+    </div>
+  );
+}
+
+function CustomActionsEditor({
+  actions,
+  onChange,
+}: {
+  actions: CustomAction[];
+  onChange: (next: CustomAction[]) => void;
+}) {
+  const patch = (index: number, change: Partial<CustomAction>) => {
+    const next = actions.slice();
+    next[index] = { ...next[index]!, ...change };
+    onChange(next);
+  };
+
+  return (
+    <div className="kv">
+      {actions.map((action, index) => (
+        <div className="kv__row" key={index}>
+          <input
+            value={action.name}
+            placeholder="Action name"
+            onChange={(e) => patch(index, { name: e.target.value })}
+          />
+          <input
+            className="kv__value"
+            value={action.commandTemplate}
+            placeholder="kubectl get events -n {namespace}"
+            onChange={(e) => patch(index, { commandTemplate: e.target.value })}
+          />
+          <input
+            value={action.appliesTo ?? ""}
+            placeholder="any kind"
+            onChange={(e) => patch(index, { appliesTo: e.target.value || null })}
+          />
+          <button
+            className="icon-button"
+            onClick={() => onChange(actions.filter((_, i) => i !== index))}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+      <button
+        className="button button--ghost"
+        onClick={() =>
+          onChange([...actions, { name: "", commandTemplate: "", appliesTo: null }])
+        }
+      >
+        + Add action
+      </button>
     </div>
   );
 }
