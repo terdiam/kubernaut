@@ -1,5 +1,7 @@
 # Kubernaut
 
+[![Release](https://img.shields.io/github/v/release/terdiam/kubernaut)](https://github.com/terdiam/kubernaut/releases/latest)
+
 A multi-cluster Kubernetes desktop app for macOS, Windows and Linux. Rust core
 (`kube-rs`) behind a Tauri v2 shell, React/TypeScript UI — built to stay usable
 on clusters with thousands of objects, and to never touch a cluster you did not
