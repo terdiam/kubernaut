@@ -23,7 +23,7 @@ use k8s_ops::{
 };
 use tokio::runtime::Handle;
 
-use crate::{log_buffer::log_target, logs::LogView};
+use crate::{log_buffer::log_target, logs::LogView, terminal::TerminalView};
 
 const ROW_HEIGHT: Pixels = px(28.);
 
@@ -47,6 +47,7 @@ enum Tab {
     Yaml,
     Events,
     Logs,
+    Terminal,
 }
 
 /// A value that arrives from the cluster.
@@ -73,6 +74,8 @@ pub struct DrawerView {
     log_target: Option<LogTarget>,
     /// Created when the tab is first opened, so closed tabs stream nothing.
     logs: Option<Entity<LogView>>,
+    /// A shell, only for pods, opened when its tab is first shown.
+    terminal: Option<Entity<TerminalView>>,
     tab: Tab,
     yaml: Entity<EditorState>,
     yaml_load: Load<()>,
@@ -134,6 +137,7 @@ impl DrawerView {
             runtime: runtime.clone(),
             log_target: log_target(&target.resource, target.namespace.as_deref(), &target.name),
             logs: None,
+            terminal: None,
             target,
             tab: Tab::Yaml,
             yaml,
@@ -161,10 +165,12 @@ impl DrawerView {
             .when(active, |tab| tab.bg(theme.secondary).font_semibold())
             .when(!active, |tab| tab.text_color(theme.muted_foreground))
             .child(label)
-            .on_click(cx.listener(move |this, _, _, cx| {
+            .on_click(cx.listener(move |this, _, window, cx| {
                 this.tab = tab;
-                if tab == Tab::Logs {
-                    this.ensure_logs(cx);
+                match tab {
+                    Tab::Logs => this.ensure_logs(cx),
+                    Tab::Terminal => this.ensure_terminal(window, cx),
+                    Tab::Yaml | Tab::Events => {}
                 }
                 cx.notify();
             }))
@@ -179,6 +185,26 @@ impl DrawerView {
         };
         let (core, runtime, target) = (&self.core, &self.runtime, &self.target);
         self.logs = Some(cx.new(|cx| LogView::new(core, runtime, target, log_target, cx)));
+    }
+
+    /// Only a pod has a shell to open.
+    fn has_shell(&self) -> bool {
+        self.target.resource == "core/v1/pods" && self.target.namespace.is_some()
+    }
+
+    fn ensure_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.terminal.is_none() {
+            let Some(namespace) = self.target.namespace.as_ref().map(ToString::to_string) else {
+                return;
+            };
+            let (core, runtime, target) = (&self.core, &self.runtime, &self.target);
+            self.terminal =
+                Some(cx.new(|cx| TerminalView::new(core, runtime, target, namespace, cx)));
+        }
+        if let Some(terminal) = &self.terminal {
+            let focus = terminal.read(cx).focus_handle().clone();
+            window.focus(&focus, cx);
+        }
     }
 
     fn render_events(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -359,6 +385,9 @@ impl Render for DrawerView {
                     .child(self.render_tab(Tab::Events, "Events", cx))
                     .when(self.log_target.is_some(), |tabs| {
                         tabs.child(self.render_tab(Tab::Logs, "Logs", cx))
+                    })
+                    .when(self.has_shell(), |tabs| {
+                        tabs.child(self.render_tab(Tab::Terminal, "Terminal", cx))
                     }),
             )
             .child(
@@ -372,6 +401,10 @@ impl Render for DrawerView {
                         Tab::Events => self.render_events(cx),
                         Tab::Logs => match &self.logs {
                             Some(logs) => logs.clone().into_any_element(),
+                            None => div().into_any_element(),
+                        },
+                        Tab::Terminal => match &self.terminal {
+                            Some(terminal) => terminal.clone().into_any_element(),
                             None => div().into_any_element(),
                         },
                     }),

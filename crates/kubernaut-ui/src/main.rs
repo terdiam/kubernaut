@@ -1,9 +1,12 @@
 mod app;
 mod drawer;
+mod emulator;
+mod keys;
 mod log_buffer;
 mod logs;
 mod rows;
 mod table;
+mod terminal;
 
 use std::{cell::Cell, process::ExitCode, rc::Rc, sync::Arc};
 

@@ -11,6 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 gpui-kit.workspace = true
+alacritty_terminal.workspace = true
 
 k8s-app.workspace = true
 k8s-core.workspace = true

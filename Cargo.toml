@@ -86,6 +86,9 @@ rand = "0.10"
 # `tree-sitter-yaml` gives the read-only object view its syntax highlighting.
 gpui-kit = { version = "0.9.1", features = ["tree-sitter-yaml"] }
 
+# Terminal emulation (escape sequences, grid, scrollback) for the native terminal.
+alacritty_terminal = "0.26"
+
 tauri = { version = "2.11", features = [] }
 tauri-build = { version = "2", features = [] }
 tauri-plugin-updater = "2.10"
