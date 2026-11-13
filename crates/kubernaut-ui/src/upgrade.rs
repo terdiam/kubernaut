@@ -26,6 +26,7 @@ use k8s_helm::{DocumentChange, UpgradeDiff, UpgradeOptions};
 use tokio::runtime::Handle;
 
 use crate::{
+    charts::{self, ChartLine},
     diff::{self, DiffLine},
     ui::{Emphasis, button, chip, tone_color},
 };
@@ -150,6 +151,10 @@ pub struct UpgradeView {
     busy: Option<&'static str>,
     /// The last failure, kept on screen: a toast would fade before it is read.
     error: Option<SharedString>,
+    /// Charts in the configured repositories, for completing the chart field.
+    /// Empty when helm or its repositories are not available, which only
+    /// means there is nothing to suggest.
+    catalog: Vec<ChartLine>,
     diff_scroll: UniformListScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -213,9 +218,40 @@ impl UpgradeView {
             previewed: None,
             busy: None,
             error: None,
+            catalog: Vec::new(),
             diff_scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         }
+        .with_catalog(cx)
+    }
+
+    fn with_catalog(self, cx: &mut Context<Self>) -> Self {
+        let core = Arc::clone(&self.core);
+        let task = self
+            .runtime
+            .spawn(async move { helm_ops::search_charts(&core, "").await });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(found)) = task.await {
+                this.update(cx, |this, cx| {
+                    this.catalog = charts::chart_lines(&found);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+        self
+    }
+
+    /// Fill the chart field from a suggestion. The version is left blank, which
+    /// means the newest.
+    fn pick_chart(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(chart) = self.catalog.get(index) else {
+            return;
+        };
+        let name = chart.name.clone();
+        self.chart
+            .update(cx, |input, cx| input.set_value(name, window, cx));
     }
 
     fn inputs(&self, cx: &App) -> Inputs {
@@ -410,6 +446,10 @@ impl Render for UpgradeView {
         let toggle_wait = cx.listener(|this, _, _, cx| this.toggle(|s| &mut s.wait, cx));
         let toggle_reset = cx.listener(|this, _, _, cx| this.toggle(|s| &mut s.reset_values, cx));
 
+        let typed = self.chart.read(cx).value();
+        let suggestions = charts::suggest(&self.catalog, &typed, 5);
+        let hover = cx.theme().secondary_hover;
+
         let label = |text: &'static str| {
             div()
                 .text_xs()
@@ -446,6 +486,37 @@ impl Render for UpgradeView {
                                     .child(Input::new(&self.version)),
                             ),
                     )
+                    .when(!suggestions.is_empty(), |column| {
+                        column.child(
+                            v_flex()
+                                .rounded_md()
+                                .border_1()
+                                .border_color(border)
+                                .overflow_hidden()
+                                .children(suggestions.iter().map(|&index| {
+                                    let chart = &self.catalog[index];
+                                    h_flex()
+                                        .id(("suggestion", index))
+                                        .px_2()
+                                        .py_1()
+                                        .gap_2()
+                                        .items_center()
+                                        .cursor_pointer()
+                                        .text_sm()
+                                        .hover(|row| row.bg(hover))
+                                        .child(chart.name.clone())
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .text_color(muted)
+                                                .child(chart.version.clone()),
+                                        )
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.pick_chart(index, window, cx);
+                                        }))
+                                })),
+                        )
+                    })
                     .child(
                         h_flex()
                             .gap_2()

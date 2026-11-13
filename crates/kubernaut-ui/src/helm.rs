@@ -20,10 +20,11 @@ use k8s_helm::{Release, store};
 use tokio::runtime::Handle;
 
 use crate::{
+    charts::ChartsView,
     namespaces,
     release::{ReleaseEvent, ReleaseView, status_tone},
     rows::contains_ignore_case,
-    ui::{Palette, chip, message, tone_color},
+    ui::{Palette, chip, message, segment, segmented_bar, tone_color},
 };
 
 const ROW_HEIGHT: Pixels = px(28.);
@@ -118,8 +119,18 @@ pub struct HelmView {
     load: Load,
     filter: Entity<InputState>,
     open: Option<OpenRelease>,
+    page: Page,
+    /// Created when its page is first shown.
+    charts: Option<Entity<ChartsView>>,
     scroll: UniformListScrollHandle,
     _filter: Subscription,
+}
+
+/// The two halves of Helm: what is installed, and where charts come from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Releases,
+    Charts,
 }
 
 impl HelmView {
@@ -150,6 +161,8 @@ impl HelmView {
             load: Load::Loading,
             filter,
             open: None,
+            page: Page::Releases,
+            charts: None,
             scroll: UniformListScrollHandle::new(),
             _filter: subscription,
         };
@@ -394,24 +407,71 @@ impl HelmView {
     }
 }
 
+impl HelmView {
+    fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
+        if page == Page::Charts && self.charts.is_none() {
+            let (core, runtime) = (&self.core, &self.runtime);
+            self.charts = Some(cx.new(|cx| ChartsView::new(core, runtime, window, cx)));
+        }
+        self.page = page;
+        cx.notify();
+    }
+}
+
 impl Render for HelmView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // A plain flex row, not `h_flex()`: that centres its children
-        // vertically, and both panes must stretch to the full height.
-        div()
-            .flex()
+        let mut switcher = segmented_bar(cx.theme());
+        for (index, (page, label)) in [(Page::Releases, "Releases"), (Page::Charts, "Repositories")]
+            .into_iter()
+            .enumerate()
+        {
+            switcher = switcher.child(
+                segment(("helm-page", index), label, self.page == page, cx.theme()).on_click(
+                    cx.listener(move |this, _, window, cx| this.show_page(page, window, cx)),
+                ),
+            );
+        }
+        let border = cx.theme().border;
+
+        v_flex()
             .flex_1()
             .min_h_0()
             .min_w_0()
             .child(
-                v_flex()
+                h_flex()
+                    .flex_none()
+                    .h(px(44.))
+                    .px_4()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(border)
+                    .child(switcher),
+            )
+            .child(match (self.page, &self.charts) {
+                (Page::Charts, Some(charts)) => div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(charts.clone())
+                    .into_any_element(),
+                // A plain flex row, not `h_flex()`: that centres its children
+                // vertically, and both panes must stretch to the full height.
+                _ => div()
+                    .flex()
                     .flex_1()
                     .min_h_0()
                     .min_w_0()
-                    .child(self.render_header(cx))
-                    .child(self.render_list(cx)),
-            )
-            .when_some(self.open.as_ref(), |row, open| row.child(open.view.clone()))
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_h_0()
+                            .min_w_0()
+                            .child(self.render_header(cx))
+                            .child(self.render_list(cx)),
+                    )
+                    .when_some(self.open.as_ref(), |row, open| row.child(open.view.clone()))
+                    .into_any_element(),
+            })
     }
 }
 

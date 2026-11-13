@@ -1,5 +1,6 @@
 mod app;
 mod categories;
+mod charts;
 mod diff;
 mod drawer;
 mod emulator;
