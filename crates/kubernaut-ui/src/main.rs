@@ -1,4 +1,5 @@
 mod app;
+mod drawer;
 mod rows;
 mod table;
 

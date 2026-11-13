@@ -24,7 +24,10 @@ use k8s_core::{
 };
 use tokio::{runtime::Handle, sync::broadcast::error::RecvError, task::JoinHandle};
 
-use crate::table::ResourceDelegate;
+use crate::{
+    drawer::{DrawerEvent, DrawerView, Target},
+    table::ResourceDelegate,
+};
 
 const ROW_HEIGHT: Pixels = px(28.);
 
@@ -104,6 +107,8 @@ struct OpenTable {
     /// Batches from an earlier selection carry an older generation and are
     /// dropped, so a slow watch cannot paint rows from the previous resource.
     generation: u64,
+    /// `group/version/plural`, which the drawer needs to fetch the object.
+    resource: SharedString,
     title: SharedString,
     state: Entity<TableState<ResourceDelegate>>,
     task: JoinHandle<()>,
@@ -121,6 +126,12 @@ impl Drop for OpenTable {
     fn drop(&mut self) {
         self.task.abort();
     }
+}
+
+/// The drawer for the selected row, and the subscription that closes it.
+struct OpenDrawer {
+    view: Entity<DrawerView>,
+    _close: Subscription,
 }
 
 pub struct AppView {
@@ -144,6 +155,7 @@ pub struct AppView {
     list_scroll: UniformListScrollHandle,
     filter: Entity<InputState>,
     table: Option<OpenTable>,
+    drawer: Option<OpenDrawer>,
     next_generation: u64,
     table_filter: Entity<InputState>,
     watch_tx: mpsc::UnboundedSender<(u64, WatchEvent)>,
@@ -230,6 +242,7 @@ impl AppView {
             list_scroll: UniformListScrollHandle::new(),
             filter,
             table: None,
+            drawer: None,
             next_generation: 0,
             table_filter,
             watch_tx,
@@ -283,6 +296,7 @@ impl AppView {
         self.active = Some(index);
         self.selected = None;
         self.table = None;
+        self.drawer = None;
         if self.clusters.contains_key(&name) {
             self.refresh_rows(cx);
             return;
@@ -368,6 +382,7 @@ impl AppView {
             self.active = None;
             self.selected = None;
             self.table = None;
+            self.drawer = None;
         }
         self.refresh_rows(cx);
 
@@ -382,6 +397,7 @@ impl AppView {
         self.selected = Some(key.clone());
         // Replacing the table aborts the previous watch task.
         self.table = None;
+        self.drawer = None;
 
         let Some(cluster) = self
             .active
@@ -419,15 +435,20 @@ impl AppView {
                 .sortable(true)
                 .col_resizable(true)
         });
-        let events = cx.subscribe(&state, |_, state, event: &TableEvent, cx| {
-            if let TableEvent::SelectRow(view_ix) = event {
-                let view_ix = *view_ix;
-                state.update(cx, |table, cx| {
-                    table.delegate_mut().select(view_ix);
-                    cx.notify();
-                });
-            }
-        });
+        let events = cx.subscribe_in(
+            &state,
+            window,
+            |this, state, event: &TableEvent, window, cx| {
+                if let TableEvent::SelectRow(view_ix) = event {
+                    let view_ix = *view_ix;
+                    state.update(cx, |table, cx| {
+                        table.delegate_mut().select(view_ix);
+                        cx.notify();
+                    });
+                    this.open_drawer(view_ix, window, cx);
+                }
+            },
+        );
         self.table_filter
             .update(cx, |input, cx| input.set_value("", window, cx));
 
@@ -440,6 +461,7 @@ impl AppView {
         ));
         self.table = Some(OpenTable {
             generation,
+            resource: key.clone(),
             empty_label: format!("No {title} found.").into(),
             title,
             state,
@@ -448,6 +470,43 @@ impl AppView {
             status: Some("Loading…".into()),
             error: None,
             _events: events,
+        });
+        cx.notify();
+    }
+
+    /// Show the object behind a table row.
+    fn open_drawer(&mut self, view_ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(table) = &self.table else {
+            return;
+        };
+        let Some((name, namespace)) = table.state.read(cx).delegate().target_at(view_ix) else {
+            return;
+        };
+        let Some(cluster) = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone())
+        else {
+            return;
+        };
+        let target = Target {
+            cluster,
+            resource: table.resource.clone(),
+            kind: table.title.clone(),
+            namespace,
+            name,
+        };
+
+        let view = cx.new(|cx| DrawerView::new(&self.core, &self.runtime, target, window, cx));
+        let close = cx.subscribe(&view, |this, _, event: &DrawerEvent, cx| match event {
+            DrawerEvent::Close => {
+                this.drawer = None;
+                cx.notify();
+            }
+        });
+        self.drawer = Some(OpenDrawer {
+            view,
+            _close: close,
         });
         cx.notify();
     }
@@ -537,6 +596,7 @@ impl AppView {
         v_flex()
             .flex_1()
             .min_h_0()
+            .min_w_0()
             .child(
                 h_flex()
                     .h(px(48.))
@@ -837,7 +897,19 @@ impl AppView {
                 .child(div().p_4().text_color(theme.danger).child(error.clone()));
         }
         match &self.table {
-            Some(table) => main.child(header).child(self.render_table(table, cx)),
+            Some(table) => main.child(header).child(
+                // A plain flex row, not `h_flex()`: that centres its children
+                // vertically, and the table must stretch to the full height.
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(self.render_table(table, cx))
+                    .when_some(self.drawer.as_ref(), |row, drawer| {
+                        row.child(drawer.view.clone())
+                    }),
+            ),
             None => main.child(header).child(
                 div()
                     .p_4()

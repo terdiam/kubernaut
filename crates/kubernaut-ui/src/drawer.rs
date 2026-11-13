@@ -1,0 +1,450 @@
+//! The detail drawer for one selected object.
+//!
+//! A self-contained view: it loads its own data on the tokio runtime and tells
+//! its owner only that it wants to close, so the app view stays small.
+
+use std::{cmp::Reverse, ops::Range, sync::Arc};
+
+use gpui_kit::{
+    base::StyledExt,
+    component::{
+        ActiveTheme, h_flex,
+        input::{Editor, EditorState},
+        v_flex,
+    },
+    prelude::FluentBuilder,
+    *,
+};
+use k8s_app::{AppCore, present};
+use k8s_core::objects;
+use k8s_ops::related::{self, EventRow};
+use tokio::runtime::Handle;
+
+const ROW_HEIGHT: Pixels = px(28.);
+
+/// What the drawer is about.
+#[derive(Clone)]
+pub struct Target {
+    pub cluster: SharedString,
+    /// `group/version/plural`.
+    pub resource: SharedString,
+    pub kind: SharedString,
+    pub namespace: Option<SharedString>,
+    pub name: SharedString,
+}
+
+pub enum DrawerEvent {
+    Close,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    Yaml,
+    Events,
+}
+
+/// A value that arrives from the cluster.
+enum Load<T> {
+    Loading,
+    Ready(T),
+    Failed(SharedString),
+}
+
+/// One event as the list shows it. Labels are built once, at load.
+struct EventLine {
+    warning: bool,
+    reason: SharedString,
+    message: SharedString,
+    count: SharedString,
+    age: SharedString,
+}
+
+pub struct DrawerView {
+    target: Target,
+    tab: Tab,
+    yaml: Entity<EditorState>,
+    yaml_load: Load<()>,
+    events: Load<Vec<EventLine>>,
+    events_scroll: UniformListScrollHandle,
+}
+
+impl EventEmitter<DrawerEvent> for DrawerView {}
+
+impl DrawerView {
+    pub fn new(
+        core: &Arc<AppCore>,
+        runtime: &Handle,
+        target: Target,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let yaml = cx.new(|cx| {
+            EditorState::new(window, cx)
+                .language("yaml")
+                .line_number(true)
+        });
+
+        let yaml_task = runtime.spawn(fetch_yaml(Arc::clone(core), target.clone()));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = yaml_task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(text) => {
+                    this.yaml
+                        .update(cx, |editor, cx| editor.set_value(text, window, cx));
+                    this.yaml_load = Load::Ready(());
+                    cx.notify();
+                }
+                Err(message) => {
+                    this.yaml_load = Load::Failed(message.into());
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+
+        let events_task = runtime.spawn(fetch_events(Arc::clone(core), target.clone()));
+        cx.spawn(async move |this, cx| {
+            let result = events_task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update(cx, |this, cx| {
+                this.events = match result {
+                    Ok(lines) => Load::Ready(lines),
+                    Err(message) => Load::Failed(message.into()),
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+
+        Self {
+            target,
+            tab: Tab::Yaml,
+            yaml,
+            yaml_load: Load::Loading,
+            events: Load::Loading,
+            events_scroll: UniformListScrollHandle::new(),
+        }
+    }
+
+    fn render_tab(
+        &self,
+        tab: Tab,
+        label: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let theme = cx.theme();
+        let active = self.tab == tab;
+        div()
+            .id(label)
+            .px_3()
+            .py_1()
+            .rounded_md()
+            .cursor_pointer()
+            .text_sm()
+            .when(active, |tab| tab.bg(theme.secondary).font_semibold())
+            .when(!active, |tab| tab.text_color(theme.muted_foreground))
+            .child(label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.tab = tab;
+                cx.notify();
+            }))
+    }
+
+    fn render_events(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let message = |text: SharedString, color: Hsla| {
+            div()
+                .p_4()
+                .text_sm()
+                .text_color(color)
+                .child(text)
+                .into_any_element()
+        };
+        match &self.events {
+            Load::Loading => message("Loading events…".into(), theme.muted_foreground),
+            Load::Failed(error) => message(error.clone(), theme.danger),
+            Load::Ready(lines) if lines.is_empty() => {
+                message("No events.".into(), theme.muted_foreground)
+            }
+            Load::Ready(lines) => uniform_list(
+                "events",
+                lines.len(),
+                cx.processor(|this, range: Range<usize>, _window, cx| {
+                    let theme = cx.theme();
+                    let Load::Ready(lines) = &this.events else {
+                        return Vec::new();
+                    };
+                    lines
+                        .get(range.clone())
+                        .unwrap_or_default()
+                        .iter()
+                        .zip(range)
+                        .map(|(line, index)| {
+                            // `w_full`: without it the row is as wide as its
+                            // longest message, and `truncate` has nothing to cut.
+                            h_flex()
+                                .id(("event", index))
+                                .w_full()
+                                .h(ROW_HEIGHT)
+                                .px_3()
+                                .gap_3()
+                                .items_center()
+                                .text_sm()
+                                .child(div().size(px(8.)).flex_none().rounded_full().bg(
+                                    if line.warning {
+                                        theme.warning
+                                    } else {
+                                        theme.muted_foreground
+                                    },
+                                ))
+                                .child(
+                                    div()
+                                        .w(px(120.))
+                                        .flex_none()
+                                        .truncate()
+                                        .child(line.reason.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .child(line.message.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(line.count.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .w(px(56.))
+                                        .flex_none()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(line.age.clone()),
+                                )
+                        })
+                        .collect::<Vec<_>>()
+                }),
+            )
+            .track_scroll(&self.events_scroll)
+            .flex_1()
+            .into_any_element(),
+        }
+    }
+
+    fn render_yaml(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        match &self.yaml_load {
+            Load::Loading => div()
+                .p_4()
+                .text_sm()
+                .text_color(theme.muted_foreground)
+                .child("Loading…")
+                .into_any_element(),
+            Load::Failed(error) => div()
+                .p_4()
+                .text_sm()
+                .text_color(theme.danger)
+                .child(error.clone())
+                .into_any_element(),
+            Load::Ready(()) => Editor::new(&self.yaml)
+                .readonly(true)
+                .bordered(false)
+                .h(relative(1.))
+                .into_any_element(),
+        }
+    }
+}
+
+impl Render for DrawerView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (background, border, muted) = (theme.background, theme.border, theme.muted_foreground);
+
+        let subtitle = match &self.target.namespace {
+            Some(namespace) => h_flex()
+                .gap_1()
+                .child(self.target.kind.clone())
+                .child("·")
+                .child(namespace.clone())
+                .into_any_element(),
+            None => div().child(self.target.kind.clone()).into_any_element(),
+        };
+
+        v_flex()
+            .w(px(560.))
+            .h_full()
+            .flex_none()
+            .bg(background)
+            .border_l_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .h(px(52.))
+                    .flex_none()
+                    .px_4()
+                    .gap_3()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(border)
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(
+                                div()
+                                    .font_semibold()
+                                    .truncate()
+                                    .child(self.target.name.clone()),
+                            )
+                            .child(div().text_xs().text_color(muted).child(subtitle)),
+                    )
+                    .child(
+                        div()
+                            .id("close-drawer")
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_sm()
+                            .border_1()
+                            .border_color(border)
+                            .hover(|button| button.bg(cx.theme().secondary))
+                            .child("Close")
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(DrawerEvent::Close))),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .flex_none()
+                    .px_3()
+                    .py_2()
+                    .gap_1()
+                    .child(self.render_tab(Tab::Yaml, "YAML", cx))
+                    .child(self.render_tab(Tab::Events, "Events", cx)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .flex_col()
+                    .child(match self.tab {
+                        Tab::Yaml => self.render_yaml(cx),
+                        Tab::Events => self.render_events(cx),
+                    }),
+            )
+    }
+}
+
+async fn fetch_yaml(core: Arc<AppCore>, target: Target) -> Result<String, String> {
+    let handle = core
+        .clusters
+        .require(&target.cluster)
+        .map_err(|err| err.to_string())?;
+    let object = objects::get(
+        &handle,
+        &target.resource,
+        target.namespace.as_deref(),
+        &target.name,
+    )
+    .await
+    .map_err(|err| err.to_string())?;
+    objects::to_yaml(&object, false).map_err(|err| err.to_string())
+}
+
+async fn fetch_events(core: Arc<AppCore>, target: Target) -> Result<Vec<EventLine>, String> {
+    let handle = core
+        .clusters
+        .require(&target.cluster)
+        .map_err(|err| err.to_string())?;
+    let rows = related::events(&handle, target.namespace.as_deref(), &target.name)
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(event_lines(&rows, present::now()))
+}
+
+/// Newest first, with the labels the list draws.
+fn event_lines(rows: &[EventRow], now: i64) -> Vec<EventLine> {
+    let mut keyed: Vec<(i64, &EventRow)> = rows
+        .iter()
+        .map(|row| {
+            let seen = row
+                .last_seen
+                .as_deref()
+                .or(row.first_seen.as_deref())
+                .and_then(present::parse_timestamp);
+            (seen.unwrap_or(i64::MIN), row)
+        })
+        .collect();
+    keyed.sort_by_key(|&(seen, _)| Reverse(seen));
+
+    let mut age = String::new();
+    keyed
+        .into_iter()
+        .map(|(seen, row)| {
+            age.clear();
+            if seen != i64::MIN {
+                present::write_age(&mut age, now - seen);
+            }
+            EventLine {
+                warning: row.kind == "Warning",
+                reason: row.reason.as_str().into(),
+                message: row.message.as_str().into(),
+                count: if row.count > 1 {
+                    format!("×{}", row.count).into()
+                } else {
+                    SharedString::default()
+                },
+                age: age.as_str().into(),
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::event_lines;
+    use k8s_ops::related::EventRow;
+
+    fn event(kind: &str, reason: &str, count: i32, last_seen: Option<&str>) -> EventRow {
+        EventRow {
+            kind: kind.into(),
+            reason: reason.into(),
+            message: format!("{reason} happened"),
+            count,
+            first_seen: None,
+            last_seen: last_seen.map(Into::into),
+            source: None,
+            object: String::new(),
+        }
+    }
+
+    #[test]
+    fn events_are_newest_first_with_ages_and_repeat_counts() {
+        let rows = [
+            event("Normal", "Pulled", 1, Some("1970-01-01T00:01:00Z")),
+            event("Warning", "BackOff", 7, Some("1970-01-01T00:10:00Z")),
+            event("Normal", "Created", 1, None),
+        ];
+        let lines = event_lines(&rows, 660);
+
+        let reasons: Vec<_> = lines.iter().map(|l| &*l.reason).collect();
+        assert_eq!(
+            reasons,
+            ["BackOff", "Pulled", "Created"],
+            "undated events last"
+        );
+
+        assert!(lines[0].warning);
+        assert_eq!(&*lines[0].count, "×7");
+        assert_eq!(&*lines[0].age, "1m0s");
+        assert_eq!(&*lines[1].count, "", "a single occurrence shows no count");
+        assert_eq!(&*lines[2].age, "", "no timestamp, no age");
+    }
+}

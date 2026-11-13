@@ -83,7 +83,8 @@ rand = "0.10"
 # One dependency for the native UI: it pins the matching gpui fork family and
 # re-exports gpui, gpui-base and gpui-component. Depending on `gpui` directly
 # alongside it would pull a second, incompatible copy of gpui's types.
-gpui-kit = "0.9.1"
+# `tree-sitter-yaml` gives the read-only object view its syntax highlighting.
+gpui-kit = { version = "0.9.1", features = ["tree-sitter-yaml"] }
 
 tauri = { version = "2.11", features = [] }
 tauri-build = { version = "2", features = [] }

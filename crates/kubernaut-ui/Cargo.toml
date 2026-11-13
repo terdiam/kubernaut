@@ -14,6 +14,7 @@ gpui-kit.workspace = true
 
 k8s-app.workspace = true
 k8s-core.workspace = true
+k8s-ops.workspace = true
 
 tokio.workspace = true
 futures.workspace = true

@@ -117,6 +117,13 @@ impl ResourceDelegate {
         self.selected = self.store.row(view_ix).map(|row| row.uid.clone());
     }
 
+    /// The name and namespace of the row at a position in the current view.
+    pub fn target_at(&self, view_ix: usize) -> Option<(SharedString, Option<SharedString>)> {
+        let row = self.store.row(view_ix)?;
+        let namespace = (!row.namespace.is_empty()).then(|| row.namespace.clone());
+        Some((row.name.clone(), namespace))
+    }
+
     pub fn watch_state(&self) -> &WatchState {
         &self.watch_state
     }
