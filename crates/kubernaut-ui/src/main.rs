@@ -1,5 +1,7 @@
 mod app;
 mod drawer;
+mod log_buffer;
+mod logs;
 mod rows;
 mod table;
 

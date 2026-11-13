@@ -17,8 +17,13 @@ use gpui_kit::{
 };
 use k8s_app::{AppCore, present};
 use k8s_core::objects;
-use k8s_ops::related::{self, EventRow};
+use k8s_ops::{
+    logs::LogTarget,
+    related::{self, EventRow},
+};
 use tokio::runtime::Handle;
+
+use crate::{log_buffer::log_target, logs::LogView};
 
 const ROW_HEIGHT: Pixels = px(28.);
 
@@ -41,6 +46,7 @@ pub enum DrawerEvent {
 enum Tab {
     Yaml,
     Events,
+    Logs,
 }
 
 /// A value that arrives from the cluster.
@@ -60,7 +66,13 @@ struct EventLine {
 }
 
 pub struct DrawerView {
+    core: Arc<AppCore>,
+    runtime: Handle,
     target: Target,
+    /// `None` when the object has no logs of its own.
+    log_target: Option<LogTarget>,
+    /// Created when the tab is first opened, so closed tabs stream nothing.
+    logs: Option<Entity<LogView>>,
     tab: Tab,
     yaml: Entity<EditorState>,
     yaml_load: Load<()>,
@@ -118,6 +130,10 @@ impl DrawerView {
         .detach();
 
         Self {
+            core: Arc::clone(core),
+            runtime: runtime.clone(),
+            log_target: log_target(&target.resource, target.namespace.as_deref(), &target.name),
+            logs: None,
             target,
             tab: Tab::Yaml,
             yaml,
@@ -147,8 +163,22 @@ impl DrawerView {
             .child(label)
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.tab = tab;
+                if tab == Tab::Logs {
+                    this.ensure_logs(cx);
+                }
                 cx.notify();
             }))
+    }
+
+    fn ensure_logs(&mut self, cx: &mut Context<Self>) {
+        if self.logs.is_some() {
+            return;
+        }
+        let Some(log_target) = self.log_target.clone() else {
+            return;
+        };
+        let (core, runtime, target) = (&self.core, &self.runtime, &self.target);
+        self.logs = Some(cx.new(|cx| LogView::new(core, runtime, target, log_target, cx)));
     }
 
     fn render_events(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -326,7 +356,10 @@ impl Render for DrawerView {
                     .py_2()
                     .gap_1()
                     .child(self.render_tab(Tab::Yaml, "YAML", cx))
-                    .child(self.render_tab(Tab::Events, "Events", cx)),
+                    .child(self.render_tab(Tab::Events, "Events", cx))
+                    .when(self.log_target.is_some(), |tabs| {
+                        tabs.child(self.render_tab(Tab::Logs, "Logs", cx))
+                    }),
             )
             .child(
                 div()
@@ -337,6 +370,10 @@ impl Render for DrawerView {
                     .child(match self.tab {
                         Tab::Yaml => self.render_yaml(cx),
                         Tab::Events => self.render_events(cx),
+                        Tab::Logs => match &self.logs {
+                            Some(logs) => logs.clone().into_any_element(),
+                            None => div().into_any_element(),
+                        },
                     }),
             )
     }
