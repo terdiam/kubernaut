@@ -122,6 +122,10 @@ pub struct Preferences {
     /// Per-cluster settings, keyed by context name.
     pub cluster_profiles: std::collections::BTreeMap<String, ClusterProfile>,
 
+    /// The namespaces each cluster was last narrowed to, keyed by context
+    /// name. A cluster with nothing here shows every namespace.
+    pub namespace_scopes: std::collections::BTreeMap<String, Vec<String>>,
+
     /// Resources pinned for one-click access from the sidebar.
     pub pinned: Vec<PinnedObject>,
 
@@ -144,6 +148,7 @@ impl Default for Preferences {
             protected_contexts: Vec::new(),
             check_updates_on_startup: true,
             cluster_profiles: std::collections::BTreeMap::new(),
+            namespace_scopes: std::collections::BTreeMap::new(),
             pinned: Vec::new(),
             custom_columns: std::collections::BTreeMap::new(),
             custom_actions: Vec::new(),
@@ -198,6 +203,24 @@ impl Preferences {
             .unwrap_or_default()
     }
 
+    /// The namespaces a context was last narrowed to; empty means all.
+    pub fn saved_namespaces(&self, context: &str) -> &[String] {
+        self.namespace_scopes
+            .get(context)
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Remember a context's namespaces. An empty list forgets the entry, so
+    /// the file does not fill up with clusters that show everything.
+    pub fn remember_namespaces(&mut self, context: &str, namespaces: &[String]) {
+        if namespaces.is_empty() {
+            self.namespace_scopes.remove(context);
+        } else {
+            self.namespace_scopes
+                .insert(context.to_string(), namespaces.to_vec());
+        }
+    }
+
     /// True when an action against this context should be refused.
     pub fn is_protected(&self, context: &str) -> bool {
         self.protected_contexts
@@ -233,6 +256,45 @@ mod tests {
         assert!(
             preferences.check_updates_on_startup,
             "update checks are the one outbound request made without being asked"
+        );
+    }
+
+    #[test]
+    fn namespaces_are_remembered_per_context_and_forgotten_when_empty() {
+        let mut preferences = Preferences::default();
+        assert!(preferences.saved_namespaces("prod").is_empty());
+
+        preferences.remember_namespaces("prod", &["team-a".into(), "team-b".into()]);
+        preferences.remember_namespaces("dev", &["default".into()]);
+        assert_eq!(preferences.saved_namespaces("prod"), ["team-a", "team-b"]);
+        assert_eq!(preferences.saved_namespaces("dev"), ["default"]);
+
+        preferences.remember_namespaces("prod", &[]);
+        assert!(preferences.saved_namespaces("prod").is_empty());
+        assert!(!preferences.namespace_scopes.contains_key("prod"));
+        assert_eq!(
+            preferences.saved_namespaces("dev"),
+            ["default"],
+            "others stay"
+        );
+    }
+
+    #[test]
+    fn a_file_from_before_namespaces_were_saved_still_loads() {
+        let preferences: Preferences = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert!(preferences.namespace_scopes.is_empty());
+
+        let json = serde_json::to_string(&{
+            let mut p = Preferences::default();
+            p.remember_namespaces("prod", &["a".into()]);
+            p
+        })
+        .unwrap();
+        let back: Preferences = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.saved_namespaces("prod"),
+            ["a"],
+            "survives a round trip"
         );
     }
 

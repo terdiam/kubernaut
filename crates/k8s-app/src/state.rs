@@ -87,6 +87,21 @@ impl AppCore {
         self.preferences.read().clone()
     }
 
+    /// Remember the namespaces a cluster is narrowed to.
+    ///
+    /// Reads, edits and writes back without holding the lock across the file
+    /// write, so calls must come from one place in order; the UI sends them
+    /// through a single queue. Doing it here, rather than in the UI, keeps a
+    /// concurrent edit to another preference from being overwritten with a
+    /// stale copy.
+    pub fn remember_namespaces(&self, context: &str, namespaces: &[String]) -> Result<(), String> {
+        let mut next = self.preferences();
+        next.remember_namespaces(context, namespaces);
+        next.save()?;
+        *self.preferences.write() = next;
+        Ok(())
+    }
+
     pub fn set_preferences(&self, preferences: Preferences) -> Result<(), String> {
         preferences.save()?;
         *self.preferences.write() = preferences;

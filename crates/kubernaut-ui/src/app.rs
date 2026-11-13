@@ -247,6 +247,9 @@ pub struct AppView {
     table_filter: Entity<InputState>,
     watch_tx: mpsc::UnboundedSender<(u64, WatchEvent)>,
     status_tx: mpsc::UnboundedSender<(SharedString, ClusterStatus)>,
+    /// Namespace selections to save, in the order they were made. One task
+    /// writes them, so a slow write can never land after a newer one.
+    persist_tx: mpsc::UnboundedSender<(SharedString, Vec<String>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -316,6 +319,16 @@ impl AppView {
         })
         .detach();
 
+        let (persist_tx, mut persist_rx) = mpsc::unbounded::<(SharedString, Vec<String>)>();
+        let persist_core = Arc::clone(&core);
+        runtime.spawn(async move {
+            while let Some((cluster, namespaces)) = persist_rx.next().await {
+                if let Err(err) = persist_core.remember_namespaces(&cluster, &namespaces) {
+                    tracing::warn!(%cluster, %err, "could not save the namespace selection");
+                }
+            }
+        });
+
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
 
@@ -341,6 +354,7 @@ impl AppView {
             table_filter,
             watch_tx,
             status_tx,
+            persist_tx,
             _subscriptions: vec![
                 subscription,
                 table_filter_subscription,
@@ -477,6 +491,12 @@ impl AppView {
                     state.set_status(status);
                     state.discovery = Some(discovery);
                     state.namespaces = namespaces.into_iter().map(Into::into).collect();
+                    // Back to where the user left this cluster, minus any
+                    // namespace that no longer exists.
+                    state.scope = namespaces::restore(
+                        self.core.preferences().saved_namespaces(name),
+                        &state.namespaces,
+                    );
                 }
                 Err(reason) => {
                     state.set_status(ClusterStatus::Unreachable {
@@ -748,9 +768,14 @@ impl AppView {
         if state.scope == before {
             return;
         }
+        let saved: Vec<String> = state.scope.iter().map(ToString::to_string).collect();
+        let items = self
+            .palette
+            .is_some()
+            .then(|| namespaces::items(&state.namespaces, &state.scope));
+        self.persist_tx.unbounded_send((name, saved)).ok();
 
-        if let Some(palette) = &self.palette {
-            let items = namespaces::items(&state.namespaces, &state.scope);
+        if let (Some(palette), Some(items)) = (&self.palette, items) {
             palette
                 .view
                 .update(cx, |palette, cx| palette.set_items(items, cx));
@@ -1670,17 +1695,36 @@ impl AppView {
             return main.child(helm.clone());
         }
         if let Some(overview) = &self.overview {
-            return main.child(
-                div()
-                    .flex()
-                    .flex_1()
-                    .min_h_0()
-                    .min_w_0()
-                    .child(overview.view.clone())
-                    .when_some(self.drawer.as_ref(), |row, drawer| {
-                        row.child(drawer.view.clone())
-                    }),
-            );
+            // The overview reads the whole cluster. Say so when a filter is
+            // set, rather than leave the numbers to contradict the toolbar.
+            let filtered = !state.scope.is_empty();
+            return main
+                .when(filtered, |page| {
+                    page.child(
+                        div()
+                            .flex_none()
+                            .px_4()
+                            .py_1p5()
+                            .text_xs()
+                            .text_color(theme.muted_foreground)
+                            .bg(theme.secondary)
+                            .child(
+                                "The overview covers the whole cluster. Your namespace \
+                                 selection applies to resource lists and Helm.",
+                            ),
+                    )
+                })
+                .child(
+                    div()
+                        .flex()
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .child(overview.view.clone())
+                        .when_some(self.drawer.as_ref(), |row, drawer| {
+                            row.child(drawer.view.clone())
+                        }),
+                );
         }
         match &self.table {
             Some(table) => main.child(

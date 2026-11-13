@@ -28,6 +28,20 @@ pub fn toggle(selected: &mut Vec<SharedString>, namespace: &SharedString) {
     }
 }
 
+/// The saved selection that still applies: only namespaces the cluster still
+/// has, sorted and without repeats. A namespace deleted since last time drops
+/// out rather than leaving a filter that can only ever show nothing.
+pub fn restore(saved: &[String], known: &[SharedString]) -> Vec<SharedString> {
+    let mut scope: Vec<SharedString> = known
+        .iter()
+        .filter(|namespace| saved.iter().any(|saved| saved == &***namespace))
+        .cloned()
+        .collect();
+    scope.sort();
+    scope.dedup();
+    scope
+}
+
 /// How to watch a selection: the namespace to ask the server for, and the set
 /// to filter rows by when the server cannot do it.
 pub fn watch_scope(selected: &[SharedString]) -> (Option<String>, Vec<SharedString>) {
@@ -80,7 +94,7 @@ pub fn items(known: &[SharedString], selected: &[SharedString]) -> Vec<Item> {
 
 #[cfg(test)]
 mod tests {
-    use super::{admits, items, label, toggle, watch_scope};
+    use super::{admits, items, label, restore, toggle, watch_scope};
     use crate::palette::Command;
     use gpui_kit::SharedString;
 
@@ -113,6 +127,19 @@ mod tests {
             selected.is_empty(),
             "removing the last one shows everything"
         );
+    }
+
+    #[test]
+    fn a_saved_selection_keeps_only_namespaces_that_still_exist() {
+        let known = names(&["default", "team-a", "team-b"]);
+        let saved = vec![
+            "team-b".to_string(),
+            "gone".to_string(),
+            "team-a".to_string(),
+        ];
+        assert_eq!(restore(&saved, &known), names(&["team-a", "team-b"]));
+        assert!(restore(&["gone".to_string()], &known).is_empty());
+        assert!(restore(&[], &known).is_empty());
     }
 
     #[test]
