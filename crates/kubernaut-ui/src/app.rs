@@ -33,6 +33,7 @@ use crate::{
     categories::{self, Category},
     drawer::{DrawerEvent, DrawerView, Tab as DrawerTab, Target},
     helm::HelmView,
+    namespaces,
     overview::{OverviewEvent, OverviewView},
     palette::{Command, Item, PaletteEvent, PaletteView},
     row_actions::RowAction,
@@ -43,6 +44,9 @@ use crate::{
 };
 
 const ROW_HEIGHT: Pixels = px(28.);
+
+/// Namespace pills shown in the toolbar before the rest fold into a count.
+const MAX_PILLS: usize = 3;
 
 actions!(kubernaut, [TogglePalette]);
 
@@ -78,6 +82,10 @@ struct ClusterState {
     status_label: SharedString,
     discovery: Option<Arc<DiscoveryCache>>,
     error: Option<SharedString>,
+    /// The namespaces the cluster is narrowed to, sorted; empty shows every one.
+    scope: Vec<SharedString>,
+    /// What the picker offers. Read once on connect.
+    namespaces: Vec<SharedString>,
 }
 
 impl ClusterState {
@@ -87,6 +95,8 @@ impl ClusterState {
             status,
             discovery: None,
             error: None,
+            scope: Vec::new(),
+            namespaces: Vec::new(),
         }
     }
 
@@ -438,7 +448,10 @@ impl AppView {
                     .await
                     .map_err(|e| e.to_string())?,
             };
-            Ok::<_, String>((handle.status(), discovery))
+            // Falls back to the context's own namespace when listing is
+            // forbidden, so a restricted user still gets a working picker.
+            let namespaces = k8s_core::objects::list_namespaces(&handle).await;
+            Ok::<_, String>((handle.status(), discovery, namespaces))
         });
 
         cx.spawn_in(window, async move |this, cx| {
@@ -454,15 +467,16 @@ impl AppView {
     fn finish_connect(
         &mut self,
         name: &SharedString,
-        result: Result<(ClusterStatus, Arc<DiscoveryCache>), String>,
+        result: Result<(ClusterStatus, Arc<DiscoveryCache>, Vec<String>), String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(state) = self.clusters.get_mut(name) {
             match result {
-                Ok((status, discovery)) => {
+                Ok((status, discovery, namespaces)) => {
                     state.set_status(status);
                     state.discovery = Some(discovery);
+                    state.namespaces = namespaces.into_iter().map(Into::into).collect();
                 }
                 Err(reason) => {
                     state.set_status(ClusterStatus::Unreachable {
@@ -531,9 +545,13 @@ impl AppView {
             .custom_columns
             .remove(&format!("{}/{}", descriptor.group, descriptor.kind))
             .unwrap_or_default();
+        let (namespace, client_scope) = self
+            .active_state()
+            .map(|state| namespaces::watch_scope(&state.scope))
+            .unwrap_or_default();
         let request = WatchRequest {
             resource: key.to_string(),
-            namespace: None,
+            namespace,
             label_selector: None,
             field_selector: None,
             custom_columns,
@@ -543,6 +561,7 @@ impl AppView {
         self.next_generation += 1;
 
         let context = RowContext {
+            scope: client_scope,
             owner: cx.entity().downgrade(),
             cluster: cluster.clone(),
             resource: key.clone(),
@@ -599,12 +618,35 @@ impl AppView {
             return;
         }
         let items = self.palette_items();
-        let view = cx.new(|cx| PaletteView::new(items, window, cx));
+        self.open_palette(
+            items,
+            "Search resources, clusters and pages",
+            "↩ open",
+            window,
+            cx,
+        );
+    }
+
+    /// Show the palette over `items`, replacing one that is already open.
+    fn open_palette(
+        &mut self,
+        items: Vec<Item>,
+        placeholder: &'static str,
+        footer: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.new(|cx| PaletteView::new(items, placeholder, footer, window, cx));
         let events = cx.subscribe_in(
             &view,
             window,
             |this, _, event: &PaletteEvent, window, cx| {
-                this.close_palette(window, cx);
+                // Ticking a namespace keeps the picker open, so several can be
+                // chosen in one go; everything else ends the palette.
+                let keeps_open = matches!(event, PaletteEvent::Choose(Command::ToggleNamespace(_)));
+                if !keeps_open {
+                    this.close_palette(window, cx);
+                }
                 if let PaletteEvent::Choose(command) = event {
                     this.run_command(command, window, cx);
                 }
@@ -668,7 +710,57 @@ impl AppView {
             Command::Helm => self.open_helm(window, cx),
             Command::Cluster(index) => self.select_cluster(*index, window, cx),
             Command::Resource(key) => self.open_resource(key, window, cx),
+            Command::ToggleNamespace(namespace) => {
+                self.change_scope(window, cx, |scope| namespaces::toggle(scope, namespace));
+            }
+            Command::ClearNamespaces => self.change_scope(window, cx, Vec::clear),
         }
+    }
+
+    fn open_namespace_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(state) = self.active_state() else {
+            return;
+        };
+        let items = namespaces::items(&state.namespaces, &state.scope);
+        self.open_palette(items, "Filter namespaces", "↩ tick", window, cx);
+    }
+
+    /// Change the namespace selection and reload what is showing, so the page
+    /// never disagrees with the toolbar. An open picker is refreshed in place.
+    fn change_scope(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        edit: impl FnOnce(&mut Vec<SharedString>),
+    ) {
+        let Some(name) = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone())
+        else {
+            return;
+        };
+        let Some(state) = self.clusters.get_mut(&name) else {
+            return;
+        };
+        let before = state.scope.clone();
+        edit(&mut state.scope);
+        if state.scope == before {
+            return;
+        }
+
+        if let Some(palette) = &self.palette {
+            let items = namespaces::items(&state.namespaces, &state.scope);
+            palette
+                .view
+                .update(cx, |palette, cx| palette.set_items(items, cx));
+        }
+        if let Some(resource) = self.table.as_ref().map(|table| table.resource.clone()) {
+            self.open_resource(&resource, window, cx);
+        } else if self.helm.is_some() {
+            self.open_helm(window, cx);
+        }
+        cx.notify();
     }
 
     /// Show the overview of the active cluster.
@@ -706,9 +798,13 @@ impl AppView {
         else {
             return;
         };
+        let scope = self
+            .active_state()
+            .map(|state| state.scope.clone())
+            .unwrap_or_default();
         self.clear_pages();
         let (core, runtime) = (&self.core, &self.runtime);
-        self.helm = Some(cx.new(|cx| HelmView::new(core, runtime, cluster, window, cx)));
+        self.helm = Some(cx.new(|cx| HelmView::new(core, runtime, cluster, scope, window, cx)));
         cx.notify();
     }
 
@@ -1407,6 +1503,96 @@ impl AppView {
             ClusterStatus::Disconnected => theme.muted_foreground,
         };
 
+        let selected = !state.scope.is_empty();
+        let (primary, secondary, secondary_hover) =
+            (theme.primary, theme.secondary, theme.secondary_hover);
+        let namespace_button = h_flex()
+            .id("namespace")
+            .h(px(24.))
+            .px_2()
+            .gap_1p5()
+            .items_center()
+            .rounded_md()
+            .cursor_pointer()
+            .text_xs()
+            .bg(secondary)
+            .text_color(if selected { theme.foreground } else { muted })
+            .hover(|chip| chip.bg(secondary_hover))
+            .child(Icon::new(IconName::Folder).size_3p5())
+            .child(if selected {
+                "Namespaces"
+            } else {
+                "All namespaces"
+            })
+            .child(Icon::new(IconName::ChevronDown).size_3())
+            .tooltip(|window, cx| Tooltip::new("Choose which namespaces to show").build(window, cx))
+            .on_click(cx.listener(|this, _, window, cx| {
+                this.open_namespace_picker(window, cx);
+            }));
+        // One removable pill per chosen namespace, so a wrong pick is one click
+        // to undo. More than a couple fold into a count that opens the picker.
+        let shown_pills = state.scope.iter().take(MAX_PILLS);
+        let hidden_pills = state.scope.len().saturating_sub(MAX_PILLS);
+        let mut namespace_pills = h_flex().gap_1().items_center();
+        for (index, namespace) in shown_pills.enumerate() {
+            let target = namespace.clone();
+            namespace_pills = namespace_pills.child(
+                h_flex()
+                    .id(("namespace-pill", index))
+                    .h(px(22.))
+                    .pl_2()
+                    .pr_1()
+                    .gap_1()
+                    .items_center()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .text_xs()
+                    .bg(primary.opacity(0.16))
+                    .text_color(primary)
+                    .hover(|pill| pill.bg(primary.opacity(0.28)))
+                    .tooltip(|window, cx| Tooltip::new("Take this namespace out").build(window, cx))
+                    .child(namespace.clone())
+                    .child(Icon::new(IconName::Close).size_3())
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.change_scope(window, cx, |scope| {
+                            namespaces::toggle(scope, &target);
+                        });
+                    })),
+            );
+        }
+        if hidden_pills > 0 {
+            namespace_pills = namespace_pills.child(
+                div()
+                    .id("namespace-more")
+                    .px_1p5()
+                    .text_xs()
+                    .cursor_pointer()
+                    .text_color(primary)
+                    .child(format!("+{hidden_pills}"))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.open_namespace_picker(window, cx);
+                    })),
+            );
+        }
+        if state.scope.len() > 1 {
+            namespace_pills = namespace_pills.child(
+                div()
+                    .id("namespace-clear")
+                    .px_1p5()
+                    .text_xs()
+                    .cursor_pointer()
+                    .text_color(muted)
+                    .hover(|clear| clear.text_color(theme.foreground))
+                    .tooltip(|window, cx| {
+                        Tooltip::new("Show all namespaces again").build(window, cx)
+                    })
+                    .child("Clear")
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.change_scope(window, cx, Vec::clear);
+                    })),
+            );
+        }
+
         bar.child(
             div()
                 .text_base()
@@ -1414,6 +1600,8 @@ impl AppView {
                 .child(tile.display.clone()),
         )
         .child(pill(state.status_label.clone(), tone))
+        .child(namespace_button)
+        .child(namespace_pills)
         .child(div().flex_1())
         .child(search)
         .child(div().flex_1())
@@ -1430,10 +1618,17 @@ impl AppView {
             Some(state) => (state.status_label.clone(), theme.muted_foreground),
             None => ("No cluster selected".into(), theme.muted_foreground),
         };
-        let shown = self
-            .table
-            .as_ref()
-            .map(|table| format!("{} · {}", table.title, table.count_label));
+        let shown = self.table.as_ref().map(|table| {
+            match self.active_state().filter(|state| !state.scope.is_empty()) {
+                Some(state) => format!(
+                    "{} · {} · {}",
+                    namespaces::label(&state.scope),
+                    table.title,
+                    table.count_label
+                ),
+                None => format!("{} · {}", table.title, table.count_label),
+            }
+        });
 
         h_flex()
             .h(px(24.))

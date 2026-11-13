@@ -30,6 +30,10 @@ pub enum Command {
     Helm,
     Cluster(usize),
     Resource(SharedString),
+    /// Add a namespace to the selection, or take it out.
+    ToggleNamespace(SharedString),
+    /// Back to every namespace.
+    ClearNamespaces,
 }
 
 #[derive(Clone)]
@@ -89,6 +93,7 @@ fn matching(items: &[Item], query: &str) -> Vec<usize> {
 }
 
 pub struct PaletteView {
+    footer: &'static str,
     input: Entity<InputState>,
     items: Vec<Item>,
     shown: Vec<usize>,
@@ -100,10 +105,14 @@ pub struct PaletteView {
 impl EventEmitter<PaletteEvent> for PaletteView {}
 
 impl PaletteView {
-    pub fn new(items: Vec<Item>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Search resources, clusters and pages")
-        });
+    pub fn new(
+        items: Vec<Item>,
+        placeholder: &'static str,
+        footer: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let input = cx.new(|cx| InputState::new(window, cx).placeholder(placeholder));
         let subscription =
             cx.subscribe_in(
                 &input,
@@ -118,6 +127,7 @@ impl PaletteView {
 
         let shown = matching(&items, "");
         Self {
+            footer,
             input,
             items,
             shown,
@@ -125,6 +135,16 @@ impl PaletteView {
             scroll: UniformListScrollHandle::new(),
             _input: subscription,
         }
+    }
+
+    /// Replace the entries, keeping the query and, as far as it still exists,
+    /// the highlighted row. For a picker that stays open while choices change.
+    pub fn set_items(&mut self, items: Vec<Item>, cx: &mut Context<Self>) {
+        let query = self.input.read(cx).value();
+        self.items = items;
+        self.shown = matching(&self.items, &query);
+        self.selected = self.selected.min(self.shown.len().saturating_sub(1));
+        cx.notify();
     }
 
     fn refilter(&mut self, cx: &mut Context<Self>) {
@@ -182,6 +202,7 @@ impl Render for PaletteView {
             theme.overlay,
         );
 
+        let footer = self.footer;
         let rows = self.shown.len().clamp(1, VISIBLE_ROWS);
         let list = if self.shown.is_empty() {
             div()
@@ -189,7 +210,7 @@ impl Render for PaletteView {
                 .py_6()
                 .text_sm()
                 .text_color(muted)
-                .child("Nothing matches. Try a kind like “pod”, a cluster, or “helm”.")
+                .child("Nothing matches.")
                 .into_any_element()
         } else {
             uniform_list(
@@ -296,7 +317,7 @@ impl Render for PaletteView {
                             .text_xs()
                             .text_color(muted)
                             .child("↑↓ move")
-                            .child("↩ open")
+                            .child(footer)
                             .child("esc close"),
                     ),
             )

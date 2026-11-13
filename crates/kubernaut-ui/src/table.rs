@@ -50,6 +50,8 @@ pub struct RowContext {
     /// `group/version/plural`.
     pub resource: SharedString,
     pub kind: SharedString,
+    /// Namespaces to keep rows for when the watch covers more than they do.
+    pub scope: Vec<SharedString>,
 }
 
 pub struct ResourceDelegate {
@@ -71,8 +73,8 @@ pub struct ResourceDelegate {
 impl ResourceDelegate {
     pub fn new(context: RowContext) -> Self {
         Self {
+            store: RowStore::with_scope(context.scope.clone()),
             context,
-            store: RowStore::default(),
             columns: Vec::new(),
             fields: Vec::new(),
             shown_cells: Vec::new(),

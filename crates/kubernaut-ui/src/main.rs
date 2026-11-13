@@ -7,6 +7,7 @@ mod icons;
 mod keys;
 mod log_buffer;
 mod logs;
+mod namespaces;
 mod overview;
 mod palette;
 mod release;

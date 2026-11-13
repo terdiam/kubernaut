@@ -20,6 +20,7 @@ use k8s_helm::{Release, store};
 use tokio::runtime::Handle;
 
 use crate::{
+    namespaces,
     release::{ReleaseEvent, ReleaseView, status_tone},
     rows::contains_ignore_case,
     ui::{Palette, chip, message, tone_color},
@@ -107,6 +108,8 @@ pub struct HelmView {
     core: Arc<AppCore>,
     runtime: Handle,
     cluster: SharedString,
+    /// The namespaces to list; empty lists every one.
+    scope: Vec<SharedString>,
     /// The releases as listed, and the raw values the detail pane starts from.
     releases: Vec<Release>,
     lines: Vec<ReleaseLine>,
@@ -124,6 +127,7 @@ impl HelmView {
         core: &Arc<AppCore>,
         runtime: &Handle,
         cluster: SharedString,
+        scope: Vec<SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -138,6 +142,7 @@ impl HelmView {
             core: Arc::clone(core),
             runtime: runtime.clone(),
             cluster,
+            scope,
             releases: Vec::new(),
             lines: Vec::new(),
             shown: Vec::new(),
@@ -154,14 +159,19 @@ impl HelmView {
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
         let (core, cluster) = (Arc::clone(&self.core), self.cluster.clone());
+        // One namespace is asked of the server; several are listed cluster-wide
+        // and narrowed here, as the list call takes only one.
+        let (namespace, scope) = namespaces::watch_scope(&self.scope);
         let task = self.runtime.spawn(async move {
             let handle = core
                 .clusters
                 .require(&cluster)
                 .map_err(|err| err.to_string())?;
-            store::list(&handle, None)
+            let mut releases = store::list(&handle, namespace.as_deref())
                 .await
-                .map_err(|err| err.to_string())
+                .map_err(|err| err.to_string())?;
+            releases.retain(|release| namespaces::admits(&scope, Some(&release.namespace)));
+            Ok(releases)
         });
         cx.spawn(async move |this, cx| {
             let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
@@ -287,7 +297,12 @@ impl HelmView {
             Load::Loading => message("Loading releases…", palette.muted).into_any_element(),
             Load::Failed(error) => message(error.clone(), palette.danger).into_any_element(),
             Load::Ready if self.lines.is_empty() => {
-                message("No Helm releases in this cluster.", palette.muted).into_any_element()
+                let text = if self.scope.is_empty() {
+                    "No Helm releases in this cluster.".to_string()
+                } else {
+                    format!("No Helm releases in {}.", namespaces::label(&self.scope))
+                };
+                message(text, palette.muted).into_any_element()
             }
             Load::Ready if self.shown.is_empty() => {
                 message("No matches.", palette.muted).into_any_element()

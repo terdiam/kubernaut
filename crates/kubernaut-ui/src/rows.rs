@@ -10,6 +10,8 @@ use gpui_kit::SharedString;
 use k8s_app::present::{Tone, parse_timestamp, tone_for, write_age};
 use k8s_core::{ColumnSpec, Row, RowHealth, WatchBatch};
 
+use crate::namespaces::admits;
+
 /// One object as the table keeps it. Strings are `SharedString` so rendering a
 /// cell clones an `Arc`, not the text.
 pub struct StoredRow {
@@ -70,6 +72,8 @@ pub struct Sort {
 
 #[derive(Default)]
 pub struct RowStore {
+    /// Namespaces rows are kept for; empty keeps every row.
+    scope: Vec<SharedString>,
     rows: Vec<StoredRow>,
     index: HashMap<SharedString, usize>,
     /// Positions in `rows`, filtered and sorted. `u32` halves the cost of the
@@ -79,6 +83,13 @@ pub struct RowStore {
 }
 
 impl RowStore {
+    pub fn with_scope(scope: Vec<SharedString>) -> Self {
+        Self {
+            scope,
+            ..Self::default()
+        }
+    }
+
     /// Apply one batch. Returns whether the set of rows changed.
     ///
     /// A batch from an older epoch is dropped: it predates a re-list, and
@@ -95,7 +106,9 @@ impl RowStore {
             self.index.clear();
             self.index.reserve(batch.upserts.len());
             for row in &batch.upserts {
-                self.upsert(StoredRow::from_row(row, columns, now));
+                if admits(&self.scope, row.namespace.as_deref()) {
+                    self.upsert(StoredRow::from_row(row, columns, now));
+                }
             }
             return true;
         }
@@ -104,7 +117,9 @@ impl RowStore {
             return false;
         }
         for row in &batch.upserts {
-            self.upsert(StoredRow::from_row(row, columns, now));
+            if admits(&self.scope, row.namespace.as_deref()) {
+                self.upsert(StoredRow::from_row(row, columns, now));
+            }
         }
         for uid in &batch.deletes {
             self.remove(uid);
@@ -335,6 +350,38 @@ mod tests {
             deletes: deletes.iter().map(|uid| (*uid).into()).collect(),
             state: WatchState::Ready,
         }
+    }
+
+    fn row_in(uid: &str, name: &str, namespace: Option<&str>) -> Row {
+        Row {
+            namespace: namespace.map(Into::into),
+            ..row(uid, name, "Ready")
+        }
+    }
+
+    #[test]
+    fn a_scoped_store_keeps_only_the_chosen_namespaces_and_cluster_scoped_rows() {
+        let mut store = RowStore::with_scope(vec!["a".into(), "b".into()]);
+        let rows = vec![
+            row_in("1", "in-a", Some("a")),
+            row_in("2", "in-c", Some("c")),
+            row_in("3", "in-b", Some("b")),
+            row_in("4", "a-node", None),
+        ];
+        store.apply(&batch(1, true, rows, &[]), &columns(), 0);
+        store.rebuild_view(None, "", &[]);
+        let mut kept = names(&store);
+        kept.sort();
+        assert_eq!(kept, ["a-node", "in-a", "in-b"]);
+
+        // A delta for a namespace outside the scope is ignored too.
+        store.apply(
+            &batch(1, false, vec![row_in("5", "late-c", Some("c"))], &[]),
+            &columns(),
+            0,
+        );
+        store.rebuild_view(None, "", &[]);
+        assert_eq!(store.len(), 3);
     }
 
     fn names(store: &RowStore) -> Vec<String> {
