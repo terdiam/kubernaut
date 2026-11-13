@@ -6,6 +6,7 @@
 use gpui_kit::{
     component::{
         ActiveTheme, Theme, h_flex,
+        menu::PopupMenu,
         table::{Column, ColumnSort, TableDelegate, TableState},
     },
     prelude::FluentBuilder,
@@ -14,7 +15,12 @@ use gpui_kit::{
 use k8s_app::present::{self, Tone};
 use k8s_core::{ColumnSpec, RowHealth, TableSpec, WatchBatch, WatchState};
 
-use crate::rows::{RowStore, Sort, SortKey, StoredRow};
+use crate::{
+    app::AppView,
+    drawer::Target,
+    row_actions,
+    rows::{RowStore, Sort, SortKey, StoredRow},
+};
 
 /// What a displayed column shows.
 #[derive(Clone, Copy)]
@@ -37,7 +43,17 @@ impl Field {
     }
 }
 
+/// Where a row's right-click menu sends its choice, and what the rows are.
+pub struct RowContext {
+    pub owner: WeakEntity<AppView>,
+    pub cluster: SharedString,
+    /// `group/version/plural`.
+    pub resource: SharedString,
+    pub kind: SharedString,
+}
+
 pub struct ResourceDelegate {
+    context: RowContext,
     store: RowStore,
     /// Every column the watch reports; cells are aligned with these.
     columns: Vec<ColumnSpec>,
@@ -53,8 +69,9 @@ pub struct ResourceDelegate {
 }
 
 impl ResourceDelegate {
-    pub fn new() -> Self {
+    pub fn new(context: RowContext) -> Self {
         Self {
+            context,
             store: RowStore::default(),
             columns: Vec::new(),
             fields: Vec::new(),
@@ -170,6 +187,39 @@ fn is_numeric(kind: &str) -> bool {
 }
 
 impl TableDelegate for ResourceDelegate {
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some((name, namespace)) = self.target_at(row_ix) else {
+            return menu;
+        };
+        let target = Target {
+            cluster: self.context.cluster.clone(),
+            resource: self.context.resource.clone(),
+            kind: self.context.kind.clone(),
+            namespace,
+            name,
+        };
+
+        let owner = self.context.owner.clone();
+        row_actions::build_menu(
+            menu,
+            &self.context.resource,
+            true,
+            move |action, window, cx| {
+                owner
+                    .update(cx, |app, cx| {
+                        app.row_action(action, target.clone(), window, cx);
+                    })
+                    .ok();
+            },
+        )
+    }
+
     fn columns_count(&self, _: &App) -> usize {
         self.fields.len()
     }

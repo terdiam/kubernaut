@@ -8,7 +8,14 @@ use std::{cmp::Reverse, ops::Range, sync::Arc};
 use gpui_kit::{
     assets::IconName,
     base::StyledExt,
-    component::{ActiveTheme, Icon, h_flex, tooltip::Tooltip, v_flex},
+    component::{
+        ActiveTheme, Icon,
+        button::{Button, ButtonVariants},
+        h_flex,
+        menu::DropdownMenu,
+        tooltip::Tooltip,
+        v_flex,
+    },
     prelude::FluentBuilder,
     *,
 };
@@ -22,6 +29,7 @@ use tokio::runtime::Handle;
 use crate::{
     log_buffer::log_target,
     logs::LogView,
+    row_actions::{self, RowAction},
     terminal::TerminalView,
     ui::{segment, segmented_bar},
     yaml::YamlView,
@@ -42,10 +50,12 @@ pub struct Target {
 
 pub enum DrawerEvent {
     Close,
+    /// An entry of the actions menu, for the app to carry out.
+    Row(RowAction),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Tab {
+pub enum Tab {
     Yaml,
     Events,
     Logs,
@@ -124,23 +134,39 @@ impl DrawerView {
         }
     }
 
+    /// Switch to a tab, starting its stream if it has one. A tab the object
+    /// does not have is ignored.
+    pub fn show(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
+        match tab {
+            Tab::Logs if self.log_target.is_none() => return,
+            Tab::Terminal if !self.has_shell() => return,
+            _ => {}
+        }
+        self.tab = tab;
+        match tab {
+            Tab::Logs => self.ensure_logs(cx),
+            Tab::Terminal => self.ensure_terminal(window, cx),
+            Tab::Yaml | Tab::Events => {}
+        }
+        cx.notify();
+    }
+
+    /// Whether this drawer is showing `target`.
+    pub fn is_for(&self, target: &Target) -> bool {
+        self.target.cluster == target.cluster
+            && self.target.resource == target.resource
+            && self.target.namespace == target.namespace
+            && self.target.name == target.name
+    }
+
     fn render_tab(
         &self,
         tab: Tab,
         label: &'static str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        segment(label, label, self.tab == tab, cx.theme()).on_click(cx.listener(
-            move |this, _, window, cx| {
-                this.tab = tab;
-                match tab {
-                    Tab::Logs => this.ensure_logs(cx),
-                    Tab::Terminal => this.ensure_terminal(window, cx),
-                    Tab::Yaml | Tab::Events => {}
-                }
-                cx.notify();
-            },
-        ))
+        segment(label, label, self.tab == tab, cx.theme())
+            .on_click(cx.listener(move |this, _, window, cx| this.show(tab, window, cx)))
     }
 
     fn ensure_logs(&mut self, cx: &mut Context<Self>) {
@@ -313,6 +339,28 @@ impl Render for DrawerView {
                             )
                             .child(div().text_xs().text_color(muted).child(subtitle)),
                     )
+                    .child({
+                        let owner = cx.entity().downgrade();
+                        let resource = self.target.resource.clone();
+                        Button::new("drawer-actions")
+                            .ghost()
+                            .compact()
+                            .icon(IconName::Ellipsis)
+                            .tooltip("Actions")
+                            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                                let owner = owner.clone();
+                                row_actions::build_menu(
+                                    menu,
+                                    &resource,
+                                    false,
+                                    move |action, _, cx| {
+                                        owner
+                                            .update(cx, |_, cx| cx.emit(DrawerEvent::Row(action)))
+                                            .ok();
+                                    },
+                                )
+                            })
+                    })
                     .child(
                         div()
                             .id("close-drawer")

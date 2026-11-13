@@ -10,7 +10,9 @@ use gpui_kit::{
     assets::IconName,
     base::StyledExt,
     component::{
-        ActiveTheme, Icon, h_flex,
+        ActiveTheme, Icon, WindowExt,
+        button::ButtonVariant,
+        h_flex,
         input::{Input, InputEvent, InputState},
         table::{DataTable, TableEvent, TableState},
         tooltip::Tooltip,
@@ -19,22 +21,25 @@ use gpui_kit::{
     prelude::FluentBuilder,
     *,
 };
-use k8s_app::{AppCore, preferences::Preferences};
+use k8s_app::{AppCore, object_ops, preferences::Preferences};
 use k8s_core::{
     ClusterStatus, ContextEntry, DiscoveryCache, ResourceDescriptor, TableSpec, WatchBatch,
     WatchRequest, WatchState, watch::SubscriptionId,
 };
+use k8s_ops::actions::TargetRef;
 use tokio::{runtime::Handle, sync::broadcast::error::RecvError, task::JoinHandle};
 
 use crate::{
     categories::{self, Category},
-    drawer::{DrawerEvent, DrawerView, Target},
+    drawer::{DrawerEvent, DrawerView, Tab as DrawerTab, Target},
     helm::HelmView,
     overview::{OverviewEvent, OverviewView},
     palette::{Command, Item, PaletteEvent, PaletteView},
-    table::ResourceDelegate,
+    row_actions::RowAction,
+    table::{ResourceDelegate, RowContext},
     theme,
-    ui::{chip, pill},
+    ui::{chip, pill, toast_error, toast_success},
+    yaml::fetch_yaml,
 };
 
 const ROW_HEIGHT: Pixels = px(28.);
@@ -139,6 +144,45 @@ impl Drop for OpenTable {
     /// watch.
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+/// An operation on one object that changes the cluster.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Op {
+    Delete,
+    Restart,
+    /// `true` to cordon, `false` to uncordon.
+    Cordon(bool),
+}
+
+impl Op {
+    /// The toast text for success.
+    fn done(self, target: &Target) -> String {
+        match self {
+            Self::Delete => format!("Deleted {} {}", target.kind, target.name),
+            Self::Restart => format!("Restarting {}", target.name),
+            Self::Cordon(true) => format!("Cordoned {}", target.name),
+            Self::Cordon(false) => format!("Uncordoned {}", target.name),
+        }
+    }
+
+    /// The toast title for failure; the reason follows as its body.
+    fn failed(self, target: &Target) -> String {
+        match self {
+            Self::Delete => format!("Could not delete {}", target.name),
+            Self::Restart => format!("Could not restart {}", target.name),
+            Self::Cordon(true) => format!("Could not cordon {}", target.name),
+            Self::Cordon(false) => format!("Could not uncordon {}", target.name),
+        }
+    }
+}
+
+fn target_ref(target: &Target) -> TargetRef {
+    TargetRef {
+        resource: target.resource.to_string(),
+        namespace: target.namespace.as_ref().map(ToString::to_string),
+        name: target.name.to_string(),
     }
 }
 
@@ -498,8 +542,14 @@ impl AppView {
         let generation = self.next_generation;
         self.next_generation += 1;
 
+        let context = RowContext {
+            owner: cx.entity().downgrade(),
+            cluster: cluster.clone(),
+            resource: key.clone(),
+            kind: title.clone(),
+        };
         let state = cx.new(|cx| {
-            TableState::new(ResourceDelegate::new(), window, cx)
+            TableState::new(ResourceDelegate::new(context), window, cx)
                 .sortable(true)
                 .col_resizable(true)
         });
@@ -689,18 +739,180 @@ impl AppView {
 
     /// Open the detail drawer for an object, replacing any drawer already open.
     fn show_drawer(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        let subject = target.clone();
         let view = cx.new(|cx| DrawerView::new(&self.core, &self.runtime, target, window, cx));
-        let close = cx.subscribe(&view, |this, _, event: &DrawerEvent, cx| match event {
-            DrawerEvent::Close => {
-                this.drawer = None;
-                cx.notify();
-            }
-        });
+        let close = cx.subscribe_in(
+            &view,
+            window,
+            move |this, _, event: &DrawerEvent, window, cx| match event {
+                DrawerEvent::Close => {
+                    this.drawer = None;
+                    cx.notify();
+                }
+                DrawerEvent::Row(action) => this.row_action(*action, subject.clone(), window, cx),
+            },
+        );
         self.drawer = Some(OpenDrawer {
             view,
             _close: close,
         });
         cx.notify();
+    }
+
+    /// Do what a row's context menu entry asks.
+    pub fn row_action(
+        &mut self,
+        action: RowAction,
+        target: Target,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            RowAction::Open => self.show_drawer(target, window, cx),
+            RowAction::Logs => self.open_drawer_tab(target, DrawerTab::Logs, window, cx),
+            RowAction::Shell => self.open_drawer_tab(target, DrawerTab::Terminal, window, cx),
+            RowAction::CopyName => {
+                cx.write_to_clipboard(ClipboardItem::new_string(target.name.to_string()));
+                toast_success(window, cx, format!("Copied {}", target.name));
+            }
+            RowAction::CopyYaml => self.copy_yaml(target, window, cx),
+            RowAction::Cordon => self.run_op(Op::Cordon(true), target, window, cx),
+            RowAction::Uncordon => self.run_op(Op::Cordon(false), target, window, cx),
+            RowAction::Restart => self.confirm_op(
+                Op::Restart,
+                target,
+                "Restart",
+                "Its pods are replaced one by one, as with kubectl rollout restart.",
+                window,
+                cx,
+            ),
+            RowAction::Delete => self.confirm_op(
+                Op::Delete,
+                target,
+                "Delete",
+                "This cannot be undone.",
+                window,
+                cx,
+            ),
+        }
+    }
+
+    fn open_drawer_tab(
+        &mut self,
+        target: Target,
+        tab: DrawerTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_drawer(target, window, cx);
+        if let Some(drawer) = &self.drawer {
+            drawer
+                .view
+                .update(cx, |drawer, cx| drawer.show(tab, window, cx));
+        }
+    }
+
+    fn copy_yaml(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        let task = self
+            .runtime
+            .spawn(fetch_yaml(Arc::clone(&self.core), target.clone()));
+        cx.spawn_in(window, async move |_, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            cx.update(|window, cx| match result {
+                Ok(yaml) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(yaml));
+                    toast_success(window, cx, format!("Copied the YAML of {}", target.name));
+                }
+                Err(reason) => toast_error(window, cx, "Could not copy the YAML", reason),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Ask before an operation that changes the cluster. The dialog names the
+    /// object, and the button repeats the verb, so it cannot be mistaken for
+    /// another prompt.
+    fn confirm_op(
+        &mut self,
+        op: Op,
+        target: Target,
+        verb: &'static str,
+        detail: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        let question: SharedString = format!("{verb} {} {}?", target.kind, target.name).into();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let (owner, target) = (owner.clone(), target.clone());
+            let dialog = dialog
+                .title(question.clone())
+                .description(detail)
+                .ok_text(verb)
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    owner
+                        .update(cx, |app, cx| app.run_op(op, target.clone(), window, cx))
+                        .ok();
+                    true
+                });
+            // A delete is red, so it is recognisable before the label is read.
+            if op == Op::Delete {
+                dialog.ok_variant(ButtonVariant::Danger)
+            } else {
+                dialog
+            }
+        });
+    }
+
+    /// Run an operation on the runtime and report how it went.
+    fn run_op(&mut self, op: Op, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        let core = Arc::clone(&self.core);
+        let (cluster, reference) = (target.cluster.clone(), target_ref(&target));
+        let task = self.runtime.spawn(async move {
+            match op {
+                Op::Delete => object_ops::delete(&core, &cluster, reference).await,
+                Op::Restart => object_ops::restart(&core, &cluster, reference).await,
+                Op::Cordon(cordoned) => {
+                    object_ops::set_cordoned(&core, &cluster, &reference.name, cordoned).await
+                }
+            }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update_in(cx, |this, window, cx| {
+                this.finish_op(op, &target, result, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn finish_op(
+        &mut self,
+        op: Op,
+        target: &Target,
+        result: Result<(), String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(()) => {
+                toast_success(window, cx, op.done(target));
+                // The row is gone; so is anything the drawer was showing of it.
+                if op == Op::Delete
+                    && self
+                        .drawer
+                        .as_ref()
+                        .is_some_and(|drawer| drawer.view.read(cx).is_for(target))
+                {
+                    self.drawer = None;
+                    cx.notify();
+                }
+            }
+            Err(reason) => toast_error(window, cx, op.failed(target), reason),
+        }
     }
 
     fn on_watch_event(&mut self, generation: u64, event: WatchEvent, cx: &mut Context<Self>) {

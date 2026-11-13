@@ -19,7 +19,9 @@ use k8s_app::{AppCore, helm_ops, present, present::Tone};
 use k8s_helm::{ReleaseDetail, ReleaseRevision, store};
 use tokio::runtime::Handle;
 
-use crate::ui::{Emphasis, Palette, button, chip, message, segment, segmented_bar, tone_color};
+use crate::ui::{
+    Emphasis, Palette, button, chip, message, segment, segmented_bar, toast_success, tone_color,
+};
 
 const ROW_HEIGHT: Pixels = px(28.);
 
@@ -146,11 +148,6 @@ enum Load {
     Failed(SharedString),
 }
 
-enum Notice {
-    Info(SharedString),
-    Error(SharedString),
-}
-
 pub struct ReleaseView {
     core: Arc<AppCore>,
     runtime: Handle,
@@ -170,7 +167,8 @@ pub struct ReleaseView {
     notes_editor: Option<Entity<EditorState>>,
     confirm: Option<Confirm>,
     busy: Option<&'static str>,
-    notice: Option<Notice>,
+    /// The last failure, kept on screen: a toast would fade before it is read.
+    error: Option<SharedString>,
     history_scroll: UniformListScrollHandle,
 }
 
@@ -201,7 +199,7 @@ impl ReleaseView {
             notes_editor: None,
             confirm: None,
             busy: None,
-            notice: None,
+            error: None,
             history_scroll: UniformListScrollHandle::new(),
         };
         view.reload(window, cx);
@@ -298,7 +296,7 @@ impl ReleaseView {
     fn ask(&mut self, confirm: Confirm, cx: &mut Context<Self>) {
         if self.busy.is_none() {
             self.confirm = Some(confirm);
-            self.notice = None;
+            self.error = None;
             cx.notify();
         }
     }
@@ -308,7 +306,7 @@ impl ReleaseView {
             return;
         }
         self.confirm = None;
-        self.notice = None;
+        self.error = None;
         self.busy = Some(match confirm {
             Confirm::Rollback(_) => "Rolling back…",
             Confirm::Uninstall => "Uninstalling…",
@@ -347,15 +345,21 @@ impl ReleaseView {
             Ok(_) => {
                 cx.emit(ReleaseEvent::Changed);
                 match confirm {
-                    Confirm::Uninstall => cx.emit(ReleaseEvent::Close),
+                    Confirm::Uninstall => {
+                        toast_success(window, cx, format!("Uninstalled {}", self.name));
+                        cx.emit(ReleaseEvent::Close);
+                    }
                     Confirm::Rollback(revision) => {
-                        self.notice =
-                            Some(Notice::Info(format!("Rolled back to #{revision}.").into()));
+                        toast_success(
+                            window,
+                            cx,
+                            format!("Rolled {} back to revision {revision}", self.name),
+                        );
                         self.reload(window, cx);
                     }
                 }
             }
-            Err(message) => self.notice = Some(Notice::Error(message.into())),
+            Err(message) => self.error = Some(message.into()),
         }
         cx.notify();
     }
@@ -629,12 +633,15 @@ impl Render for ReleaseView {
                 ),
             )
             .child(self.render_actions(cx))
-            .when_some(self.notice.as_ref(), |column, notice| {
-                let (text, color) = match notice {
-                    Notice::Info(text) => (text.clone(), palette.muted),
-                    Notice::Error(text) => (text.clone(), error_notice),
-                };
-                column.child(div().px_3().pb_2().text_xs().text_color(color).child(text))
+            .when_some(self.error.clone(), |column, text| {
+                column.child(
+                    div()
+                        .px_3()
+                        .pb_2()
+                        .text_xs()
+                        .text_color(error_notice)
+                        .child(text),
+                )
             })
             .child(div().flex_1().min_h_0().flex().flex_col().child(body))
     }

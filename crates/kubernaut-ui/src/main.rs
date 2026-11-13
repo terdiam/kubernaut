@@ -10,6 +10,7 @@ mod logs;
 mod overview;
 mod palette;
 mod release;
+mod row_actions;
 mod rows;
 mod table;
 mod terminal;

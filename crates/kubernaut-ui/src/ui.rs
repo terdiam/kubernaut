@@ -2,7 +2,7 @@
 
 use gpui_kit::{
     base::StyledExt,
-    component::{ActiveTheme, Theme},
+    component::{ActiveTheme, Theme, WindowExt, notification::Notification},
     prelude::FluentBuilder,
     *,
 };
@@ -169,4 +169,19 @@ pub fn button(
         })
         .when(!enabled, |button| button.opacity(0.4))
         .child(label.into())
+}
+
+/// A brief confirmation that something worked. It fades on its own.
+pub fn toast_success(window: &mut Window, cx: &mut App, message: impl Into<SharedString>) {
+    window.push_notification(Notification::success(message), cx);
+}
+
+/// A failure. It stays until dismissed, because the reason is worth reading.
+pub fn toast_error(
+    window: &mut Window,
+    cx: &mut App,
+    title: impl Into<SharedString>,
+    reason: impl Into<SharedString>,
+) {
+    window.push_notification(Notification::error(reason).title(title).autohide(false), cx);
 }

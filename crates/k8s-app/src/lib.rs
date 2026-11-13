@@ -8,6 +8,7 @@ mod boot;
 pub mod clusters;
 pub mod helm_ops;
 pub mod logging;
+pub mod object_ops;
 pub mod preferences;
 pub mod present;
 pub mod scan_cache;

@@ -22,7 +22,7 @@ use tokio::runtime::Handle;
 
 use crate::{
     drawer::Target,
-    ui::{Emphasis, button, chip},
+    ui::{Emphasis, button, chip, toast_success},
 };
 
 const DIFF_ROW_HEIGHT: Pixels = px(18.);
@@ -324,13 +324,16 @@ impl YamlView {
                 self.force = false;
                 self.editor
                     .update(cx, |editor, cx| editor.set_value(applied, window, cx));
-                self.notice = Some(Notice::Info(
+                self.notice = None;
+                toast_success(
+                    window,
+                    cx,
                     format!(
-                        "Applied. resourceVersion {}",
+                        "Applied {}. resourceVersion {}",
+                        self.target.name,
                         resource_version.as_deref().unwrap_or("unknown")
-                    )
-                    .into(),
-                ));
+                    ),
+                );
             }
             Ok(ApplyOutcome::Conflict { conflicts }) => {
                 // The cluster changed under the preview; show who owns what.
@@ -553,7 +556,7 @@ impl Render for YamlView {
     }
 }
 
-async fn fetch_yaml(core: Arc<AppCore>, target: Target) -> Result<String, String> {
+pub async fn fetch_yaml(core: Arc<AppCore>, target: Target) -> Result<String, String> {
     let handle = core
         .clusters
         .require(&target.cluster)
