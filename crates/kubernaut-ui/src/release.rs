@@ -22,6 +22,7 @@ use tokio::runtime::Handle;
 use crate::ui::{
     Emphasis, Palette, button, chip, message, segment, segmented_bar, toast_success, tone_color,
 };
+use crate::upgrade::{Subject, UpgradeEvent, UpgradeView};
 
 const ROW_HEIGHT: Pixels = px(28.);
 
@@ -96,6 +97,7 @@ enum Tab {
     Values,
     Manifest,
     Notes,
+    Upgrade,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -114,6 +116,9 @@ enum Confirm {
 struct Loaded {
     history: Vec<RevisionLine>,
     supplied: SharedString,
+    /// The values as the user supplied them, empty when there were none. The
+    /// upgrade form starts from this, not from the explanatory placeholder.
+    user_values: SharedString,
     effective: SharedString,
     manifest: SharedString,
     notes: SharedString,
@@ -126,8 +131,9 @@ impl Loaded {
             supplied: if detail.user_values.trim().is_empty() {
                 "# This release used the chart's default values.\n".into()
             } else {
-                detail.user_values.into()
+                detail.user_values.clone().into()
             },
+            user_values: detail.user_values.into(),
             effective: detail.effective_values.into(),
             manifest: detail.manifest.into(),
             notes: detail.notes.into(),
@@ -165,6 +171,8 @@ pub struct ReleaseView {
     values_editor: Option<Entity<EditorState>>,
     manifest_editor: Option<Entity<EditorState>>,
     notes_editor: Option<Entity<EditorState>>,
+    /// Created when its tab is first opened, from the values as they were then.
+    upgrade: Option<(Entity<UpgradeView>, Subscription)>,
     confirm: Option<Confirm>,
     busy: Option<&'static str>,
     /// The last failure, kept on screen: a toast would fade before it is read.
@@ -197,6 +205,7 @@ impl ReleaseView {
             values_editor: None,
             manifest_editor: None,
             notes_editor: None,
+            upgrade: None,
             confirm: None,
             busy: None,
             error: None,
@@ -278,9 +287,39 @@ impl ReleaseView {
                     self.notes_editor =
                         Some(readonly_editor(loaded.notes.clone(), false, window, cx));
                 }
+                Tab::Upgrade if self.upgrade.is_none() => {
+                    let (core, runtime) = (&self.core, &self.runtime);
+                    let subject = Subject {
+                        cluster: self.cluster.clone(),
+                        namespace: self.namespace.clone(),
+                        release: self.name.clone(),
+                    };
+                    let values = loaded.user_values.clone();
+                    let view =
+                        cx.new(|cx| UpgradeView::new(core, runtime, subject, &values, window, cx));
+                    let events = cx.subscribe_in(
+                        &view,
+                        window,
+                        |this, _, event: &UpgradeEvent, window, cx| match event {
+                            UpgradeEvent::Upgraded => this.finish_upgrade(window, cx),
+                        },
+                    );
+                    self.upgrade = Some((view, events));
+                }
                 _ => {}
             }
         }
+        cx.notify();
+    }
+
+    /// The release was upgraded: drop the form, so the next one starts from the
+    /// new values, and show the new revision.
+    fn finish_upgrade(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        toast_success(window, cx, format!("Upgraded {}", self.name));
+        self.upgrade = None;
+        self.tab = Tab::History;
+        self.reload(window, cx);
+        cx.emit(ReleaseEvent::Changed);
         cx.notify();
     }
 
@@ -575,6 +614,10 @@ impl Render for ReleaseView {
                 Tab::Values => self.render_values(palette, cx),
                 Tab::Manifest => self.editor_or_loading(&self.manifest_editor, palette),
                 Tab::Notes => self.editor_or_loading(&self.notes_editor, palette),
+                Tab::Upgrade => match &self.upgrade {
+                    Some((view, _)) => view.clone().into_any_element(),
+                    None => message("Loading…", palette.muted).into_any_element(),
+                },
             },
         };
 
@@ -629,7 +672,8 @@ impl Render for ReleaseView {
                         .child(self.render_tab(Tab::History, "History", cx))
                         .child(self.render_tab(Tab::Values, "Values", cx))
                         .child(self.render_tab(Tab::Manifest, "Manifest", cx))
-                        .child(self.render_tab(Tab::Notes, "Notes", cx)),
+                        .child(self.render_tab(Tab::Notes, "Notes", cx))
+                        .child(self.render_tab(Tab::Upgrade, "Upgrade", cx)),
                 ),
             )
             .child(self.render_actions(cx))

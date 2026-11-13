@@ -1,5 +1,6 @@
 mod app;
 mod categories;
+mod diff;
 mod drawer;
 mod emulator;
 mod helm;
@@ -17,6 +18,7 @@ mod table;
 mod terminal;
 mod theme;
 mod ui;
+mod upgrade;
 mod yaml;
 
 use std::{cell::Cell, process::ExitCode, rc::Rc, sync::Arc};

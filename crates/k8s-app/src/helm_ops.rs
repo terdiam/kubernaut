@@ -7,7 +7,11 @@
 use std::{fmt::Display, sync::Arc};
 
 use k8s_core::ClusterHandle;
-use k8s_helm::Helm;
+use k8s_helm::{
+    Helm, UpgradeDiff, UpgradeOptions,
+    cli::{self, ChartRef, ReleaseTarget},
+    store,
+};
 
 use crate::{audit::AuditEntry, state::AppCore};
 
@@ -102,6 +106,101 @@ pub async fn uninstall(
         cluster,
         "helmUninstall",
         &format!("{namespace}/{release}"),
+        &result,
+    );
+    result.map_err(|e| e.to_string())
+}
+
+/// What an upgrade needs: which release, which chart at which version, and the
+/// values to install it with.
+#[derive(Debug, Clone)]
+pub struct UpgradeRequest {
+    pub namespace: String,
+    pub release: String,
+    /// `repo/chart`, a local path, or an `oci://` reference.
+    pub chart: String,
+    pub version: Option<String>,
+    pub values: String,
+    pub options: UpgradeOptions,
+}
+
+impl UpgradeRequest {
+    fn target(&self) -> ReleaseTarget<'_> {
+        ReleaseTarget {
+            release: &self.release,
+            namespace: &self.namespace,
+        }
+    }
+
+    fn chart_ref(&self) -> ChartRef<'_> {
+        ChartRef {
+            reference: &self.chart,
+            version: self.version.as_deref(),
+        }
+    }
+}
+
+/// What an upgrade would change, without changing anything.
+///
+/// Renders the proposed chart and compares it with the manifest helm recorded
+/// for the installed revision, which is the comparison the `helm-diff` plugin
+/// makes, without needing the plugin. It writes nothing, so a protected
+/// cluster may still be previewed.
+pub async fn preview_upgrade(
+    core: &AppCore,
+    cluster: &str,
+    request: &UpgradeRequest,
+) -> Result<UpgradeDiff, String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let helm = core.helm().map_err(|e| e.to_string())?;
+    let kubeconfig = core
+        .clusters
+        .minified_kubeconfig(cluster, Some(&request.namespace))
+        .map_err(|e| e.to_string())?;
+
+    let proposed = helm
+        .template(
+            &handle,
+            &kubeconfig,
+            &request.target(),
+            &request.chart_ref(),
+            &request.values,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // A release that does not exist yet has no installed manifest, so the diff
+    // is everything the install would create.
+    let current = store::detail(&handle, &request.namespace, &request.release, None)
+        .await
+        .map(|detail| detail.manifest)
+        .unwrap_or_default();
+
+    Ok(cli::diff_manifests(&current, &proposed, &request.release))
+}
+
+/// Upgrade a release, installing it if it does not exist. Returns helm's output.
+pub async fn upgrade(
+    core: &AppCore,
+    cluster: &str,
+    request: &UpgradeRequest,
+) -> Result<String, String> {
+    let prepared = prepare(core, cluster, &request.namespace)?;
+    let result = prepared
+        .helm
+        .upgrade(
+            &prepared.handle,
+            &prepared.kubeconfig,
+            &request.target(),
+            &request.chart_ref(),
+            &request.values,
+            &request.options,
+        )
+        .await;
+    core.record_audit(
+        cluster,
+        "helmUpgrade",
+        &format!("{}/{}", request.namespace, request.release),
         &result,
     );
     result.map_err(|e| e.to_string())

@@ -21,49 +21,10 @@ use k8s_ops::apply::{self, ApplyOutcome, DiffResult, EditRequest, FieldConflict}
 use tokio::runtime::Handle;
 
 use crate::{
+    diff::{self, DiffLine},
     drawer::Target,
     ui::{Emphasis, button, chip, toast_success},
 };
-
-const DIFF_ROW_HEIGHT: Pixels = px(18.);
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DiffKind {
-    Header,
-    Hunk,
-    Added,
-    Removed,
-    Context,
-}
-
-struct DiffLine {
-    kind: DiffKind,
-    text: SharedString,
-}
-
-/// Classify the lines of a unified diff for colouring.
-fn diff_lines(unified: &str) -> Vec<DiffLine> {
-    unified
-        .lines()
-        .map(|line| {
-            let kind = if line.starts_with("+++") || line.starts_with("---") {
-                DiffKind::Header
-            } else if line.starts_with("@@") {
-                DiffKind::Hunk
-            } else if line.starts_with('+') {
-                DiffKind::Added
-            } else if line.starts_with('-') {
-                DiffKind::Removed
-            } else {
-                DiffKind::Context
-            };
-            DiffLine {
-                kind,
-                text: line.into(),
-            }
-        })
-        .collect()
-}
 
 /// A dry run for one exact text and one setting of "take ownership".
 struct Previewed {
@@ -254,7 +215,7 @@ impl YamlView {
                     yaml,
                     force,
                     changed: diff.changed,
-                    diff: diff_lines(&diff.unified),
+                    diff: diff::parse(&diff.unified),
                     conflicts: diff.conflicts,
                 });
             }
@@ -468,43 +429,10 @@ impl YamlView {
                         "diff",
                         previewed.diff.len(),
                         cx.processor(|this, range: Range<usize>, _window, cx| {
-                            let theme = cx.theme();
-                            let (success, danger, muted, info) = (
-                                theme.success,
-                                theme.danger,
-                                theme.muted_foreground,
-                                theme.info,
-                            );
-                            let mono = theme.mono_font_family.clone();
-                            let Some(previewed) = &this.previewed else {
-                                return Vec::new();
-                            };
-                            previewed
-                                .diff
-                                .get(range.clone())
+                            this.previewed
+                                .as_ref()
+                                .map(|previewed| diff::rows(&previewed.diff, range, cx))
                                 .unwrap_or_default()
-                                .iter()
-                                .zip(range)
-                                .map(|(line, index)| {
-                                    let color = match line.kind {
-                                        DiffKind::Added => Some(success),
-                                        DiffKind::Removed => Some(danger),
-                                        DiffKind::Hunk => Some(info),
-                                        DiffKind::Header => Some(muted),
-                                        DiffKind::Context => None,
-                                    };
-                                    div()
-                                        .id(("diff-line", index))
-                                        .w_full()
-                                        .h(DIFF_ROW_HEIGHT)
-                                        .px_3()
-                                        .text_xs()
-                                        .font_family(mono.clone())
-                                        .truncate()
-                                        .when_some(color, |row, color| row.text_color(color))
-                                        .child(line.text.clone())
-                                })
-                                .collect::<Vec<_>>()
                         }),
                     )
                     .track_scroll(&self.diff_scroll)
@@ -574,7 +502,7 @@ pub async fn fetch_yaml(core: Arc<AppCore>, target: Target) -> Result<String, St
 
 #[cfg(test)]
 mod tests {
-    use super::{DiffKind, Previewed, can_apply, diff_lines};
+    use super::{Previewed, can_apply};
     use k8s_ops::apply::FieldConflict;
 
     fn previewed(yaml: &str, changed: bool, conflicts: Vec<FieldConflict>) -> Previewed {
@@ -585,24 +513,6 @@ mod tests {
             diff: Vec::new(),
             conflicts,
         }
-    }
-
-    #[test]
-    fn unified_diff_lines_are_classified_for_colouring() {
-        let diff = "--- live\n+++ proposed\n@@ -1,3 +1,3 @@\n a: 1\n-b: 2\n+b: 3\n";
-        let kinds: Vec<_> = diff_lines(diff).iter().map(|l| l.kind).collect();
-        assert_eq!(
-            kinds,
-            [
-                DiffKind::Header,
-                DiffKind::Header,
-                DiffKind::Hunk,
-                DiffKind::Context,
-                DiffKind::Removed,
-                DiffKind::Added,
-            ]
-        );
-        assert!(diff_lines("").is_empty());
     }
 
     #[test]
