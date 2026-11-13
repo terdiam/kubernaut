@@ -185,6 +185,15 @@ pub async fn upgrade(
     cluster: &str,
     request: &UpgradeRequest,
 ) -> Result<String, String> {
+    run_upgrade(core, cluster, request, "helmUpgrade").await
+}
+
+async fn run_upgrade(
+    core: &AppCore,
+    cluster: &str,
+    request: &UpgradeRequest,
+    action: &str,
+) -> Result<String, String> {
     let prepared = prepare(core, cluster, &request.namespace)?;
     let result = prepared
         .helm
@@ -199,11 +208,109 @@ pub async fn upgrade(
         .await;
     core.record_audit(
         cluster,
-        "helmUpgrade",
+        action,
         &format!("{}/{}", request.namespace, request.release),
         &result,
     );
     result.map_err(|e| e.to_string())
+}
+
+/// Release names helm accepts: at most 53 characters of lowercase letters,
+/// digits, `-` and `.`, beginning and ending with a letter or digit.
+pub fn check_release_name(name: &str) -> Result<(), &'static str> {
+    let edge = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
+    if name.is_empty() {
+        return Err("Give the release a name.");
+    }
+    if name.len() > 53 {
+        return Err("A release name can be at most 53 characters.");
+    }
+    if !name.chars().all(|c| edge(c) || matches!(c, '-' | '.')) {
+        return Err("A release name uses lowercase letters, digits, - and . only.");
+    }
+    let (first, last) = (name.chars().next(), name.chars().next_back());
+    if !first.is_some_and(edge) || !last.is_some_and(edge) {
+        return Err("A release name must start and end with a letter or digit.");
+    }
+    Ok(())
+}
+
+/// Namespace names Kubernetes accepts: a DNS label.
+pub fn check_namespace(namespace: &str) -> Result<(), &'static str> {
+    let edge = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit();
+    if namespace.is_empty() {
+        return Err("Choose a namespace.");
+    }
+    if namespace.len() > 63 {
+        return Err("A namespace can be at most 63 characters.");
+    }
+    if !namespace.chars().all(|c| edge(c) || c == '-') {
+        return Err("A namespace uses lowercase letters, digits and - only.");
+    }
+    if !namespace.starts_with(edge) || !namespace.ends_with(edge) {
+        return Err("A namespace must start and end with a letter or digit.");
+    }
+    Ok(())
+}
+
+/// Fail if a release of this name already lives in the namespace.
+///
+/// `helm upgrade --install` quietly upgrades an existing release, which is not
+/// what someone installing a new chart meant, and could replace a running
+/// application with another chart.
+async fn ensure_new_release(
+    core: &AppCore,
+    cluster: &str,
+    request: &UpgradeRequest,
+) -> Result<(), String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let existing = store::list(&handle, Some(&request.namespace))
+        .await
+        .map_err(|e| e.to_string())?;
+    if existing
+        .iter()
+        .any(|release| release.name == request.release)
+    {
+        return Err(format!(
+            "A release named {} already exists in {}. Open it under Releases and use its \
+             Upgrade tab instead.",
+            request.release, request.namespace
+        ));
+    }
+    Ok(())
+}
+
+/// What installing a chart would create, without creating anything.
+pub async fn preview_install(
+    core: &AppCore,
+    cluster: &str,
+    request: &UpgradeRequest,
+) -> Result<UpgradeDiff, String> {
+    ensure_new_release(core, cluster, request).await?;
+    preview_upgrade(core, cluster, request).await
+}
+
+/// Install a chart as a new release. Returns helm's output.
+pub async fn install(
+    core: &AppCore,
+    cluster: &str,
+    request: &UpgradeRequest,
+) -> Result<String, String> {
+    core.ensure_writable(cluster)?;
+    ensure_new_release(core, cluster, request).await?;
+    run_upgrade(core, cluster, request, "helmInstall").await
+}
+
+/// A chart's default values, as YAML: what an install starts from.
+pub async fn chart_values(
+    core: &AppCore,
+    chart: &str,
+    version: Option<&str>,
+) -> Result<String, String> {
+    let helm = core.helm().map_err(|e| e.to_string())?;
+    helm.show_values(chart, version)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ------------------------------------------------------------ repositories
@@ -238,4 +345,33 @@ pub async fn update_repos(core: &AppCore) -> Result<String, String> {
 pub async fn search_charts(core: &AppCore, query: &str) -> Result<Vec<ChartResult>, String> {
     let helm = core.helm().map_err(|e| e.to_string())?;
     helm.search(query).await.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check_namespace, check_release_name};
+
+    #[test]
+    fn release_names_follow_helms_rules() {
+        for ok in ["web", "my-app", "app.v2", "a", "9lives"] {
+            assert!(check_release_name(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "Web", "my_app", "-app", "app-", ".app", "has space"] {
+            assert!(check_release_name(bad).is_err(), "{bad}");
+        }
+        assert!(check_release_name(&"a".repeat(53)).is_ok());
+        assert!(check_release_name(&"a".repeat(54)).is_err());
+    }
+
+    #[test]
+    fn namespaces_are_dns_labels() {
+        for ok in ["default", "kube-system", "team-a", "9"] {
+            assert!(check_namespace(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "Team", "team_a", "-a", "a-", "a.b"] {
+            assert!(check_namespace(bad).is_err(), "{bad}");
+        }
+        assert!(check_namespace(&"a".repeat(63)).is_ok());
+        assert!(check_namespace(&"a".repeat(64)).is_err());
+    }
 }

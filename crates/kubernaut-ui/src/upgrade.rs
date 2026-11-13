@@ -1,5 +1,9 @@
-//! The Upgrade tab of a Helm release: choose the chart and values, preview what
-//! would change, then upgrade.
+//! The form behind both Helm upgrade and Helm install: choose the chart and
+//! values, preview what would change, then go.
+//!
+//! Upgrade is a tab of an installed release. Install is the same form opened
+//! on a chart, with the release name and namespace to fill in and the chart's
+//! own default values to start from.
 //!
 //! Nothing is upgraded that was not previewed: the button is enabled only for
 //! the exact chart, version, values and options a render has just been shown
@@ -28,7 +32,7 @@ use tokio::runtime::Handle;
 use crate::{
     charts::{self, ChartLine},
     diff::{self, DiffLine},
-    ui::{Emphasis, button, chip, tone_color},
+    ui::{Emphasis, button, chip, toast_success, tone_color},
 };
 
 /// Objects listed before the rest are summarised.
@@ -41,19 +45,23 @@ pub enum UpgradeEvent {
 /// Everything an upgrade depends on. Two equal values mean the same upgrade.
 #[derive(Clone, PartialEq, Eq)]
 struct Inputs {
+    install: bool,
+    namespace: String,
+    release: String,
     chart: String,
     version: String,
     values: String,
     atomic: bool,
     wait: bool,
     reset_values: bool,
+    create_namespace: bool,
 }
 
 impl Inputs {
-    fn request(&self, namespace: &str, release: &str) -> UpgradeRequest {
+    fn request(&self) -> UpgradeRequest {
         UpgradeRequest {
-            namespace: namespace.to_string(),
-            release: release.to_string(),
+            namespace: self.namespace.clone(),
+            release: self.release.clone(),
             chart: self.chart.clone(),
             version: (!self.version.is_empty()).then(|| self.version.clone()),
             values: self.values.clone(),
@@ -61,6 +69,7 @@ impl Inputs {
                 atomic: self.atomic,
                 wait: self.wait,
                 reset_values: self.reset_values,
+                create_namespace: self.create_namespace,
                 ..UpgradeOptions::default()
             },
         }
@@ -121,32 +130,66 @@ impl Previewed {
     }
 }
 
-/// Upgrade is allowed only for inputs a render has been shown for, that name a
-/// chart, and that would change something.
+impl Inputs {
+    /// What is wrong with the names an install needs, if anything. An upgrade
+    /// has no names to get wrong: they come from the release.
+    fn name_problem(&self) -> Option<&'static str> {
+        if !self.install {
+            return None;
+        }
+        helm_ops::check_release_name(&self.release)
+            .and_then(|()| helm_ops::check_namespace(&self.namespace))
+            .err()
+    }
+}
+
+/// Going ahead is allowed only for inputs a render has been shown for, that
+/// name a chart (and, for an install, a valid release and namespace), and that
+/// would change something.
 fn can_upgrade(current: &Inputs, previewed: Option<&Previewed>) -> bool {
     !current.chart.is_empty()
+        && current.name_problem().is_none()
         && previewed.is_some_and(|previewed| previewed.inputs == *current && previewed.changed)
 }
 
-/// Which release the form is for.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Change a release that exists.
+    Upgrade,
+    /// Create a new release from a chart.
+    Install,
+}
+
+/// What the form is for. For an install, `release` starts empty and `chart`
+/// and `version` are the chart that was picked.
 pub struct Subject {
+    pub mode: Mode,
     pub cluster: SharedString,
     pub namespace: SharedString,
     pub release: SharedString,
+    pub chart: SharedString,
+    pub version: SharedString,
 }
 
 pub struct UpgradeView {
     core: Arc<AppCore>,
     runtime: Handle,
+    mode: Mode,
     cluster: SharedString,
+    /// The release's own namespace and name. An install reads them from the
+    /// two fields below instead.
     namespace: SharedString,
     release: SharedString,
+    release_input: Entity<InputState>,
+    namespace_input: Entity<InputState>,
     chart: Entity<InputState>,
     version: Entity<InputState>,
     values: Entity<EditorState>,
     atomic: bool,
     wait: bool,
     reset_values: bool,
+    create_namespace: bool,
+    loading_defaults: bool,
     previewed: Option<Previewed>,
     busy: Option<&'static str>,
     /// The last failure, kept on screen: a toast would fade before it is read.
@@ -171,9 +214,26 @@ impl UpgradeView {
         cx: &mut Context<Self>,
     ) -> Self {
         let chart = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("repo/chart, a local path, or oci://…")
+            let mut state =
+                InputState::new(window, cx).placeholder("repo/chart, a local path, or oci://…");
+            state.set_value(subject.chart.clone(), window, cx);
+            state
         });
-        let version = cx.new(|cx| InputState::new(window, cx).placeholder("Version"));
+        let version = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder("Version");
+            state.set_value(subject.version.clone(), window, cx);
+            state
+        });
+        let release_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder("my-release");
+            state.set_value(subject.release.clone(), window, cx);
+            state
+        });
+        let namespace_input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder("namespace");
+            state.set_value(subject.namespace.clone(), window, cx);
+            state
+        });
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .language("yaml")
@@ -183,8 +243,8 @@ impl UpgradeView {
         });
 
         // Typing redraws the buttons, which depend on the text.
-        let mut subscriptions = Vec::with_capacity(3);
-        for input in [&chart, &version] {
+        let mut subscriptions = Vec::with_capacity(5);
+        for input in [&chart, &version, &release_input, &namespace_input] {
             subscriptions.push(cx.subscribe_in(
                 input,
                 window,
@@ -203,18 +263,24 @@ impl UpgradeView {
             }),
         );
 
-        Self {
+        let mode = subject.mode;
+        let mut view = Self {
             core: Arc::clone(core),
             runtime: runtime.clone(),
+            mode,
             cluster: subject.cluster,
             namespace: subject.namespace,
             release: subject.release,
+            release_input,
+            namespace_input,
             chart,
             version,
             values: editor,
             atomic: true,
             wait: false,
             reset_values: false,
+            create_namespace: false,
+            loading_defaults: false,
             previewed: None,
             busy: None,
             error: None,
@@ -222,7 +288,12 @@ impl UpgradeView {
             diff_scroll: UniformListScrollHandle::new(),
             _subscriptions: subscriptions,
         }
-        .with_catalog(cx)
+        .with_catalog(cx);
+        // An install starts from the chart's own defaults.
+        if mode == Mode::Install {
+            view.load_defaults(window, cx);
+        }
+        view
     }
 
     fn with_catalog(self, cx: &mut Context<Self>) -> Self {
@@ -255,30 +326,83 @@ impl UpgradeView {
     }
 
     fn inputs(&self, cx: &App) -> Inputs {
+        let install = self.mode == Mode::Install;
+        let text = |input: &Entity<InputState>| input.read(cx).value().trim().to_string();
         Inputs {
+            install,
+            namespace: if install {
+                text(&self.namespace_input)
+            } else {
+                self.namespace.to_string()
+            },
+            release: if install {
+                text(&self.release_input)
+            } else {
+                self.release.to_string()
+            },
             chart: self.chart.read(cx).value().trim().to_string(),
             version: self.version.read(cx).value().trim().to_string(),
             values: self.values.read(cx).value().to_string(),
             atomic: self.atomic,
             wait: self.wait,
             reset_values: self.reset_values,
+            create_namespace: self.create_namespace,
         }
+    }
+
+    /// Replace the values with the chart's defaults, for the chart and version
+    /// as typed.
+    fn load_defaults(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let chart = self.chart.read(cx).value().trim().to_string();
+        let version = self.version.read(cx).value().trim().to_string();
+        if chart.is_empty() || self.loading_defaults {
+            return;
+        }
+        self.loading_defaults = true;
+        self.error = None;
+        cx.notify();
+
+        let core = Arc::clone(&self.core);
+        let task = self.runtime.spawn(async move {
+            let version = (!version.is_empty()).then_some(version);
+            helm_ops::chart_values(&core, &chart, version.as_deref()).await
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update_in(cx, |this, window, cx| {
+                this.loading_defaults = false;
+                match result {
+                    Ok(values) => this
+                        .values
+                        .update(cx, |editor, cx| editor.set_value(values, window, cx)),
+                    Err(message) => this.error = Some(message.into()),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn preview(&mut self, cx: &mut Context<Self>) {
         let inputs = self.inputs(cx);
-        if self.busy.is_some() || inputs.chart.is_empty() {
+        if self.busy.is_some() || inputs.chart.is_empty() || inputs.name_problem().is_some() {
             return;
         }
         self.busy = Some("Rendering the chart…");
         self.error = None;
         cx.notify();
 
-        let request = inputs.request(&self.namespace, &self.release);
+        let request = inputs.request();
         let (core, cluster) = (Arc::clone(&self.core), self.cluster.clone());
-        let task = self
-            .runtime
-            .spawn(async move { helm_ops::preview_upgrade(&core, &cluster, &request).await });
+        let install = self.mode == Mode::Install;
+        let task = self.runtime.spawn(async move {
+            if install {
+                helm_ops::preview_install(&core, &cluster, &request).await
+            } else {
+                helm_ops::preview_upgrade(&core, &cluster, &request).await
+            }
+        });
         cx.spawn(async move |this, cx| {
             let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
             this.update(cx, |this, cx| this.finish_preview(inputs, result, cx))
@@ -309,32 +433,58 @@ impl UpgradeView {
         cx.notify();
     }
 
-    fn upgrade(&mut self, cx: &mut Context<Self>) {
+    fn upgrade(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let inputs = self.inputs(cx);
         if self.busy.is_some() || !can_upgrade(&inputs, self.previewed.as_ref()) {
             return;
         }
-        self.busy = Some("Upgrading. This can take a few minutes…");
+        let install = self.mode == Mode::Install;
+        self.busy = Some(if install {
+            "Installing. This can take a few minutes…"
+        } else {
+            "Upgrading. This can take a few minutes…"
+        });
         self.error = None;
         cx.notify();
 
-        let request = inputs.request(&self.namespace, &self.release);
+        let request = inputs.request();
         let (core, cluster) = (Arc::clone(&self.core), self.cluster.clone());
-        let task = self
-            .runtime
-            .spawn(async move { helm_ops::upgrade(&core, &cluster, &request).await });
-        cx.spawn(async move |this, cx| {
+        let task = self.runtime.spawn(async move {
+            if install {
+                helm_ops::install(&core, &cluster, &request).await
+            } else {
+                helm_ops::upgrade(&core, &cluster, &request).await
+            }
+        });
+        cx.spawn_in(window, async move |this, cx| {
             let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
-            this.update(cx, |this, cx| this.finish_upgrade(result, cx))
-                .ok();
+            this.update_in(cx, |this, window, cx| {
+                this.finish_upgrade(result, window, cx);
+            })
+            .ok();
         })
         .detach();
     }
 
-    fn finish_upgrade(&mut self, result: Result<String, String>, cx: &mut Context<Self>) {
+    fn finish_upgrade(
+        &mut self,
+        result: Result<String, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.busy = None;
         match result {
             Ok(_) => {
+                // An upgrade is announced by the release pane it lives in; an
+                // install has no pane to do it, so it says so here.
+                if self.mode == Mode::Install {
+                    let inputs = self.inputs(cx);
+                    toast_success(
+                        window,
+                        cx,
+                        format!("Installed {} in {}", inputs.release, inputs.namespace),
+                    );
+                }
                 self.previewed = None;
                 cx.emit(UpgradeEvent::Upgraded);
             }
@@ -437,14 +587,20 @@ impl Render for UpgradeView {
         };
         let inputs = self.inputs(cx);
         let idle = self.busy.is_none();
-        let can_preview = idle && !inputs.chart.is_empty();
+        let can_preview = idle && !inputs.chart.is_empty() && inputs.name_problem().is_none();
         let can_go = idle && can_upgrade(&inputs, self.previewed.as_ref());
 
         let preview = cx.listener(|this, _, _, cx| this.preview(cx));
-        let upgrade = cx.listener(|this, _, _, cx| this.upgrade(cx));
+        let upgrade = cx.listener(|this, _, window, cx| this.upgrade(window, cx));
         let toggle_atomic = cx.listener(|this, _, _, cx| this.toggle(|s| &mut s.atomic, cx));
         let toggle_wait = cx.listener(|this, _, _, cx| this.toggle(|s| &mut s.wait, cx));
         let toggle_reset = cx.listener(|this, _, _, cx| this.toggle(|s| &mut s.reset_values, cx));
+        let toggle_create =
+            cx.listener(|this, _, _, cx| this.toggle(|s| &mut s.create_namespace, cx));
+        let defaults = cx.listener(|this, _, window, cx| this.load_defaults(window, cx));
+        let install = self.mode == Mode::Install;
+        let go_label = if install { "Install" } else { "Upgrade" };
+        let problem = inputs.name_problem().filter(|_| !inputs.release.is_empty());
 
         let typed = self.chart.read(cx).value();
         let suggestions = charts::suggest(&self.catalog, &typed, 5);
@@ -466,6 +622,32 @@ impl Render for UpgradeView {
                     .px_3()
                     .pb_2()
                     .gap_2()
+                    .when(install, |column| {
+                        column
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .items_end()
+                                    .child(
+                                        v_flex()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .gap_1()
+                                            .child(label("Release name"))
+                                            .child(Input::new(&self.release_input)),
+                                    )
+                                    .child(
+                                        v_flex()
+                                            .w(px(170.))
+                                            .gap_1()
+                                            .child(label("Namespace"))
+                                            .child(Input::new(&self.namespace_input)),
+                                    ),
+                            )
+                            .when_some(problem, |column, text| {
+                                column.child(div().text_xs().text_color(danger).child(text))
+                            })
+                    })
                     .child(
                         h_flex()
                             .gap_2()
@@ -535,12 +717,50 @@ impl Render for UpgradeView {
                                 chip("wait", "Wait until ready", true, self.wait, cx.theme())
                                     .on_click(toggle_wait),
                             )
-                            .child(
-                                chip("reset", "Reset values", true, self.reset_values, cx.theme())
+                            .when(!install, |row| {
+                                row.child(
+                                    chip(
+                                        "reset",
+                                        "Reset values",
+                                        true,
+                                        self.reset_values,
+                                        cx.theme(),
+                                    )
                                     .on_click(toggle_reset),
-                            ),
+                                )
+                            })
+                            .when(install, |row| {
+                                row.child(
+                                    chip(
+                                        "create-namespace",
+                                        "Create namespace",
+                                        true,
+                                        self.create_namespace,
+                                        cx.theme(),
+                                    )
+                                    .on_click(toggle_create),
+                                )
+                            }),
                     )
-                    .child(label("Values"))
+                    .child(h_flex().gap_2().items_center().child(label("Values")).when(
+                        install,
+                        |row| {
+                            row.child(
+                                chip(
+                                    "defaults",
+                                    if self.loading_defaults {
+                                        "Loading…"
+                                    } else {
+                                        "Load chart defaults"
+                                    },
+                                    !self.loading_defaults,
+                                    false,
+                                    cx.theme(),
+                                )
+                                .when(!self.loading_defaults, |chip| chip.on_click(defaults)),
+                            )
+                        },
+                    ))
                     .child(
                         div()
                             .h(px(180.))
@@ -565,7 +785,7 @@ impl Render for UpgradeView {
                                 .when(can_preview, |b| b.on_click(preview)),
                             )
                             .child(
-                                button("upgrade", "Upgrade", can_go, Emphasis::Primary, cx.theme())
+                                button("upgrade", go_label, can_go, Emphasis::Primary, cx.theme())
                                     .when(can_go, |b| b.on_click(upgrade)),
                             )
                             .when_some(self.busy, |row, text| {
@@ -590,12 +810,16 @@ mod tests {
 
     fn inputs(chart: &str) -> Inputs {
         Inputs {
+            install: false,
+            namespace: "prod".into(),
+            release: "web".into(),
             chart: chart.into(),
             version: String::new(),
             values: "replicaCount: 2\n".into(),
             atomic: true,
             wait: false,
             reset_values: false,
+            create_namespace: false,
         }
     }
 
@@ -641,6 +865,40 @@ mod tests {
     }
 
     #[test]
+    fn an_install_needs_a_valid_release_name_and_namespace_but_an_upgrade_does_not() {
+        let mut install = inputs("repo/web");
+        install.install = true;
+        assert!(can_upgrade(
+            &install,
+            Some(&rendered(install.clone(), true))
+        ));
+
+        install.release = "Bad_Name".into();
+        assert!(install.name_problem().is_some());
+        assert!(
+            !can_upgrade(&install, Some(&rendered(install.clone(), true))),
+            "a bad name blocks the install even after a preview"
+        );
+
+        install.release = "web".into();
+        install.namespace = "Not A Namespace".into();
+        assert!(install.name_problem().is_some());
+
+        // An upgrade takes both from the release, so they are never checked.
+        let mut upgrade = inputs("repo/web");
+        upgrade.release = "Bad_Name".into();
+        assert!(upgrade.name_problem().is_none());
+    }
+
+    #[test]
+    fn creating_the_namespace_is_part_of_what_was_previewed() {
+        let current = inputs("repo/web");
+        let mut other = current.clone();
+        other.create_namespace = true;
+        assert!(!can_upgrade(&other, Some(&rendered(current, true))));
+    }
+
+    #[test]
     fn a_chart_is_required() {
         let blank = inputs("");
         assert!(!can_upgrade(&blank, Some(&rendered(blank.clone(), true))));
@@ -649,7 +907,7 @@ mod tests {
     #[test]
     fn a_blank_version_means_the_latest_and_options_reach_the_request() {
         let mut current = inputs("repo/web");
-        let request = current.request("prod", "web");
+        let request = current.request();
         assert_eq!(request.version, None);
         assert_eq!(
             (request.namespace.as_str(), request.release.as_str()),
@@ -659,7 +917,7 @@ mod tests {
 
         current.version = "1.2.3".into();
         current.wait = true;
-        let request = current.request("prod", "web");
+        let request = current.request();
         assert_eq!(request.version.as_deref(), Some("1.2.3"));
         assert!(request.options.wait);
     }

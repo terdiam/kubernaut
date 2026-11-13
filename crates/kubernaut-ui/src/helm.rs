@@ -20,7 +20,7 @@ use k8s_helm::{Release, store};
 use tokio::runtime::Handle;
 
 use crate::{
-    charts::ChartsView,
+    charts::{ChartsEvent, ChartsView},
     namespaces,
     release::{ReleaseEvent, ReleaseView, status_tone},
     rows::contains_ignore_case,
@@ -121,7 +121,7 @@ pub struct HelmView {
     open: Option<OpenRelease>,
     page: Page,
     /// Created when its page is first shown.
-    charts: Option<Entity<ChartsView>>,
+    charts: Option<(Entity<ChartsView>, Subscription)>,
     scroll: UniformListScrollHandle,
     _filter: Subscription,
 }
@@ -411,7 +411,21 @@ impl HelmView {
     fn show_page(&mut self, page: Page, window: &mut Window, cx: &mut Context<Self>) {
         if page == Page::Charts && self.charts.is_none() {
             let (core, runtime) = (&self.core, &self.runtime);
-            self.charts = Some(cx.new(|cx| ChartsView::new(core, runtime, window, cx)));
+            let cluster = self.cluster.clone();
+            // An install starts in the one namespace being looked at, if there is one.
+            let namespace = match self.scope.as_slice() {
+                [one] => one.clone(),
+                _ => "default".into(),
+            };
+            let view = cx.new(|cx| ChartsView::new(core, runtime, cluster, namespace, window, cx));
+            let events = cx.subscribe(&view, |this, _, event: &ChartsEvent, cx| match event {
+                ChartsEvent::Installed => {
+                    this.refresh(cx);
+                    this.page = Page::Releases;
+                    cx.notify();
+                }
+            });
+            self.charts = Some((view, events));
         }
         self.page = page;
         cx.notify();
@@ -448,7 +462,7 @@ impl Render for HelmView {
                     .child(switcher),
             )
             .child(match (self.page, &self.charts) {
-                (Page::Charts, Some(charts)) => div()
+                (Page::Charts, Some((charts, _))) => div()
                     .flex()
                     .flex_1()
                     .min_h_0()

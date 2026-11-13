@@ -22,7 +22,7 @@ use tokio::runtime::Handle;
 use crate::ui::{
     Emphasis, Palette, button, chip, message, segment, segmented_bar, toast_success, tone_color,
 };
-use crate::upgrade::{Subject, UpgradeEvent, UpgradeView};
+use crate::upgrade::{Mode, Subject, UpgradeEvent, UpgradeView};
 
 const ROW_HEIGHT: Pixels = px(28.);
 
@@ -290,9 +290,12 @@ impl ReleaseView {
                 Tab::Upgrade if self.upgrade.is_none() => {
                     let (core, runtime) = (&self.core, &self.runtime);
                     let subject = Subject {
+                        mode: Mode::Upgrade,
                         cluster: self.cluster.clone(),
                         namespace: self.namespace.clone(),
                         release: self.name.clone(),
+                        chart: SharedString::default(),
+                        version: SharedString::default(),
                     };
                     let values = loaded.user_values.clone();
                     let view =

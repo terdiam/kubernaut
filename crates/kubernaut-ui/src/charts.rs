@@ -27,6 +27,7 @@ use tokio::runtime::Handle;
 use crate::{
     rows::contains_ignore_case,
     ui::{Emphasis, Palette, button, chip, message, toast_success},
+    upgrade::{Mode, Subject, UpgradeEvent, UpgradeView},
 };
 
 const ROW_HEIGHT: Pixels = px(40.);
@@ -132,9 +133,26 @@ enum Load {
     Failed(SharedString),
 }
 
+/// What the page tells the Helm view that holds it.
+pub enum ChartsEvent {
+    /// A chart was installed, so the releases list is out of date.
+    Installed,
+}
+
+/// The install pane for one chart, and the subscription that hears it finish.
+struct OpenInstall {
+    chart: SharedString,
+    view: Entity<UpgradeView>,
+    _events: Subscription,
+}
+
 pub struct ChartsView {
     core: Arc<AppCore>,
     runtime: Handle,
+    /// Where an install goes, and the namespace it starts with.
+    cluster: SharedString,
+    namespace: SharedString,
+    install: Option<OpenInstall>,
     load: Load,
     repos: Vec<Repository>,
     catalog: Vec<ChartLine>,
@@ -149,10 +167,14 @@ pub struct ChartsView {
     _subscriptions: Vec<Subscription>,
 }
 
+impl EventEmitter<ChartsEvent> for ChartsView {}
+
 impl ChartsView {
     pub fn new(
         core: &Arc<AppCore>,
         runtime: &Handle,
+        cluster: SharedString,
+        namespace: SharedString,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -185,6 +207,9 @@ impl ChartsView {
         let mut view = Self {
             core: Arc::clone(core),
             runtime: runtime.clone(),
+            cluster,
+            namespace,
+            install: None,
             load: Load::Loading,
             repos: Vec::new(),
             catalog: Vec::new(),
@@ -358,6 +383,37 @@ impl ChartsView {
         .detach();
     }
 
+    /// Open the install form for a chart.
+    fn open_install(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(chart) = self.catalog.get(index) else {
+            return;
+        };
+        let subject = Subject {
+            mode: Mode::Install,
+            cluster: self.cluster.clone(),
+            namespace: self.namespace.clone(),
+            release: SharedString::default(),
+            chart: chart.name.clone(),
+            version: SharedString::default(),
+        };
+        let title = chart.name.clone();
+        let (core, runtime) = (&self.core, &self.runtime);
+        let view = cx.new(|cx| UpgradeView::new(core, runtime, subject, "", window, cx));
+        let events = cx.subscribe(&view, |this, _, event: &UpgradeEvent, cx| match event {
+            UpgradeEvent::Upgraded => {
+                this.install = None;
+                cx.emit(ChartsEvent::Installed);
+                cx.notify();
+            }
+        });
+        self.install = Some(OpenInstall {
+            chart: title,
+            view,
+            _events: events,
+        });
+        cx.notify();
+    }
+
     fn fill(&mut self, name: &str, url: &str, window: &mut Window, cx: &mut Context<Self>) {
         self.name
             .update(cx, |input, cx| input.set_value(name, window, cx));
@@ -463,6 +519,66 @@ impl ChartsView {
             }))
     }
 
+    /// The pane an install form lives in: a title, a close button, the form.
+    fn render_install(&self, install: &OpenInstall, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (background, border, muted, hover) = (
+            theme.background,
+            theme.border,
+            theme.muted_foreground,
+            theme.secondary_hover,
+        );
+        v_flex()
+            .w(px(560.))
+            .h_full()
+            .flex_none()
+            .bg(background)
+            .border_l_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .h(px(52.))
+                    .flex_none()
+                    .px_4()
+                    .gap_3()
+                    .items_center()
+                    .border_b_1()
+                    .border_color(border)
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().font_semibold().child("Install a chart"))
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .truncate()
+                                    .child(install.chart.clone()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("close-install")
+                            .size(px(26.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(|button| button.bg(hover))
+                            .tooltip(|window, cx| Tooltip::new("Close").build(window, cx))
+                            .child(Icon::new(IconName::Close).size_4())
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.install = None;
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(div().flex_1().min_h_0().pt_3().child(install.view.clone()))
+    }
+
     fn render_catalog(&self, cx: &mut Context<Self>) -> AnyElement {
         let palette = Palette::of(cx);
         if self.catalog.is_empty() {
@@ -486,53 +602,86 @@ impl ChartsView {
                         let index = *this.shown.get(position)?;
                         let chart = this.catalog.get(index)?;
                         let name = chart.name.clone();
+                        let install = cx.listener(move |this, _, window, cx| {
+                            this.open_install(index, window, cx);
+                        });
+                        let copy = cx.listener(move |_, _, window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(name.to_string()));
+                            toast_success(window, cx, "Copied the chart reference");
+                        });
                         Some(
-                            v_flex()
+                            h_flex()
                                 .id(("chart", position))
                                 .w_full()
                                 .h(ROW_HEIGHT)
                                 .px_4()
-                                .justify_center()
-                                .cursor_pointer()
+                                .gap_3()
+                                .items_center()
                                 .hover(|row| row.bg(hover))
-                                .tooltip(|window, cx| {
-                                    Tooltip::new("Click to copy the chart reference")
-                                        .build(window, cx)
-                                })
                                 .child(
-                                    h_flex()
-                                        .gap_2()
-                                        .items_center()
-                                        .text_sm()
-                                        .child(div().font_semibold().child(chart.name.clone()))
+                                    v_flex()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .child(
+                                            h_flex()
+                                                .gap_2()
+                                                .items_center()
+                                                .text_sm()
+                                                .child(
+                                                    div().font_semibold().child(chart.name.clone()),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_xs()
+                                                        .text_color(muted)
+                                                        .child(chart.version.clone()),
+                                                )
+                                                .when(!chart.app_version.is_empty(), |row| {
+                                                    row.child(
+                                                        div().text_xs().text_color(muted).child(
+                                                            format!("app {}", chart.app_version),
+                                                        ),
+                                                    )
+                                                }),
+                                        )
                                         .child(
                                             div()
                                                 .text_xs()
                                                 .text_color(muted)
-                                                .child(chart.version.clone()),
-                                        )
-                                        .when(!chart.app_version.is_empty(), |row| {
-                                            row.child(
-                                                div()
-                                                    .text_xs()
-                                                    .text_color(muted)
-                                                    .child(format!("app {}", chart.app_version)),
-                                            )
-                                        }),
+                                                .truncate()
+                                                .child(chart.description.clone()),
+                                        ),
                                 )
                                 .child(
                                     div()
-                                        .text_xs()
+                                        .id(("copy-chart", position))
+                                        .size(px(24.))
+                                        .flex_none()
+                                        .flex()
+                                        .items_center()
+                                        .justify_center()
+                                        .rounded_md()
+                                        .cursor_pointer()
                                         .text_color(muted)
-                                        .truncate()
-                                        .child(chart.description.clone()),
+                                        .hover(|button| button.bg(hover))
+                                        .tooltip(|window, cx| {
+                                            Tooltip::new("Copy the chart reference")
+                                                .build(window, cx)
+                                        })
+                                        .child(Icon::new(IconName::Copy).size_3p5())
+                                        .on_click(copy),
                                 )
-                                .on_click(cx.listener(move |_, _, window, cx| {
-                                    cx.write_to_clipboard(ClipboardItem::new_string(
-                                        name.to_string(),
-                                    ));
-                                    toast_success(window, cx, format!("Copied {name}"));
-                                })),
+                                .child(
+                                    button(
+                                        ("install-chart", position),
+                                        "Install",
+                                        true,
+                                        Emphasis::Primary,
+                                        cx.theme(),
+                                    )
+                                    .flex_none()
+                                    .on_click(install),
+                                ),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -582,8 +731,10 @@ impl Render for ChartsView {
                 .child(text)
         };
 
-        v_flex()
-            .size_full()
+        let page = v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
             .child(
                 h_flex()
                     .h(px(48.))
@@ -631,7 +782,17 @@ impl Render for ChartsView {
                     .child(div().flex_1())
                     .child(div().w(px(260.)).child(Input::new(&self.search))),
             )
-            .child(self.render_catalog(cx))
+            .child(self.render_catalog(cx));
+
+        // A plain flex row, not `h_flex()`: that centres its children
+        // vertically, and both must stretch to the full height.
+        div()
+            .flex()
+            .size_full()
+            .child(page)
+            .when_some(self.install.as_ref(), |row, install| {
+                row.child(self.render_install(install, cx))
+            })
             .into_any_element()
     }
 }
