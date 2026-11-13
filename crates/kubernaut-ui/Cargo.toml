@@ -15,6 +15,7 @@ alacritty_terminal.workspace = true
 
 k8s-app.workspace = true
 k8s-core.workspace = true
+k8s-helm.workspace = true
 k8s-ops.workspace = true
 
 tokio.workspace = true

@@ -213,7 +213,7 @@ fn row_matches(row: &StoredRow, needle: &str, visible: &[usize]) -> bool {
 
 /// ASCII case-insensitive substring test that allocates nothing. Kubernetes
 /// names are ASCII; any other character must match exactly.
-fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
+pub(crate) fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
     let needle = needle.as_bytes();
     // `windows(0)` panics, and an empty needle matches everything anyway.
     needle.is_empty()

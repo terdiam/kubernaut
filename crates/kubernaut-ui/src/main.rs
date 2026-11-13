@@ -1,12 +1,15 @@
 mod app;
 mod drawer;
 mod emulator;
+mod helm;
 mod keys;
 mod log_buffer;
 mod logs;
+mod release;
 mod rows;
 mod table;
 mod terminal;
+mod ui;
 mod yaml;
 
 use std::{cell::Cell, process::ExitCode, rc::Rc, sync::Arc};

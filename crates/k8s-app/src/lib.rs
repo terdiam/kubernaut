@@ -6,6 +6,7 @@
 pub mod audit;
 mod boot;
 pub mod clusters;
+pub mod helm_ops;
 pub mod logging;
 pub mod preferences;
 pub mod present;

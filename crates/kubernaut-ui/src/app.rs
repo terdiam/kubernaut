@@ -26,7 +26,9 @@ use tokio::{runtime::Handle, sync::broadcast::error::RecvError, task::JoinHandle
 
 use crate::{
     drawer::{DrawerEvent, DrawerView, Target},
+    helm::HelmView,
     table::ResourceDelegate,
+    ui::chip,
 };
 
 const ROW_HEIGHT: Pixels = px(28.);
@@ -156,6 +158,8 @@ pub struct AppView {
     filter: Entity<InputState>,
     table: Option<OpenTable>,
     drawer: Option<OpenDrawer>,
+    /// The Helm releases view, shown instead of a resource table.
+    helm: Option<Entity<HelmView>>,
     next_generation: u64,
     table_filter: Entity<InputState>,
     watch_tx: mpsc::UnboundedSender<(u64, WatchEvent)>,
@@ -243,6 +247,7 @@ impl AppView {
             filter,
             table: None,
             drawer: None,
+            helm: None,
             next_generation: 0,
             table_filter,
             watch_tx,
@@ -297,6 +302,7 @@ impl AppView {
         self.selected = None;
         self.table = None;
         self.drawer = None;
+        self.helm = None;
         if self.clusters.contains_key(&name) {
             self.refresh_rows(cx);
             return;
@@ -383,6 +389,7 @@ impl AppView {
             self.selected = None;
             self.table = None;
             self.drawer = None;
+            self.helm = None;
         }
         self.refresh_rows(cx);
 
@@ -398,6 +405,7 @@ impl AppView {
         // Replacing the table aborts the previous watch task.
         self.table = None;
         self.drawer = None;
+        self.helm = None;
 
         let Some(cluster) = self
             .active
@@ -471,6 +479,23 @@ impl AppView {
             error: None,
             _events: events,
         });
+        cx.notify();
+    }
+
+    /// Show the Helm releases of the active cluster.
+    fn open_helm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cluster) = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone())
+        else {
+            return;
+        };
+        self.selected = None;
+        self.table = None;
+        self.drawer = None;
+        let (core, runtime) = (&self.core, &self.runtime);
+        self.helm = Some(cx.new(|cx| HelmView::new(core, runtime, cluster, window, cx)));
         cx.notify();
     }
 
@@ -826,7 +851,12 @@ impl AppView {
             .into_any_element()
         };
 
+        let helm_open = self.helm.is_some();
+        let open_helm = cx.listener(|this, _, window, cx| this.open_helm(window, cx));
         shell
+            .child(div().px_2().pt_2().child(
+                chip("helm", "Helm releases", true, helm_open, cx.theme()).on_click(open_helm),
+            ))
             .child(div().p_2().child(Input::new(&self.filter)))
             .child(body)
     }
@@ -895,6 +925,9 @@ impl AppView {
             return main
                 .child(header)
                 .child(div().p_4().text_color(theme.danger).child(error.clone()));
+        }
+        if let Some(helm) = &self.helm {
+            return main.child(header).child(helm.clone());
         }
         match &self.table {
             Some(table) => main.child(header).child(
