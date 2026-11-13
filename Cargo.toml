@@ -1,18 +1,20 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/k8s-app",
     "crates/k8s-core",
     "crates/k8s-ops",
     "crates/k8s-metrics",
     "crates/k8s-helm",
     "crates/k8s-security",
+    "crates/kubernaut-ui",
     "src-tauri",
 ]
 
 [workspace.package]
 version = "0.1.15"
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.93"
 license = "Apache-2.0"
 repository = "https://github.com/masao/kubernaut"
 
@@ -78,12 +80,18 @@ tempfile = "3"
 portable-pty = "0.9"
 rand = "0.10"
 
+# One dependency for the native UI: it pins the matching gpui fork family and
+# re-exports gpui, gpui-base and gpui-component. Depending on `gpui` directly
+# alongside it would pull a second, incompatible copy of gpui's types.
+gpui-kit = "0.9.1"
+
 tauri = { version = "2.11", features = [] }
 tauri-build = { version = "2", features = [] }
 tauri-plugin-updater = "2.10"
 tauri-plugin-process = "2"
 tauri-plugin-dialog = "2"
 
+k8s-app = { path = "crates/k8s-app" }
 k8s-core = { path = "crates/k8s-core" }
 k8s-ops = { path = "crates/k8s-ops" }
 k8s-metrics = { path = "crates/k8s-metrics" }
@@ -98,6 +106,18 @@ codegen-units = 1
 # the panic hook writes `Backtrace::force_capture()` into the crash log and
 # `strip = true` reduces every one of those to bare addresses.
 strip = "debuginfo"
+panic = "abort"
+
+# Smallest binary: `cargo build --profile release-small -p <crate>`.
+# Not for shipping builds: stripping every symbol turns the crash log's
+# backtraces into bare addresses (see `strip` above), and `opt-level = "z"`
+# trades some speed for size.
+[profile.release-small]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
 panic = "abort"
 
 [profile.dev]

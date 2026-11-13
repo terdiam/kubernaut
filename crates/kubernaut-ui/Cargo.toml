@@ -1,0 +1,34 @@
+[package]
+name = "kubernaut-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kubernaut-ui"
+path = "src/main.rs"
+
+[dependencies]
+gpui-kit.workspace = true
+
+k8s-app.workspace = true
+k8s-core.workspace = true
+
+tokio.workspace = true
+futures.workspace = true
+tracing.workspace = true
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
+implicit_clone = "warn"
+inefficient_to_string = "warn"
+trivially_copy_pass_by_ref = "warn"
+large_types_passed_by_value = "warn"
+needless_collect = "warn"
+
+[dev-dependencies]
+serde_json.workspace = true

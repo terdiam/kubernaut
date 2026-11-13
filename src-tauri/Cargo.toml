@@ -15,6 +15,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build.workspace = true
 
 [dependencies]
+k8s-app.workspace = true
 k8s-core.workspace = true
 k8s-helm.workspace = true
 k8s-metrics.workspace = true

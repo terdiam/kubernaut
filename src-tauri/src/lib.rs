@@ -1,15 +1,14 @@
-mod audit;
-mod clusters;
 mod commands;
 mod error;
 mod helm_commands;
-mod logging;
 mod metrics_commands;
 mod ops_commands;
-mod preferences;
-mod scan_cache;
 mod security_commands;
 mod state;
+
+// These moved to `k8s-app` so another front end can share them; the commands
+// keep addressing them as `crate::<module>`.
+pub(crate) use k8s_app::{audit, clusters, logging, preferences};
 
 use k8s_core::ClusterManager;
 use state::AppState;
