@@ -1,23 +1,25 @@
 mod app;
+mod categories;
 mod drawer;
 mod emulator;
 mod helm;
+mod icons;
 mod keys;
 mod log_buffer;
 mod logs;
+mod overview;
+mod palette;
 mod release;
 mod rows;
 mod table;
 mod terminal;
+mod theme;
 mod ui;
 mod yaml;
 
 use std::{cell::Cell, process::ExitCode, rc::Rc, sync::Arc};
 
-use gpui_kit::{
-    component::{Theme, ThemeMode},
-    *,
-};
+use gpui_kit::*;
 
 fn main() -> ExitCode {
     // Must run before any thread exists: it repairs PATH for exec credential
@@ -41,36 +43,46 @@ fn main() -> ExitCode {
     let opened = Rc::new(Cell::new(false));
     let opened_in_app = Rc::clone(&opened);
 
-    gpui_kit::application().run(move |cx| {
-        gpui_kit::init(cx);
-        Theme::change(ThemeMode::Dark, None, cx);
+    gpui_kit::application()
+        .with_assets(icons::AppAssets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            theme::apply(None, cx);
+            cx.bind_keys([KeyBinding::new(
+                "cmd-k",
+                app::TogglePalette,
+                Some(app::KEY_CONTEXT),
+            )]);
 
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                None,
-                size(px(1440.), px(900.)),
-                cx,
-            ))),
-            titlebar: Some(TitlebarOptions {
-                title: Some("Kubernaut".into()),
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(1440.), px(900.)),
+                    cx,
+                ))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Kubernaut".into()),
+                    // The toolbar is drawn by the app, so the window's own title
+                    // bar steps aside and leaves only the traffic lights.
+                    appears_transparent: true,
+                    traffic_light_position: Some(point(px(18.), px(16.))),
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        };
+            };
 
-        match gpui_kit::open_window(options, cx, |window, cx| {
-            cx.new(|cx| app::AppView::new(core, handle, window, cx))
-        }) {
-            Ok(_) => {
-                opened_in_app.set(true);
-                cx.activate(true);
+            match gpui_kit::open_window(options, cx, |window, cx| {
+                cx.new(|cx| app::AppView::new(core, handle, window, cx))
+            }) {
+                Ok(_) => {
+                    opened_in_app.set(true);
+                    cx.activate(true);
+                }
+                Err(err) => {
+                    tracing::error!(%err, "could not open the window");
+                    cx.quit();
+                }
             }
-            Err(err) => {
-                tracing::error!(%err, "could not open the window");
-                cx.quit();
-            }
-        }
-    });
+        });
 
     // `booted` holds the log writer; it must outlive the app so the last lines
     // are flushed.

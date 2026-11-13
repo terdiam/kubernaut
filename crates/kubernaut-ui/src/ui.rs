@@ -66,3 +66,107 @@ impl Palette {
         }
     }
 }
+
+/// A small rounded status badge: a dot and a label in one colour on a faint
+/// tint of it.
+pub fn pill(text: impl Into<SharedString>, color: Hsla) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .px_2()
+        .py_0p5()
+        .rounded_full()
+        .bg(color.opacity(0.14))
+        .text_xs()
+        .text_color(color)
+        .child(div().size(px(6.)).rounded_full().bg(color))
+        .child(text.into())
+}
+
+/// The container for a segmented control: a rounded track holding a row of
+/// [`segment`]s, like the one in Finder's view switcher.
+pub fn segmented_bar(theme: &Theme) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_0p5()
+        .p_0p5()
+        .rounded_lg()
+        .bg(theme.secondary)
+}
+
+/// One option of a segmented control. The caller attaches `on_click`.
+pub fn segment(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    active: bool,
+    theme: &Theme,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .px_3()
+        .py_0p5()
+        .rounded_md()
+        .text_xs()
+        .cursor_pointer()
+        .when(active, |segment| {
+            segment
+                .bg(theme.background)
+                .font_semibold()
+                .shadow_sm()
+                .text_color(theme.foreground)
+        })
+        .when(!active, |segment| {
+            segment
+                .text_color(theme.muted_foreground)
+                .hover(|segment| segment.text_color(theme.foreground))
+        })
+        .child(label.into())
+}
+
+/// How loudly a button asks to be pressed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Emphasis {
+    Plain,
+    /// The main action of a group, filled with the accent colour.
+    Primary,
+    /// An action that deletes or replaces something.
+    Danger,
+}
+
+/// A button. Like [`chip`], the caller attaches `on_click` when it is enabled.
+pub fn button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    emphasis: Emphasis,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let (fill, fill_hover) = match emphasis {
+        Emphasis::Plain => (theme.secondary, theme.secondary_hover),
+        Emphasis::Primary => (theme.primary, theme.primary_hover),
+        Emphasis::Danger => (theme.danger, theme.danger.opacity(0.85)),
+    };
+    let text = if emphasis == Emphasis::Plain {
+        theme.foreground
+    } else {
+        theme.primary_foreground
+    };
+    div()
+        .id(id)
+        .px_3()
+        .py_1()
+        .rounded_md()
+        .text_xs()
+        .font_semibold()
+        .bg(fill)
+        .text_color(text)
+        .when(enabled, |button| {
+            button
+                .cursor_pointer()
+                .hover(|button| button.bg(fill_hover))
+        })
+        .when(!enabled, |button| button.opacity(0.4))
+        .child(label.into())
+}

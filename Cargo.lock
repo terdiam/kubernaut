@@ -4868,6 +4868,7 @@ dependencies = [
  "k8s-app",
  "k8s-core",
  "k8s-helm",
+ "k8s-metrics",
  "k8s-ops",
  "serde_json",
  "tokio",

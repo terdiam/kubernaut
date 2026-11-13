@@ -6,8 +6,9 @@
 use std::{cmp::Reverse, ops::Range, sync::Arc};
 
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
-    component::{ActiveTheme, h_flex, v_flex},
+    component::{ActiveTheme, Icon, h_flex, tooltip::Tooltip, v_flex},
     prelude::FluentBuilder,
     *,
 };
@@ -18,7 +19,13 @@ use k8s_ops::{
 };
 use tokio::runtime::Handle;
 
-use crate::{log_buffer::log_target, logs::LogView, terminal::TerminalView, yaml::YamlView};
+use crate::{
+    log_buffer::log_target,
+    logs::LogView,
+    terminal::TerminalView,
+    ui::{segment, segmented_bar},
+    yaml::YamlView,
+};
 
 const ROW_HEIGHT: Pixels = px(28.);
 
@@ -123,19 +130,8 @@ impl DrawerView {
         label: &'static str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let theme = cx.theme();
-        let active = self.tab == tab;
-        div()
-            .id(label)
-            .px_3()
-            .py_1()
-            .rounded_md()
-            .cursor_pointer()
-            .text_sm()
-            .when(active, |tab| tab.bg(theme.secondary).font_semibold())
-            .when(!active, |tab| tab.text_color(theme.muted_foreground))
-            .child(label)
-            .on_click(cx.listener(move |this, _, window, cx| {
+        segment(label, label, self.tab == tab, cx.theme()).on_click(cx.listener(
+            move |this, _, window, cx| {
                 this.tab = tab;
                 match tab {
                     Tab::Logs => this.ensure_logs(cx),
@@ -143,7 +139,8 @@ impl DrawerView {
                     Tab::Yaml | Tab::Events => {}
                 }
                 cx.notify();
-            }))
+            },
+        ))
     }
 
     fn ensure_logs(&mut self, cx: &mut Context<Self>) {
@@ -267,17 +264,26 @@ impl DrawerView {
 impl Render for DrawerView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (background, border, muted) = (theme.background, theme.border, theme.muted_foreground);
+        let (background, border, muted, secondary, hover) = (
+            theme.background,
+            theme.border,
+            theme.muted_foreground,
+            theme.secondary,
+            theme.secondary_hover,
+        );
 
-        let subtitle = match &self.target.namespace {
-            Some(namespace) => h_flex()
-                .gap_1()
-                .child(self.target.kind.clone())
-                .child("·")
-                .child(namespace.clone())
-                .into_any_element(),
-            None => div().child(self.target.kind.clone()).into_any_element(),
-        };
+        let kind = div()
+            .px_1p5()
+            .py_0p5()
+            .rounded_sm()
+            .bg(secondary)
+            .text_xs()
+            .child(self.target.kind.clone());
+        let subtitle = h_flex()
+            .gap_2()
+            .items_center()
+            .child(kind)
+            .children(self.target.namespace.clone());
 
         v_flex()
             .w(px(560.))
@@ -310,32 +316,31 @@ impl Render for DrawerView {
                     .child(
                         div()
                             .id("close-drawer")
-                            .px_2()
-                            .py_1()
+                            .size(px(26.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
                             .rounded_md()
                             .cursor_pointer()
-                            .text_sm()
-                            .border_1()
-                            .border_color(border)
-                            .hover(|button| button.bg(cx.theme().secondary))
-                            .child("Close")
+                            .text_color(muted)
+                            .hover(|button| button.bg(hover))
+                            .tooltip(|window, cx| Tooltip::new("Close").build(window, cx))
+                            .child(Icon::new(IconName::Close).size_4())
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(DrawerEvent::Close))),
                     ),
             )
             .child(
-                h_flex()
-                    .flex_none()
-                    .px_3()
-                    .py_2()
-                    .gap_1()
-                    .child(self.render_tab(Tab::Yaml, "YAML", cx))
-                    .child(self.render_tab(Tab::Events, "Events", cx))
-                    .when(self.log_target.is_some(), |tabs| {
-                        tabs.child(self.render_tab(Tab::Logs, "Logs", cx))
-                    })
-                    .when(self.has_shell(), |tabs| {
-                        tabs.child(self.render_tab(Tab::Terminal, "Terminal", cx))
-                    }),
+                div().flex_none().px_3().py_2().child(
+                    segmented_bar(cx.theme())
+                        .child(self.render_tab(Tab::Yaml, "YAML", cx))
+                        .child(self.render_tab(Tab::Events, "Events", cx))
+                        .when(self.log_target.is_some(), |tabs| {
+                            tabs.child(self.render_tab(Tab::Logs, "Logs", cx))
+                        })
+                        .when(self.has_shell(), |tabs| {
+                            tabs.child(self.render_tab(Tab::Terminal, "Terminal", cx))
+                        }),
+                ),
             )
             .child(
                 div()

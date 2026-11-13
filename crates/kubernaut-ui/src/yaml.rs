@@ -20,7 +20,10 @@ use k8s_core::objects;
 use k8s_ops::apply::{self, ApplyOutcome, DiffResult, EditRequest, FieldConflict};
 use tokio::runtime::Handle;
 
-use crate::drawer::Target;
+use crate::{
+    drawer::Target,
+    ui::{Emphasis, button, chip},
+};
 
 const DIFF_ROW_HEIGHT: Pixels = px(18.);
 
@@ -364,31 +367,6 @@ impl YamlView {
         cx.notify();
     }
 
-    fn chip(
-        &self,
-        id: &'static str,
-        label: &'static str,
-        enabled: bool,
-        active: bool,
-        cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        let theme = cx.theme();
-        div()
-            .id(id)
-            .px_2()
-            .py_1()
-            .rounded_md()
-            .text_xs()
-            .border_1()
-            .border_color(theme.border)
-            .when(active, |chip| chip.bg(theme.secondary).font_semibold())
-            .when(enabled, |chip| chip.cursor_pointer())
-            .when(!enabled, |chip| {
-                chip.opacity(0.4).text_color(theme.muted_foreground)
-            })
-            .child(label)
-    }
-
     fn render_toolbar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let (muted, warning) = (theme.muted_foreground, theme.warning);
@@ -408,7 +386,7 @@ impl YamlView {
             .items_center()
             .flex_wrap()
             .child({
-                let chip = self.chip("preview", "Preview", ready, false, cx);
+                let chip = button("preview", "Preview", ready, Emphasis::Plain, cx.theme());
                 if ready {
                     chip.on_click(cx.listener(|this, _, _, cx| this.preview(cx)))
                 } else {
@@ -416,7 +394,7 @@ impl YamlView {
                 }
             })
             .child({
-                let chip = self.chip("apply", "Apply", applicable, false, cx);
+                let chip = button("apply", "Apply", applicable, Emphasis::Primary, cx.theme());
                 if applicable {
                     chip.on_click(cx.listener(|this, _, window, cx| this.apply(window, cx)))
                 } else {
@@ -424,7 +402,13 @@ impl YamlView {
                 }
             })
             .child({
-                let chip = self.chip("revert", "Revert", ready && modified, false, cx);
+                let chip = button(
+                    "revert",
+                    "Revert",
+                    ready && modified,
+                    Emphasis::Plain,
+                    cx.theme(),
+                );
                 if ready && modified {
                     chip.on_click(cx.listener(|this, _, window, cx| this.revert(window, cx)))
                 } else {
@@ -433,7 +417,7 @@ impl YamlView {
             })
             .when(contested || self.force, |bar| {
                 bar.child(
-                    self.chip("force", "Take ownership", ready, self.force, cx)
+                    chip("force", "Take ownership", ready, self.force, cx.theme())
                         .on_click(cx.listener(|this, _, _, cx| this.toggle_force(cx))),
                 )
             })
@@ -548,7 +532,7 @@ impl Render for YamlView {
             Load::Ready => div()
                 .flex_1()
                 .min_h_0()
-                .child(Editor::new(&self.editor).bordered(false).h(relative(1.)))
+                .child(Editor::new(&self.editor).appearance(false).h(relative(1.)))
                 .into_any_element(),
         };
 

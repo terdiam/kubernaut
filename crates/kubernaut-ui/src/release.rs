@@ -4,10 +4,12 @@
 use std::{cmp::Reverse, ops::Range, sync::Arc};
 
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
     component::{
-        ActiveTheme, h_flex,
+        ActiveTheme, Icon, h_flex,
         input::{Editor, EditorState},
+        tooltip::Tooltip,
         v_flex,
     },
     prelude::FluentBuilder,
@@ -17,7 +19,7 @@ use k8s_app::{AppCore, helm_ops, present, present::Tone};
 use k8s_helm::{ReleaseDetail, ReleaseRevision, store};
 use tokio::runtime::Handle;
 
-use crate::ui::{Palette, chip, message, tone_color};
+use crate::ui::{Emphasis, Palette, button, chip, message, segment, segmented_bar, tone_color};
 
 const ROW_HEIGHT: Pixels = px(28.);
 
@@ -362,21 +364,9 @@ impl ReleaseView {
         &self,
         tab: Tab,
         label: &'static str,
-        palette: Palette,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let active = self.tab == tab;
-        let secondary = cx.theme().secondary;
-        div()
-            .id(label)
-            .px_3()
-            .py_1()
-            .rounded_md()
-            .cursor_pointer()
-            .text_sm()
-            .when(active, |tab| tab.bg(secondary).font_semibold())
-            .when(!active, |tab| tab.text_color(palette.muted))
-            .child(label)
+        segment(label, label, self.tab == tab, cx.theme())
             .on_click(cx.listener(move |this, _, window, cx| this.show(tab, window, cx)))
     }
 
@@ -408,8 +398,23 @@ impl ReleaseView {
                 .items_center()
                 .flex_wrap()
                 .child(div().text_xs().text_color(palette.danger).child(text))
-                .child(chip("confirm", "Confirm", true, false, cx.theme()).on_click(go))
-                .child(chip("cancel", "Cancel", true, false, cx.theme()).on_click(cancel))
+                .child(
+                    button(
+                        "confirm",
+                        "Confirm",
+                        true,
+                        if confirm == Confirm::Uninstall {
+                            Emphasis::Danger
+                        } else {
+                            Emphasis::Primary
+                        },
+                        cx.theme(),
+                    )
+                    .on_click(go),
+                )
+                .child(
+                    button("cancel", "Cancel", true, Emphasis::Plain, cx.theme()).on_click(cancel),
+                )
         });
 
         h_flex()
@@ -421,7 +426,7 @@ impl ReleaseView {
             .flex_wrap()
             .when(prompt.is_none(), |bar| {
                 bar.child(
-                    chip("uninstall", "Uninstall", idle, false, cx.theme())
+                    button("uninstall", "Uninstall", idle, Emphasis::Plain, cx.theme())
                         .when(idle, |chip| chip.on_click(ask_uninstall)),
                 )
             })
@@ -517,31 +522,27 @@ impl ReleaseView {
         let effective = cx.listener(|this, _, window, cx| {
             this.show_values(Values::Effective, window, cx);
         });
-        let toggle = h_flex()
-            .flex_none()
-            .px_3()
-            .pb_2()
-            .gap_2()
-            .child(
-                chip(
-                    "supplied",
-                    "Supplied",
-                    true,
-                    self.values == Values::Supplied,
-                    cx.theme(),
+        let toggle = div().flex_none().px_3().pb_2().child(
+            segmented_bar(cx.theme())
+                .child(
+                    segment(
+                        "supplied",
+                        "Supplied",
+                        self.values == Values::Supplied,
+                        cx.theme(),
+                    )
+                    .on_click(supplied),
                 )
-                .on_click(supplied),
-            )
-            .child(
-                chip(
-                    "effective",
-                    "With defaults",
-                    true,
-                    self.values == Values::Effective,
-                    cx.theme(),
-                )
-                .on_click(effective),
-            );
+                .child(
+                    segment(
+                        "effective",
+                        "With defaults",
+                        self.values == Values::Effective,
+                        cx.theme(),
+                    )
+                    .on_click(effective),
+                ),
+        );
         match &self.values_editor {
             Some(editor) => v_flex()
                 .size_full()
@@ -556,7 +557,11 @@ impl ReleaseView {
 impl Render for ReleaseView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = Palette::of(cx);
-        let (background, error_notice) = (cx.theme().background, palette.danger);
+        let (background, error_notice, hover) = (
+            cx.theme().background,
+            palette.danger,
+            cx.theme().secondary_hover,
+        );
 
         let body = match &self.load {
             Load::Loading => message("Loading…", palette.muted).into_any_element(),
@@ -599,21 +604,29 @@ impl Render for ReleaseView {
                             ),
                     )
                     .child(
-                        chip("close-release", "Close", true, false, cx.theme())
-                            .text_sm()
+                        div()
+                            .id("close-release")
+                            .size(px(26.))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .text_color(palette.muted)
+                            .hover(|button| button.bg(hover))
+                            .tooltip(|window, cx| Tooltip::new("Close").build(window, cx))
+                            .child(Icon::new(IconName::Close).size_4())
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ReleaseEvent::Close))),
                     ),
             )
             .child(
-                h_flex()
-                    .flex_none()
-                    .px_3()
-                    .py_2()
-                    .gap_1()
-                    .child(self.render_tab(Tab::History, "History", palette, cx))
-                    .child(self.render_tab(Tab::Values, "Values", palette, cx))
-                    .child(self.render_tab(Tab::Manifest, "Manifest", palette, cx))
-                    .child(self.render_tab(Tab::Notes, "Notes", palette, cx)),
+                div().flex_none().px_3().py_2().child(
+                    segmented_bar(cx.theme())
+                        .child(self.render_tab(Tab::History, "History", cx))
+                        .child(self.render_tab(Tab::Values, "Values", cx))
+                        .child(self.render_tab(Tab::Manifest, "Manifest", cx))
+                        .child(self.render_tab(Tab::Notes, "Notes", cx)),
+                ),
             )
             .child(self.render_actions(cx))
             .when_some(self.notice.as_ref(), |column, notice| {
@@ -643,7 +656,7 @@ impl ReleaseView {
 fn editor_view(editor: &Entity<EditorState>) -> Editor {
     Editor::new(editor)
         .readonly(true)
-        .bordered(false)
+        .appearance(false)
         .h(relative(1.))
 }
 

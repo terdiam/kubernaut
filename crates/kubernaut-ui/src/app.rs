@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     ops::Range,
     sync::Arc,
     time::Duration,
@@ -7,11 +7,13 @@ use std::{
 
 use futures::{StreamExt, channel::mpsc};
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
     component::{
-        ActiveTheme, h_flex,
+        ActiveTheme, Icon, h_flex,
         input::{Input, InputEvent, InputState},
         table::{DataTable, TableEvent, TableState},
+        tooltip::Tooltip,
         v_flex,
     },
     prelude::FluentBuilder,
@@ -25,13 +27,22 @@ use k8s_core::{
 use tokio::{runtime::Handle, sync::broadcast::error::RecvError, task::JoinHandle};
 
 use crate::{
+    categories::{self, Category},
     drawer::{DrawerEvent, DrawerView, Target},
     helm::HelmView,
+    overview::{OverviewEvent, OverviewView},
+    palette::{Command, Item, PaletteEvent, PaletteView},
     table::ResourceDelegate,
-    ui::chip,
+    theme,
+    ui::{chip, pill},
 };
 
 const ROW_HEIGHT: Pixels = px(28.);
+
+actions!(kubernaut, [TogglePalette]);
+
+/// The key context the app's shortcuts are bound under.
+pub const KEY_CONTEXT: &str = "Kubernaut";
 
 /// How often ages are re-read. Rows older than an hour change text once a
 /// minute, so most ticks allocate nothing.
@@ -83,10 +94,11 @@ impl ClusterState {
 /// One line of the resource sidebar, flattened so it can be virtualised.
 enum SidebarRow {
     Group {
-        /// The API group, used as the collapse key.
+        /// The section label, which is also the collapse key.
         name: SharedString,
-        label: SharedString,
         count: SharedString,
+        icon: IconName,
+        open: bool,
     },
     Resource {
         key: SharedString,
@@ -130,6 +142,18 @@ impl Drop for OpenTable {
     }
 }
 
+/// The command palette and the subscription that hears its choice.
+struct OpenPalette {
+    view: Entity<PaletteView>,
+    _events: Subscription,
+}
+
+/// The overview page and the subscription that opens objects from it.
+struct OpenOverview {
+    view: Entity<OverviewView>,
+    _events: Subscription,
+}
+
 /// The drawer for the selected row, and the subscription that closes it.
 struct OpenDrawer {
     view: Entity<DrawerView>,
@@ -160,6 +184,11 @@ pub struct AppView {
     drawer: Option<OpenDrawer>,
     /// The Helm releases view, shown instead of a resource table.
     helm: Option<Entity<HelmView>>,
+    /// The cluster overview, the page a cluster opens on.
+    overview: Option<OpenOverview>,
+    palette: Option<OpenPalette>,
+    /// Keeps keyboard shortcuts working when no control has focus.
+    focus: FocusHandle,
     next_generation: u64,
     table_filter: Entity<InputState>,
     watch_tx: mpsc::UnboundedSender<(u64, WatchEvent)>,
@@ -233,6 +262,9 @@ impl AppView {
         })
         .detach();
 
+        let focus = cx.focus_handle();
+        window.focus(&focus, cx);
+
         Self {
             core,
             runtime,
@@ -248,12 +280,32 @@ impl AppView {
             table: None,
             drawer: None,
             helm: None,
+            overview: None,
+            palette: None,
+            focus,
             next_generation: 0,
             table_filter,
             watch_tx,
             status_tx,
-            _subscriptions: vec![subscription, table_filter_subscription],
+            _subscriptions: vec![
+                subscription,
+                table_filter_subscription,
+                // Light and dark follow the system, live.
+                cx.observe_window_appearance(window, |_, window, cx| {
+                    theme::apply(Some(window), cx);
+                }),
+            ],
         }
+    }
+
+    /// Close whatever page is showing, so the next one starts clean. Dropping
+    /// a table aborts its watch.
+    fn clear_pages(&mut self) {
+        self.selected = None;
+        self.table = None;
+        self.drawer = None;
+        self.helm = None;
+        self.overview = None;
     }
 
     fn active_state(&self) -> Option<&ClusterState> {
@@ -293,18 +345,16 @@ impl AppView {
 
     /// Open a cluster tile. Connecting is lazy and explicit, as in the web UI:
     /// nothing is reachable until the user picks it.
-    fn select_cluster(&mut self, index: usize, cx: &mut Context<Self>) {
+    fn select_cluster(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tile) = self.tiles.get(index) else {
             return;
         };
         let name = tile.name.clone();
         self.active = Some(index);
-        self.selected = None;
-        self.table = None;
-        self.drawer = None;
-        self.helm = None;
+        self.clear_pages();
         if self.clusters.contains_key(&name) {
             self.refresh_rows(cx);
+            self.open_overview(window, cx);
             return;
         }
         self.clusters
@@ -347,10 +397,12 @@ impl AppView {
             Ok::<_, String>((handle.status(), discovery))
         });
 
-        cx.spawn(async move |this, cx| {
+        cx.spawn_in(window, async move |this, cx| {
             let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
-            this.update(cx, |this, cx| this.finish_connect(&name, result, cx))
-                .ok();
+            this.update_in(cx, |this, window, cx| {
+                this.finish_connect(&name, result, window, cx);
+            })
+            .ok();
         })
         .detach();
     }
@@ -359,6 +411,7 @@ impl AppView {
         &mut self,
         name: &SharedString,
         result: Result<(ClusterStatus, Arc<DiscoveryCache>), String>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if let Some(state) = self.clusters.get_mut(name) {
@@ -376,6 +429,19 @@ impl AppView {
             }
         }
         self.refresh_rows(cx);
+        // A cluster opens on its overview, unless the user has already moved on.
+        let is_active = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .is_some_and(|tile| tile.name == *name);
+        let idle = self.table.is_none() && self.helm.is_none() && self.overview.is_none();
+        let connected = self
+            .clusters
+            .get(name)
+            .is_some_and(|state| state.discovery.is_some());
+        if is_active && idle && connected {
+            self.open_overview(window, cx);
+        }
     }
 
     fn disconnect(&mut self, index: usize, cx: &mut Context<Self>) {
@@ -386,10 +452,7 @@ impl AppView {
         self.clusters.remove(&name);
         if self.active == Some(index) {
             self.active = None;
-            self.selected = None;
-            self.table = None;
-            self.drawer = None;
-            self.helm = None;
+            self.clear_pages();
         }
         self.refresh_rows(cx);
 
@@ -401,11 +464,8 @@ impl AppView {
     /// Open the table for a resource: subscribe to its watch and show rows as
     /// batches arrive.
     fn open_resource(&mut self, key: &SharedString, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_pages();
         self.selected = Some(key.clone());
-        // Replacing the table aborts the previous watch task.
-        self.table = None;
-        self.drawer = None;
-        self.helm = None;
 
         let Some(cluster) = self
             .active
@@ -482,6 +542,111 @@ impl AppView {
         cx.notify();
     }
 
+    /// Open the command palette, or close it if it is open.
+    fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.palette.is_some() {
+            self.close_palette(window, cx);
+            return;
+        }
+        let items = self.palette_items();
+        let view = cx.new(|cx| PaletteView::new(items, window, cx));
+        let events = cx.subscribe_in(
+            &view,
+            window,
+            |this, _, event: &PaletteEvent, window, cx| {
+                this.close_palette(window, cx);
+                if let PaletteEvent::Choose(command) = event {
+                    this.run_command(command, window, cx);
+                }
+            },
+        );
+        self.palette = Some(OpenPalette {
+            view,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    fn close_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.palette = None;
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Everything the palette can jump to: pages and clusters first, then
+    /// resource types by section.
+    fn palette_items(&self) -> Vec<Item> {
+        let mut items = Vec::new();
+        let discovery = self.active_state().and_then(|s| s.discovery.as_deref());
+        if discovery.is_some() {
+            items.push(Item {
+                label: "Overview".into(),
+                hint: "Page".into(),
+                icon: IconName::LayoutDashboard,
+                command: Command::Overview,
+            });
+            items.push(Item {
+                label: "Helm releases".into(),
+                hint: "Page".into(),
+                icon: IconName::ShipWheel,
+                command: Command::Helm,
+            });
+        }
+        items.extend(self.tiles.iter().enumerate().map(|(index, tile)| Item {
+            label: tile.display.clone(),
+            hint: "Switch cluster".into(),
+            icon: IconName::Globe,
+            command: Command::Cluster(index),
+        }));
+        if let Some(discovery) = discovery {
+            for group in visible_groups(discovery, "", &HashSet::new()) {
+                let hint: SharedString = group.category.label().into();
+                items.extend(group.resources.into_iter().map(|resource| Item {
+                    label: resource.kind.clone().into(),
+                    hint: hint.clone(),
+                    icon: group.category.icon(),
+                    command: Command::Resource(resource.key.clone().into()),
+                }));
+            }
+        }
+        items
+    }
+
+    fn run_command(&mut self, command: &Command, window: &mut Window, cx: &mut Context<Self>) {
+        match command {
+            Command::Overview => self.open_overview(window, cx),
+            Command::Helm => self.open_helm(window, cx),
+            Command::Cluster(index) => self.select_cluster(*index, window, cx),
+            Command::Resource(key) => self.open_resource(key, window, cx),
+        }
+    }
+
+    /// Show the overview of the active cluster.
+    fn open_overview(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cluster) = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone())
+        else {
+            return;
+        };
+        self.clear_pages();
+        let (core, runtime) = (&self.core, &self.runtime);
+        let view = cx.new(|cx| OverviewView::new(core, runtime, cluster, cx));
+        let events = cx.subscribe_in(
+            &view,
+            window,
+            |this, _, event: &OverviewEvent, window, cx| match event {
+                OverviewEvent::Open(target) => this.show_drawer(target.clone(), window, cx),
+            },
+        );
+        self.overview = Some(OpenOverview {
+            view,
+            _events: events,
+        });
+        cx.notify();
+    }
+
     /// Show the Helm releases of the active cluster.
     fn open_helm(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(cluster) = self
@@ -491,9 +656,7 @@ impl AppView {
         else {
             return;
         };
-        self.selected = None;
-        self.table = None;
-        self.drawer = None;
+        self.clear_pages();
         let (core, runtime) = (&self.core, &self.runtime);
         self.helm = Some(cx.new(|cx| HelmView::new(core, runtime, cluster, window, cx)));
         cx.notify();
@@ -521,7 +684,11 @@ impl AppView {
             namespace,
             name,
         };
+        self.show_drawer(target, window, cx);
+    }
 
+    /// Open the detail drawer for an object, replacing any drawer already open.
+    fn show_drawer(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         let view = cx.new(|cx| DrawerView::new(&self.core, &self.runtime, target, window, cx));
         let close = cx.subscribe(&view, |this, _, event: &DrawerEvent, cx| match event {
             DrawerEvent::Close => {
@@ -679,11 +846,15 @@ impl AppView {
         // borrowed while the tiles are rendered.
         let (background, border, muted) = {
             let theme = cx.theme();
-            (theme.sidebar, theme.sidebar_border, theme.muted_foreground)
+            (
+                theme.title_bar,
+                theme.sidebar_border,
+                theme.muted_foreground,
+            )
         };
         let mut rail = v_flex()
             .id("rail")
-            .w(px(72.))
+            .w(px(64.))
             .h_full()
             .flex_none()
             .py_3()
@@ -712,85 +883,142 @@ impl AppView {
         let tile = &self.tiles[index];
         let is_active = self.active == Some(index);
 
-        let dot = match self.clusters.get(&tile.name).map(|s| &s.status) {
-            Some(ClusterStatus::Connected { .. }) => theme.success,
-            Some(ClusterStatus::Connecting | ClusterStatus::Degraded { .. }) => theme.warning,
-            Some(ClusterStatus::Unreachable { .. }) => theme.danger,
-            _ => theme.muted_foreground,
+        let (dot, state) = match self.clusters.get(&tile.name).map(|s| &s.status) {
+            Some(ClusterStatus::Connected { .. }) => (Some(theme.success), "Connected"),
+            Some(ClusterStatus::Connecting | ClusterStatus::Degraded { .. }) => {
+                (Some(theme.warning), "Connecting")
+            }
+            Some(ClusterStatus::Unreachable { .. }) => (Some(theme.danger), "Unreachable"),
+            _ => (None, "Not connected"),
         };
-        let border = match (is_active, tile.accent) {
+        let outline = match (is_active, tile.accent) {
             (true, _) => theme.primary,
             (false, Some(accent)) => accent,
-            (false, None) => theme.border,
+            (false, None) => theme.transparent,
         };
+        let (primary, idle, hover, ring) = (
+            theme.primary,
+            theme.secondary,
+            theme.secondary_hover,
+            theme.title_bar,
+        );
+        let tip: SharedString = format!("{} · {state}", tile.display).into();
 
         div()
             .id(("tile", index))
             .relative()
-            .size(px(44.))
+            .w_full()
+            .h(px(44.))
             .flex()
             .items_center()
             .justify_center()
-            .rounded_lg()
-            .border_2()
-            .border_color(border)
-            .bg(if is_active {
-                theme.sidebar_accent
-            } else {
-                theme.secondary
-            })
             .cursor_pointer()
-            .text_sm()
-            .font_semibold()
-            .child(tile.initials.clone())
+            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+            // The selection mark on the left edge, as in the Dock and Arc.
+            .when(is_active, |row| {
+                row.child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top(px(12.))
+                        .w(px(3.))
+                        .h(px(20.))
+                        .rounded_r_full()
+                        .bg(primary),
+                )
+            })
             .child(
                 div()
-                    .absolute()
-                    .bottom(px(2.))
-                    .right(px(2.))
-                    .size(px(10.))
-                    .rounded_full()
-                    .bg(dot),
+                    .size(px(40.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_xl()
+                    .border_1()
+                    .border_color(outline)
+                    .bg(if is_active {
+                        primary.opacity(0.18)
+                    } else {
+                        idle
+                    })
+                    .hover(|tile| tile.bg(hover))
+                    .text_sm()
+                    .font_semibold()
+                    .child(tile.initials.clone()),
             )
-            .on_click(cx.listener(move |this, _, _, cx| this.select_cluster(index, cx)))
+            .when_some(dot, |row, dot| {
+                row.child(
+                    div()
+                        .absolute()
+                        .bottom(px(3.))
+                        .right(px(10.))
+                        .size(px(11.))
+                        .rounded_full()
+                        .border_2()
+                        .border_color(ring)
+                        .bg(dot),
+                )
+            })
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.select_cluster(index, window, cx);
+            }))
     }
 
     fn render_row(&self, index: usize, row: &SidebarRow, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
+        let muted = theme.muted_foreground;
         match row {
-            SidebarRow::Group { name, label, count } => {
-                let name = name.clone();
+            SidebarRow::Group {
+                name,
+                count,
+                icon,
+                open,
+            } => {
+                let key = name.clone();
+                let chevron = if *open {
+                    IconName::ChevronDown
+                } else {
+                    IconName::ChevronRight
+                };
                 h_flex()
                     .id(("group", index))
                     .h(ROW_HEIGHT)
+                    .mt_1()
                     .px_2()
+                    .gap_1p5()
                     .items_center()
-                    .justify_between()
                     .cursor_pointer()
                     .text_xs()
                     .font_semibold()
-                    .text_color(theme.muted_foreground)
-                    .child(label.clone())
-                    .child(count.clone())
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_group(&name, cx)))
+                    .text_color(muted)
+                    .hover(|row| row.text_color(theme.foreground))
+                    .child(Icon::new(chevron).size_3())
+                    .child(Icon::new(*icon).size_3p5())
+                    .child(div().flex_1().child(name.clone()))
+                    .child(div().font_normal().child(count.clone()))
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_group(&key, cx)))
                     .into_any_element()
             }
             SidebarRow::Resource { key, kind } => {
                 let is_selected = self.selected.as_ref() == Some(key);
                 let key = key.clone();
+                let (primary, hover) = (theme.primary, theme.sidebar_accent);
                 div()
                     .id(("resource", index))
                     .h(ROW_HEIGHT)
+                    .ml_4()
                     .px_2()
                     .flex()
                     .items_center()
                     .rounded_md()
                     .cursor_pointer()
                     .text_sm()
+                    // Selection is the accent colour with white text, as in a
+                    // Finder or Mail sidebar.
                     .when(is_selected, |row| {
-                        row.bg(theme.sidebar_accent).font_semibold()
+                        row.bg(primary).text_color(theme.primary_foreground)
                     })
-                    .hover(|row| row.bg(theme.sidebar_accent))
+                    .when(!is_selected, |row| row.hover(|row| row.bg(hover)))
                     .child(kind.clone())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_resource(&key, window, cx);
@@ -803,7 +1031,7 @@ impl AppView {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let shell = v_flex()
-            .w(px(260.))
+            .w(px(248.))
             .h_full()
             .flex_none()
             .bg(theme.sidebar)
@@ -814,12 +1042,16 @@ impl AppView {
             .active_state()
             .is_some_and(|state| state.discovery.is_some());
         if !has_discovery {
+            let text = match self.active {
+                Some(_) => "Connecting…",
+                None => "Choose a cluster on the left to browse its resources.",
+            };
             return shell.child(
                 div()
                     .p_4()
                     .text_sm()
                     .text_color(theme.muted_foreground)
-                    .child("Pick a cluster to see its resources."),
+                    .child(text),
             );
         }
 
@@ -851,21 +1083,168 @@ impl AppView {
             .into_any_element()
         };
 
-        let helm_open = self.helm.is_some();
+        let (primary, hover, on_primary) = (
+            theme.primary,
+            theme.sidebar_accent,
+            theme.primary_foreground,
+        );
+        // The pages that are not a resource list, pinned above the sections.
+        let pinned = |id: &'static str, icon: IconName, label: &'static str, active: bool| {
+            h_flex()
+                .id(id)
+                .h(px(28.))
+                .px_2()
+                .gap_2()
+                .items_center()
+                .rounded_md()
+                .cursor_pointer()
+                .text_sm()
+                .when(active, |row| row.bg(primary).text_color(on_primary))
+                .when(!active, |row| row.hover(|row| row.bg(hover)))
+                .child(Icon::new(icon).size_4())
+                .child(label)
+        };
+        let open_overview = cx.listener(|this, _, window, cx| this.open_overview(window, cx));
         let open_helm = cx.listener(|this, _, window, cx| this.open_helm(window, cx));
+        let pinned_rows = v_flex()
+            .px_2()
+            .pt_3()
+            .gap_0p5()
+            .child(
+                pinned(
+                    "overview",
+                    IconName::LayoutDashboard,
+                    "Overview",
+                    self.overview.is_some(),
+                )
+                .on_click(open_overview),
+            )
+            .child(
+                pinned(
+                    "helm",
+                    IconName::ShipWheel,
+                    "Helm releases",
+                    self.helm.is_some(),
+                )
+                .on_click(open_helm),
+            );
+
         shell
-            .child(div().px_2().pt_2().child(
-                chip("helm", "Helm releases", true, helm_open, cx.theme()).on_click(open_helm),
-            ))
+            .child(pinned_rows)
             .child(div().p_2().child(Input::new(&self.filter)))
             .child(body)
+    }
+
+    /// The toolbar across the top. It doubles as the window's drag handle, and
+    /// leaves room on the left for the traffic lights.
+    fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let bar = h_flex()
+            .window_control_area(WindowControlArea::Drag)
+            .h(px(48.))
+            .w_full()
+            .flex_none()
+            .pl(px(84.))
+            .pr_4()
+            .gap_3()
+            .items_center()
+            .bg(theme.title_bar)
+            .border_b_1()
+            .border_color(theme.title_bar_border);
+
+        let (muted, field, field_hover) = (
+            theme.muted_foreground,
+            theme.secondary,
+            theme.secondary_hover,
+        );
+        // The search field sits in the middle of the bar. It looks like a field
+        // so that people find it; it opens the palette.
+        let search = h_flex()
+            .id("search")
+            .w(px(320.))
+            .h(px(28.))
+            .px_2()
+            .gap_2()
+            .items_center()
+            .rounded_lg()
+            .cursor_pointer()
+            .bg(field)
+            .hover(|search| search.bg(field_hover))
+            .text_sm()
+            .text_color(muted)
+            .child(Icon::new(IconName::Search).size_4())
+            .child(div().flex_1().child("Search"))
+            .child(div().text_xs().child("⌘K"))
+            .tooltip(|window, cx| {
+                Tooltip::new("Jump to a resource, cluster or page").build(window, cx)
+            })
+            .on_click(cx.listener(|this, _, window, cx| this.toggle_palette(window, cx)));
+
+        let (Some(index), Some(state)) = (self.active, self.active_state()) else {
+            return bar
+                .child(div().font_semibold().text_color(muted).child("Kubernaut"))
+                .child(div().flex_1())
+                .child(search)
+                .child(div().flex_1());
+        };
+        let tile = &self.tiles[index];
+        let tone = match state.status {
+            ClusterStatus::Connected { .. } => theme.success,
+            ClusterStatus::Connecting | ClusterStatus::Degraded { .. } => theme.warning,
+            ClusterStatus::Unreachable { .. } => theme.danger,
+            ClusterStatus::Disconnected => theme.muted_foreground,
+        };
+
+        bar.child(
+            div()
+                .text_base()
+                .font_semibold()
+                .child(tile.display.clone()),
+        )
+        .child(pill(state.status_label.clone(), tone))
+        .child(div().flex_1())
+        .child(search)
+        .child(div().flex_1())
+        .child(
+            chip("disconnect", "Disconnect", true, false, theme)
+                .on_click(cx.listener(move |this, _, _, cx| this.disconnect(index, cx))),
+        )
+    }
+
+    /// One line along the bottom: what is connected, and how much is shown.
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        let (left, tone) = match self.active_state() {
+            Some(state) => (state.status_label.clone(), theme.muted_foreground),
+            None => ("No cluster selected".into(), theme.muted_foreground),
+        };
+        let shown = self
+            .table
+            .as_ref()
+            .map(|table| format!("{} · {}", table.title, table.count_label));
+
+        h_flex()
+            .h(px(24.))
+            .w_full()
+            .flex_none()
+            .px_3()
+            .gap_3()
+            .items_center()
+            .bg(theme.status_bar)
+            .border_t_1()
+            .border_color(theme.status_bar_border)
+            .text_xs()
+            .text_color(tone)
+            .child(left)
+            .child(div().flex_1())
+            .children(shown)
     }
 
     fn render_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let main = v_flex().flex_1().h_full().min_w_0();
 
-        let (Some(index), Some(state)) = (self.active, self.active_state()) else {
+        let (Some(_), Some(state)) = (self.active, self.active_state()) else {
             return main.child(
                 div()
                     .size_full()
@@ -876,61 +1255,28 @@ impl AppView {
                     .child("Connect a cluster to see its overview."),
             );
         };
-        let tile = &self.tiles[index];
-
-        let tone = match state.status {
-            ClusterStatus::Connected { .. } => theme.success,
-            ClusterStatus::Connecting | ClusterStatus::Degraded { .. } => theme.warning,
-            ClusterStatus::Unreachable { .. } => theme.danger,
-            ClusterStatus::Disconnected => theme.muted_foreground,
-        };
-
-        let header = h_flex()
-            .h(px(52.))
-            .flex_none()
-            .px_4()
-            .gap_3()
-            .items_center()
-            .border_b_1()
-            .border_color(theme.border)
-            .child(div().text_lg().font_semibold().child(tile.display.clone()))
-            .child(
-                div()
-                    .px_2()
-                    .py_1()
-                    .rounded_md()
-                    .text_xs()
-                    .text_color(tone)
-                    .border_1()
-                    .border_color(tone)
-                    .child(state.status_label.clone()),
-            )
-            .child(div().flex_1())
-            .child(
-                div()
-                    .id("disconnect")
-                    .px_3()
-                    .py_1()
-                    .rounded_md()
-                    .cursor_pointer()
-                    .text_sm()
-                    .border_1()
-                    .border_color(theme.border)
-                    .hover(|b| b.bg(theme.secondary))
-                    .child("Disconnect")
-                    .on_click(cx.listener(move |this, _, _, cx| this.disconnect(index, cx))),
-            );
 
         if let Some(error) = &state.error {
-            return main
-                .child(header)
-                .child(div().p_4().text_color(theme.danger).child(error.clone()));
+            return main.child(div().p_4().text_color(theme.danger).child(error.clone()));
         }
         if let Some(helm) = &self.helm {
-            return main.child(header).child(helm.clone());
+            return main.child(helm.clone());
+        }
+        if let Some(overview) = &self.overview {
+            return main.child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(overview.view.clone())
+                    .when_some(self.drawer.as_ref(), |row, drawer| {
+                        row.child(drawer.view.clone())
+                    }),
+            );
         }
         match &self.table {
-            Some(table) => main.child(header).child(
+            Some(table) => main.child(
                 // A plain flex row, not `h_flex()`: that centres its children
                 // vertically, and the table must stretch to the full height.
                 div()
@@ -943,7 +1289,7 @@ impl AppView {
                         row.child(drawer.view.clone())
                     }),
             ),
-            None => main.child(header).child(
+            None => main.child(
                 div()
                     .p_4()
                     .text_color(theme.muted_foreground)
@@ -955,13 +1301,31 @@ impl AppView {
 
 impl Render for AppView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        h_flex()
+        v_flex()
             .size_full()
+            .relative()
+            .key_context(KEY_CONTEXT)
+            .track_focus(&self.focus)
+            .on_action(cx.listener(|this, _: &TogglePalette, window, cx| {
+                this.toggle_palette(window, cx);
+            }))
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(self.render_rail(cx))
-            .child(self.render_sidebar(cx))
-            .child(self.render_main(cx))
+            .child(self.render_titlebar(cx))
+            .child(
+                // A plain flex row so the three columns stretch to full height.
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.render_rail(cx))
+                    .child(self.render_sidebar(cx))
+                    .child(self.render_main(cx)),
+            )
+            .child(self.render_status_bar(cx))
+            .when_some(self.palette.as_ref(), |root, palette| {
+                root.child(palette.view.clone())
+            })
     }
 }
 
@@ -1092,51 +1456,53 @@ fn build_tiles(
     (tiles, rail)
 }
 
-/// One API group as the sidebar shows it.
+/// One section of the sidebar.
 struct VisibleGroup<'a> {
-    name: String,
+    category: Category,
     open: bool,
     resources: Vec<&'a ResourceDescriptor>,
 }
 
-/// The groups and resources the sidebar lists for a filter.
+/// The sections and resources the sidebar lists for a filter.
 ///
-/// Only watchable types are listed. Groups with no match are dropped, and a
-/// non-empty filter opens every group it matches in, since a search that hid
-/// its results behind a collapsed header would look like no results.
+/// Only watchable types are listed, grouped by what they are for rather than
+/// by API group. Sections with no match are dropped, and a non-empty filter
+/// opens every section it matches in, since a search that hid its results
+/// behind a collapsed header would look like no results.
 fn visible_groups<'a>(
     discovery: &'a DiscoveryCache,
     needle: &str,
     collapsed: &HashSet<SharedString>,
 ) -> Vec<VisibleGroup<'a>> {
-    discovery
+    let mut sections: BTreeMap<Category, Vec<(usize, &ResourceDescriptor)>> = BTreeMap::new();
+    // A kind served at several versions (autoscaling v1 and v2) is one list.
+    let mut seen: HashSet<(&str, &str)> = HashSet::new();
+    for resource in discovery
         .groups
         .iter()
-        .filter_map(|group| {
-            let resources: Vec<_> = group
-                .resources
-                .iter()
-                .filter(|r| r.watchable)
-                .filter(|r| {
-                    needle.is_empty()
-                        || r.kind.to_lowercase().contains(needle)
-                        || r.plural.to_lowercase().contains(needle)
-                })
-                .collect();
-            if resources.is_empty() {
-                return None;
+        .flat_map(|group| &group.resources)
+        .filter(|r| r.watchable)
+        .filter(|r| seen.insert((&r.group, &r.kind)))
+        .filter(|r| {
+            needle.is_empty()
+                || r.kind.to_lowercase().contains(needle)
+                || r.plural.to_lowercase().contains(needle)
+                || r.short_names.iter().any(|s| s.to_lowercase() == needle)
+        })
+    {
+        let (category, rank) = categories::classify(&resource.kind, resource.is_crd);
+        sections.entry(category).or_default().push((rank, resource));
+    }
+
+    sections
+        .into_iter()
+        .map(|(category, mut resources)| {
+            resources.sort_by(|(ra, a), (rb, b)| ra.cmp(rb).then_with(|| a.kind.cmp(&b.kind)));
+            VisibleGroup {
+                category,
+                open: !needle.is_empty() || !collapsed.contains(category.label()),
+                resources: resources.into_iter().map(|(_, r)| r).collect(),
             }
-            let name = if group.name.is_empty() {
-                "core".to_string()
-            } else {
-                group.name.clone()
-            };
-            let open = !needle.is_empty() || !collapsed.contains(name.as_str());
-            Some(VisibleGroup {
-                name,
-                open,
-                resources,
-            })
         })
         .collect()
 }
@@ -1154,9 +1520,10 @@ fn build_rows(
     let mut rows = Vec::with_capacity(capacity);
     for group in groups {
         rows.push(SidebarRow::Group {
-            label: group.name.to_uppercase().into(),
+            name: group.category.label().into(),
             count: group.resources.len().to_string().into(),
-            name: group.name.into(),
+            icon: group.category.icon(),
+            open: group.open,
         });
         if group.open {
             rows.extend(group.resources.into_iter().map(|r| SidebarRow::Resource {
@@ -1203,6 +1570,7 @@ mod tests {
     // Explicit, not `super::*`: that would glob-import GPUI's `#[test]` macro
     // and shadow Rust's own.
     use super::{SidebarRow, build_rows, build_tiles, initials, parse_colour, visible_groups};
+    use crate::categories::Category;
     use gpui_kit::SharedString;
     use k8s_app::preferences::{ClusterProfile, Preferences};
     use k8s_core::{ContextEntry, DiscoveryCache};
@@ -1225,11 +1593,11 @@ mod tests {
     }
 
     fn discovery() -> DiscoveryCache {
-        let resource = |kind: &str, plural: &str, watchable: bool| {
+        let resource = |kind: &str, plural: &str, watchable: bool, is_crd: bool| {
             serde_json::json!({
                 "key": format!("x/v1/{plural}"), "group": "", "version": "v1",
                 "kind": kind, "plural": plural, "apiVersion": "v1",
-                "namespaced": true, "verbs": [], "isCrd": false,
+                "namespaced": true, "verbs": [], "isCrd": is_crd,
                 "watchable": watchable, "editable": true, "deletable": true,
             })
         };
@@ -1237,12 +1605,16 @@ mod tests {
             "cluster": "test",
             "groups": [
                 {"name": "", "preferredVersion": "v1", "resources": [
-                    resource("Pod", "pods", true),
-                    resource("PodTemplate", "podtemplates", true),
-                    resource("Binding", "bindings", false),
+                    resource("PodTemplate", "podtemplates", true, false),
+                    resource("Pod", "pods", true, false),
+                    resource("Binding", "bindings", false, false),
+                    resource("ConfigMap", "configmaps", true, false),
                 ]},
                 {"name": "apps", "preferredVersion": "v1", "resources": [
-                    resource("Deployment", "deployments", true),
+                    resource("Deployment", "deployments", true, false),
+                ]},
+                {"name": "cert-manager.io", "preferredVersion": "v1", "resources": [
+                    resource("Certificate", "certificates", true, true),
                 ]},
             ],
             "fetchedAt": "2026-01-01T00:00:00Z",
@@ -1252,31 +1624,37 @@ mod tests {
     }
 
     #[test]
-    fn sidebar_lists_watchable_types_and_names_the_empty_group_core() {
+    fn sidebar_groups_types_by_purpose_not_by_api_group() {
         let cache = discovery();
         let groups = visible_groups(&cache, "", &HashSet::new());
-        assert_eq!(groups.len(), 2);
-        assert_eq!(groups[0].name, "core");
+
+        let sections: Vec<_> = groups.iter().map(|g| g.category).collect();
+        assert_eq!(
+            sections,
+            [Category::Workloads, Category::Config, Category::Custom]
+        );
+        // Pod and Deployment come from different API groups but share a
+        // section, most-used first; Binding is not watchable.
         let kinds: Vec<_> = groups[0].resources.iter().map(|r| &*r.kind).collect();
-        assert_eq!(kinds, ["Pod", "PodTemplate"], "Binding is not watchable");
+        assert_eq!(kinds, ["Pod", "Deployment", "PodTemplate"]);
     }
 
     #[test]
-    fn filter_matches_kind_or_plural_and_drops_groups_without_a_match() {
+    fn filter_matches_kind_or_plural_and_drops_sections_without_a_match() {
         let cache = discovery();
         let groups = visible_groups(&cache, "deploy", &HashSet::new());
         assert_eq!(groups.len(), 1);
-        assert_eq!(groups[0].name, "apps");
+        assert_eq!(groups[0].category, Category::Workloads);
 
         // Plural, not just kind.
-        let groups = visible_groups(&cache, "podtemplates", &HashSet::new());
+        let groups = visible_groups(&cache, "configmaps", &HashSet::new());
         assert_eq!(groups[0].resources.len(), 1);
     }
 
     #[test]
-    fn collapsed_groups_stay_closed_until_a_search_matches_inside_them() {
+    fn collapsed_sections_stay_closed_until_a_search_matches_inside_them() {
         let cache = discovery();
-        let collapsed: HashSet<SharedString> = ["core".into()].into();
+        let collapsed: HashSet<SharedString> = ["Workloads".into()].into();
 
         let groups = visible_groups(&cache, "", &collapsed);
         assert!(!groups[0].open);
@@ -1287,17 +1665,17 @@ mod tests {
     }
 
     #[test]
-    fn rows_are_flat_and_a_collapsed_group_contributes_only_its_header() {
+    fn rows_are_flat_and_a_collapsed_section_contributes_only_its_header() {
         let cache = discovery();
         let open = build_rows(&cache, "", &HashSet::new());
-        // core header + Pod + PodTemplate, apps header + Deployment.
-        assert_eq!(open.len(), 5);
+        // Workloads header + 3, Config header + 1, Custom header + 1.
+        assert_eq!(open.len(), 8);
 
-        let collapsed: HashSet<SharedString> = ["core".into()].into();
+        let collapsed: HashSet<SharedString> = ["Workloads".into()].into();
         let rows = build_rows(&cache, "", &collapsed);
-        assert_eq!(rows.len(), 3);
-        assert!(matches!(rows[0], SidebarRow::Group { .. }));
-        assert!(matches!(rows[1], SidebarRow::Group { .. }));
+        assert_eq!(rows.len(), 5);
+        assert!(matches!(rows[0], SidebarRow::Group { open: false, .. }));
+        assert!(matches!(rows[1], SidebarRow::Group { open: true, .. }));
         assert!(matches!(rows[2], SidebarRow::Resource { .. }));
     }
 
