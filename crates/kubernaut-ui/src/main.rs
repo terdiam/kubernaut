@@ -7,6 +7,7 @@ mod logs;
 mod rows;
 mod table;
 mod terminal;
+mod yaml;
 
 use std::{cell::Cell, process::ExitCode, rc::Rc, sync::Arc};
 

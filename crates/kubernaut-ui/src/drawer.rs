@@ -7,23 +7,18 @@ use std::{cmp::Reverse, ops::Range, sync::Arc};
 
 use gpui_kit::{
     base::StyledExt,
-    component::{
-        ActiveTheme, h_flex,
-        input::{Editor, EditorState},
-        v_flex,
-    },
+    component::{ActiveTheme, h_flex, v_flex},
     prelude::FluentBuilder,
     *,
 };
 use k8s_app::{AppCore, present};
-use k8s_core::objects;
 use k8s_ops::{
     logs::LogTarget,
     related::{self, EventRow},
 };
 use tokio::runtime::Handle;
 
-use crate::{log_buffer::log_target, logs::LogView, terminal::TerminalView};
+use crate::{log_buffer::log_target, logs::LogView, terminal::TerminalView, yaml::YamlView};
 
 const ROW_HEIGHT: Pixels = px(28.);
 
@@ -77,8 +72,7 @@ pub struct DrawerView {
     /// A shell, only for pods, opened when its tab is first shown.
     terminal: Option<Entity<TerminalView>>,
     tab: Tab,
-    yaml: Entity<EditorState>,
-    yaml_load: Load<()>,
+    yaml: Entity<YamlView>,
     events: Load<Vec<EventLine>>,
     events_scroll: UniformListScrollHandle,
 }
@@ -93,30 +87,7 @@ impl DrawerView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let yaml = cx.new(|cx| {
-            EditorState::new(window, cx)
-                .language("yaml")
-                .line_number(true)
-        });
-
-        let yaml_task = runtime.spawn(fetch_yaml(Arc::clone(core), target.clone()));
-        cx.spawn_in(window, async move |this, cx| {
-            let result = yaml_task.await.unwrap_or_else(|err| Err(err.to_string()));
-            this.update_in(cx, |this, window, cx| match result {
-                Ok(text) => {
-                    this.yaml
-                        .update(cx, |editor, cx| editor.set_value(text, window, cx));
-                    this.yaml_load = Load::Ready(());
-                    cx.notify();
-                }
-                Err(message) => {
-                    this.yaml_load = Load::Failed(message.into());
-                    cx.notify();
-                }
-            })
-            .ok();
-        })
-        .detach();
+        let yaml = cx.new(|cx| YamlView::new(core, runtime, &target, window, cx));
 
         let events_task = runtime.spawn(fetch_events(Arc::clone(core), target.clone()));
         cx.spawn(async move |this, cx| {
@@ -141,7 +112,6 @@ impl DrawerView {
             target,
             tab: Tab::Yaml,
             yaml,
-            yaml_load: Load::Loading,
             events: Load::Loading,
             events_scroll: UniformListScrollHandle::new(),
         }
@@ -292,29 +262,6 @@ impl DrawerView {
             .into_any_element(),
         }
     }
-
-    fn render_yaml(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        match &self.yaml_load {
-            Load::Loading => div()
-                .p_4()
-                .text_sm()
-                .text_color(theme.muted_foreground)
-                .child("Loading…")
-                .into_any_element(),
-            Load::Failed(error) => div()
-                .p_4()
-                .text_sm()
-                .text_color(theme.danger)
-                .child(error.clone())
-                .into_any_element(),
-            Load::Ready(()) => Editor::new(&self.yaml)
-                .readonly(true)
-                .bordered(false)
-                .h(relative(1.))
-                .into_any_element(),
-        }
-    }
 }
 
 impl Render for DrawerView {
@@ -397,7 +344,7 @@ impl Render for DrawerView {
                     .flex()
                     .flex_col()
                     .child(match self.tab {
-                        Tab::Yaml => self.render_yaml(cx),
+                        Tab::Yaml => self.yaml.clone().into_any_element(),
                         Tab::Events => self.render_events(cx),
                         Tab::Logs => match &self.logs {
                             Some(logs) => logs.clone().into_any_element(),
@@ -410,22 +357,6 @@ impl Render for DrawerView {
                     }),
             )
     }
-}
-
-async fn fetch_yaml(core: Arc<AppCore>, target: Target) -> Result<String, String> {
-    let handle = core
-        .clusters
-        .require(&target.cluster)
-        .map_err(|err| err.to_string())?;
-    let object = objects::get(
-        &handle,
-        &target.resource,
-        target.namespace.as_deref(),
-        &target.name,
-    )
-    .await
-    .map_err(|err| err.to_string())?;
-    objects::to_yaml(&object, false).map_err(|err| err.to_string())
 }
 
 async fn fetch_events(core: Arc<AppCore>, target: Target) -> Result<Vec<EventLine>, String> {
