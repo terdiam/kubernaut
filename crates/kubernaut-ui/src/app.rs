@@ -42,6 +42,7 @@ use crate::{
     cluster_info,
     crashes::CrashView,
     create::CreateView,
+    drain,
     drawer::{DrawerEvent, DrawerView, Tab as DrawerTab, Target},
     gitops::{GitOpsEvent, GitOpsView},
     helm::HelmView,
@@ -1645,6 +1646,7 @@ impl AppView {
             RowAction::CopyYaml => self.copy_yaml(target, window, cx),
             RowAction::Cordon => self.run_op(Op::Cordon(true), target, window, cx),
             RowAction::Uncordon => self.run_op(Op::Cordon(false), target, window, cx),
+            RowAction::Drain => self.drain_node(target, window, cx),
             RowAction::Restart => self.confirm_op(
                 Op::Restart,
                 target,
@@ -1662,6 +1664,82 @@ impl AppView {
                 cx,
             ),
         }
+    }
+
+    /// Drain a node: look at what it would do, ask, then do it.
+    fn drain_node(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        // Refuse early on a protected cluster, before a question that cannot be
+        // acted on.
+        if let Err(reason) = self.core.ensure_writable(&target.cluster) {
+            toast_error(window, cx, format!("Cannot drain {}", target.name), reason);
+            return;
+        }
+        let core = Arc::clone(&self.core);
+        let (cluster, node) = (target.cluster.to_string(), target.name.to_string());
+        let task = self
+            .runtime
+            .spawn(async move { object_ops::drain_preview(&core, &cluster, &node, false).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(preview) => this.confirm_drain(target, &preview, window, cx),
+                Err(reason) => toast_error(
+                    window,
+                    cx,
+                    format!("Could not look at {}", target.name),
+                    reason,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn confirm_drain(
+        &mut self,
+        target: Target,
+        preview: &k8s_ops::actions::DrainReport,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        let node = target.name.clone();
+        drain::open_confirm(window, cx, &node, preview, move |standalone, window, cx| {
+            owner
+                .update(cx, |app, cx| {
+                    app.run_drain(target.clone(), standalone, window, cx);
+                })
+                .ok();
+        });
+    }
+
+    fn run_drain(
+        &mut self,
+        target: Target,
+        delete_standalone_pods: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        toast_success(window, cx, format!("Draining {}…", target.name));
+        let core = Arc::clone(&self.core);
+        let (cluster, node) = (target.cluster.to_string(), target.name.to_string());
+        let task = self.runtime.spawn(async move {
+            object_ops::drain(&core, &cluster, &node, delete_standalone_pods).await
+        });
+        cx.spawn_in(window, async move |_, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            cx.update(|window, cx| match result {
+                Ok(report) => drain::open_result(window, cx, &target.name, &report),
+                Err(reason) => toast_error(
+                    window,
+                    cx,
+                    format!("Could not drain {}", target.name),
+                    reason,
+                ),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Pin an object to the sidebar, or take it off. The list on screen changes

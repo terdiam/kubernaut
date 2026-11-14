@@ -16,6 +16,7 @@ mod crashes;
 mod create;
 mod diagnose;
 mod diff;
+mod drain;
 mod drawer;
 mod emulator;
 mod form;

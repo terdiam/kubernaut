@@ -119,6 +119,20 @@ pub struct DrainReport {
 pub struct SkippedPod {
     pub name: String,
     pub reason: String,
+    pub kind: SkipKind,
+}
+
+/// Why a drain leaves a pod where it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SkipKind {
+    /// A DaemonSet would recreate it on the same node at once.
+    DaemonSet,
+    /// Owned by the kubelet, not the apiserver.
+    Static,
+    /// No controller would recreate it elsewhere. Draining may be told to
+    /// delete these anyway.
+    Standalone,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -163,6 +177,14 @@ pub async fn drain(
         .list(&ListParams::default().fields(&format!("spec.nodeName={node}")))
         .await?;
 
+    // The shared client retries a refused request (429, 503, 504) fifteen times
+    // with growing waits, which for an eviction a PodDisruptionBudget will not
+    // allow is minutes per pod. A drain wants the refusal at once, to report it,
+    // so evictions go through a client that asks once.
+    let mut once = cluster.config.clone();
+    once.default_retry = false;
+    let evictions = kube::Client::try_from(once)?;
+
     let mut report = DrainReport {
         node: node.to_string(),
         evicted: Vec::new(),
@@ -188,6 +210,7 @@ pub async fn drain(
                 report.skipped.push(SkippedPod {
                     name: label,
                     reason: "managed by a DaemonSet".into(),
+                    kind: SkipKind::DaemonSet,
                 });
                 continue;
             }
@@ -199,6 +222,7 @@ pub async fn drain(
                 report.skipped.push(SkippedPod {
                     name: label,
                     reason: "static pod managed by the kubelet".into(),
+                    kind: SkipKind::Static,
                 });
                 continue;
             }
@@ -206,6 +230,7 @@ pub async fn drain(
                 report.skipped.push(SkippedPod {
                     name: label,
                     reason: "not managed by a controller; it would not be recreated".into(),
+                    kind: SkipKind::Standalone,
                 });
                 continue;
             }
@@ -217,7 +242,7 @@ pub async fn drain(
             continue;
         }
 
-        let scoped: Api<Pod> = Api::namespaced(cluster.client.clone(), &namespace);
+        let scoped: Api<Pod> = Api::namespaced(evictions.clone(), &namespace);
         match scoped.evict(&name, &EvictParams::default()).await {
             Ok(_) => report.evicted.push(label),
             Err(kube::Error::Api(status)) => report.blocked.push(BlockedPod {

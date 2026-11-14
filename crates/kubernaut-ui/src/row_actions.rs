@@ -24,6 +24,7 @@ pub enum RowAction {
     Restart,
     Cordon,
     Uncordon,
+    Drain,
     Delete,
 }
 
@@ -41,6 +42,7 @@ impl RowAction {
             Self::Restart => "Restart",
             Self::Cordon => "Cordon",
             Self::Uncordon => "Uncordon",
+            Self::Drain => "Drain…",
             Self::Delete => "Delete…",
         }
     }
@@ -57,6 +59,7 @@ impl RowAction {
             Self::Restart => IconName::RotateCw,
             Self::Cordon => IconName::Pause,
             Self::Uncordon => IconName::Play,
+            Self::Drain => IconName::Download,
             Self::Delete => IconName::Delete,
         }
     }
@@ -99,6 +102,7 @@ pub fn groups(resource: &str, pinned: bool) -> Vec<Vec<RowAction>> {
     if is_node {
         change.push(RowAction::Cordon);
         change.push(RowAction::Uncordon);
+        change.push(RowAction::Drain);
     }
     // Delete is always last and alone with its kind of action, so it is not
     // hit by accident while reaching for something else.
@@ -220,6 +224,15 @@ mod tests {
     fn nodes_can_be_cordoned_either_way() {
         let node = flat("core/v1/nodes");
         assert!(node.contains(&RowAction::Cordon) && node.contains(&RowAction::Uncordon));
+    }
+
+    #[test]
+    fn only_nodes_can_be_drained_and_it_sits_before_delete() {
+        let node = flat("core/v1/nodes");
+        let drain = node.iter().position(|a| *a == RowAction::Drain);
+        let delete = node.iter().position(|a| *a == RowAction::Delete);
+        assert!(drain.is_some() && drain < delete);
+        assert!(!flat("core/v1/pods").contains(&RowAction::Drain));
     }
 
     #[test]

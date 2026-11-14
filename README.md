@@ -94,7 +94,7 @@ version had that this one does not yet.
   confirmation names the first few; one failure does not stop the rest and each
   is reported.
 - A right-click menu per row: open, logs, shell, forward a port, copy name or
-  YAML, restart, cordon, delete — only what applies to the kind.
+  YAML, restart, cordon, drain, delete — only what applies to the kind.
 - **Pin** any object from its menu for one-click access under a PINNED heading
   in the sidebar, whatever list or page is open; unpin with the × on the row.
   Pins are kept per cluster.
@@ -226,6 +226,17 @@ resume through the controllers' own annotations, so neither CLI is required.
 Firing and silenced alerts from the cluster's Alertmanager, found through the
 apiserver proxy with no port-forward. Silence an alert by name for an hour, four
 hours or a day, or end a silence early.
+
+### Draining a node
+
+**Drain…** on a node shows what a drain would do before it does it: the pods
+that will be evicted, and what is left alone and why (DaemonSet pods, static
+pods, and pods with no controller, which would not be recreated, with a box to
+delete those too). On confirmation the node is cordoned and its pods are evicted
+through the eviction API, so PodDisruptionBudgets are respected. A pod a budget
+refuses is not forced or waited for: the result says so, with the cluster's own
+message, and the node stays cordoned for you to drain again. Refused on a
+protected cluster and audited.
 
 ### Node labels and taints
 

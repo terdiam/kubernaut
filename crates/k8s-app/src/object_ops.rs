@@ -7,7 +7,9 @@
 use std::collections::BTreeMap;
 
 use k8s_ops::{
-    actions::{self, BulkOutcome, DeleteRequest, ExportResult, TargetRef},
+    actions::{
+        self, BulkOutcome, DeleteRequest, DrainOptions, DrainReport, ExportResult, TargetRef,
+    },
     node_edit::{self, NodeTags, Taint},
 };
 
@@ -57,6 +59,55 @@ pub async fn set_cordoned(
     let result = actions::set_cordoned(&handle, node, cordoned).await;
     let action = if cordoned { "cordon" } else { "uncordon" };
     core.record_audit(cluster, action, &format!("nodes/{node}"), &result);
+    result.map_err(|e| e.to_string())
+}
+
+/// What draining a node would do, without cordoning it or evicting anything.
+/// Reading only, so a protected cluster may be previewed.
+pub async fn drain_preview(
+    core: &AppCore,
+    cluster: &str,
+    node: &str,
+    delete_standalone_pods: bool,
+) -> Result<DrainReport, String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let options = DrainOptions {
+        confirmation: node.to_string(),
+        delete_standalone_pods,
+        dry_run: true,
+    };
+    actions::drain(&handle, node, &options)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Cordon a node and evict its pods through the eviction API, which respects
+/// PodDisruptionBudgets. A pod the budget refuses is reported, not forced.
+pub async fn drain(
+    core: &AppCore,
+    cluster: &str,
+    node: &str,
+    delete_standalone_pods: bool,
+) -> Result<DrainReport, String> {
+    core.ensure_writable(cluster)?;
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let options = DrainOptions {
+        confirmation: node.to_string(),
+        delete_standalone_pods,
+        dry_run: false,
+    };
+    let result = actions::drain(&handle, node, &options).await;
+    // Evictions the apiserver refused do not make the drain a failure of this
+    // call, but they are worth a line in the log.
+    let outcome = match &result {
+        Ok(report) if report.blocked.is_empty() => Ok(()),
+        Ok(report) => Err(format!(
+            "{} pods could not be evicted",
+            report.blocked.len()
+        )),
+        Err(err) => Err(err.to_string()),
+    };
+    core.record_audit(cluster, "drain", &format!("nodes/{node}"), &outcome);
     result.map_err(|e| e.to_string())
 }
 
