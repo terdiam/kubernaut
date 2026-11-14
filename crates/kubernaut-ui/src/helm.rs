@@ -33,7 +33,8 @@ const NAMESPACE_WIDTH: Pixels = px(120.);
 const CHART_WIDTH: Pixels = px(150.);
 const REVISION_WIDTH: Pixels = px(36.);
 const STATUS_WIDTH: Pixels = px(104.);
-const AGE_WIDTH: Pixels = px(44.);
+/// Fits the longest age `write_age` makes, such as `12h34m`, on one line.
+const AGE_WIDTH: Pixels = px(72.);
 
 /// One release as the list draws it. Labels are built once, at load.
 struct ReleaseLine {
@@ -399,6 +400,8 @@ impl HelmView {
                                             div()
                                                 .w(AGE_WIDTH)
                                                 .flex_none()
+                                                .whitespace_nowrap()
+                                                .truncate()
                                                 .text_color(muted)
                                                 .child(line.age.clone()),
                                         )
