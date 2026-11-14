@@ -182,6 +182,17 @@ Firing and silenced alerts from the cluster's Alertmanager, found through the
 apiserver proxy with no port-forward. Silence an alert by name for an hour, four
 hours or a day, or end a silence early.
 
+### Debug and node shells
+
+- **Debug** tab on a pod adds an ephemeral container (busybox) that shares the
+  process namespace of the pod's first container, so `ps` shows the app's
+  processes. Kubernetes cannot remove an ephemeral container; it stays until
+  the pod is recreated, and the tab says so.
+- **Node shell** tab on a node starts a privileged pod with host namespaces and
+  opens a root shell on the node. The pod is deleted when the drawer closes.
+- Both ask first, name the pod or node, are refused on a protected cluster and
+  are written to the audit log.
+
 ### Safety and privacy
 
 - Deleting, restarting, Helm changes, reconcile, suspend and silencing each ask
@@ -198,7 +209,7 @@ The Tauri and React version had these; they are not ported yet.
 
 - YAML validation against the cluster's OpenAPI schema, node label and taint
   editing, and pruning on apply.
-- Ephemeral debug-container and node shells, and a local kubectl shell.
+- A local kubectl shell.
 - Local crash-log viewing.
 - Automatic updates, and builds for Linux and Windows.
 

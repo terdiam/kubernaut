@@ -9,8 +9,8 @@ use gpui_kit::{
     assets::IconName,
     base::StyledExt,
     component::{
-        ActiveTheme, Icon,
-        button::{Button, ButtonVariants},
+        ActiveTheme, Icon, WindowExt,
+        button::{Button, ButtonVariant, ButtonVariants},
         h_flex,
         menu::DropdownMenu,
         tooltip::Tooltip,
@@ -34,8 +34,8 @@ use crate::{
     metrics::{MetricsView, metric_target},
     quota::QuotaView,
     row_actions::{self, RowAction},
-    terminal::TerminalView,
-    ui::{segment_icon, segmented_bar},
+    terminal::{Request, TerminalView},
+    ui::{Emphasis, button_icon, segment_icon, segmented_bar},
     yaml::YamlView,
 };
 
@@ -86,6 +86,10 @@ pub enum Tab {
     Metrics,
     /// A namespace's resource quota and limit ranges.
     Quota,
+    /// A debug container added to the pod.
+    Debug,
+    /// A root shell on the node.
+    NodeShell,
 }
 
 /// A value that arrives from the cluster.
@@ -114,6 +118,10 @@ pub struct DrawerView {
     logs: Option<Entity<LogView>>,
     /// A shell, only for pods, opened when its tab is first shown.
     terminal: Option<Entity<TerminalView>>,
+    /// A debug container's terminal, once the person has agreed to add one.
+    debug: Option<Entity<TerminalView>>,
+    /// A node shell's terminal, once the person has agreed to open one.
+    node_shell: Option<Entity<TerminalView>>,
     /// Created when the tab is first opened, so a closed tab reads nothing.
     diagnose: Option<(Entity<DiagnoseView>, Subscription)>,
     metrics: Option<Entity<MetricsView>>,
@@ -156,6 +164,8 @@ impl DrawerView {
             log_target: log_target(&target.resource, target.namespace.as_deref(), &target.name),
             logs: None,
             terminal: None,
+            debug: None,
+            node_shell: None,
             diagnose: None,
             metrics: None,
             quota: None,
@@ -176,6 +186,8 @@ impl DrawerView {
             Tab::Diagnose if !self.can_diagnose() => return,
             Tab::Metrics if metric_target(&self.target).is_none() => return,
             Tab::Quota if !self.has_quota() => return,
+            Tab::Debug if !self.has_shell() => return,
+            Tab::NodeShell if !self.has_node_shell() => return,
             _ => {}
         }
         self.tab = tab;
@@ -185,7 +197,8 @@ impl DrawerView {
             Tab::Diagnose => self.ensure_diagnose(window, cx),
             Tab::Metrics => self.ensure_metrics(cx),
             Tab::Quota => self.ensure_quota(cx),
-            Tab::Yaml | Tab::Events => {}
+            // These change the cluster, so they wait for the person to say yes.
+            Tab::Yaml | Tab::Events | Tab::Debug | Tab::NodeShell => {}
         }
         cx.notify();
     }
@@ -304,14 +317,129 @@ impl DrawerView {
             let Some(namespace) = self.target.namespace.as_ref().map(ToString::to_string) else {
                 return;
             };
-            let (core, runtime, target) = (&self.core, &self.runtime, &self.target);
-            self.terminal =
-                Some(cx.new(|cx| TerminalView::new(core, runtime, target, namespace, cx)));
+            let request = Request::Shell {
+                namespace,
+                pod: self.target.name.to_string(),
+            };
+            self.terminal = Some(self.open_terminal(request, cx));
         }
         if let Some(terminal) = &self.terminal {
             let focus = terminal.read(cx).focus_handle().clone();
             window.focus(&focus, cx);
         }
+    }
+
+    fn open_terminal(&self, request: Request, cx: &mut Context<Self>) -> Entity<TerminalView> {
+        let (core, runtime, cluster) = (&self.core, &self.runtime, self.target.cluster.clone());
+        cx.new(|cx| TerminalView::new(core, runtime, cluster, request, cx))
+    }
+
+    fn has_node_shell(&self) -> bool {
+        self.target.resource == "core/v1/nodes"
+    }
+
+    /// Ask before a terminal that changes the cluster, saying what it leaves.
+    fn confirm_session(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
+        let (title, detail, ok): (SharedString, &'static str, &'static str) = match tab {
+            Tab::Debug => (
+                format!("Add a debug container to {}?", self.target.name).into(),
+                "A temporary busybox container joins this pod and shares its processes. An \
+                 ephemeral container cannot be removed: the pod keeps it until it is recreated.",
+                "Add it",
+            ),
+            _ => (
+                format!("Open a root shell on {}?", self.target.name).into(),
+                "A privileged pod starts on this node with the host's process, network and IPC \
+                 namespaces, and you enter it as root. It is deleted when you close this tab.",
+                "Open it",
+            ),
+        };
+        let owner = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let owner = owner.clone();
+            dialog
+                .title(title.clone())
+                .description(detail)
+                .ok_text(ok)
+                .ok_variant(ButtonVariant::Danger)
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    owner
+                        .update(cx, |this, cx| this.start_session(tab, window, cx))
+                        .ok();
+                    true
+                })
+        });
+    }
+
+    fn start_session(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
+        let view = match tab {
+            Tab::Debug => {
+                let Some(namespace) = self.target.namespace.as_ref().map(ToString::to_string)
+                else {
+                    return;
+                };
+                let request = Request::Debug {
+                    namespace,
+                    pod: self.target.name.to_string(),
+                };
+                let view = self.open_terminal(request, cx);
+                self.debug = Some(view.clone());
+                view
+            }
+            _ => {
+                let request = Request::Node {
+                    node: self.target.name.to_string(),
+                };
+                let view = self.open_terminal(request, cx);
+                self.node_shell = Some(view.clone());
+                view
+            }
+        };
+        let focus = view.read(cx).focus_handle().clone();
+        window.focus(&focus, cx);
+        cx.notify();
+    }
+
+    /// What a tab shows before its session has started: what it will do, and the
+    /// button that starts it.
+    fn render_start(&self, tab: Tab, cx: &mut Context<Self>) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let (what, label, icon) = match tab {
+            Tab::Debug => (
+                "Add a temporary debug container to this pod, with a shell and the tools of a \
+                 small image, sharing the pod's processes. Use it when the app's own image has \
+                 no shell. The container stays until the pod is recreated.",
+                "Add a debug container…",
+                IconName::SquareTerminal,
+            ),
+            _ => (
+                "Open a root shell on the machine this node runs on, through a privileged pod \
+                 that is deleted when you close the tab. This is full access to the host.",
+                "Open a node shell…",
+                IconName::Server,
+            ),
+        };
+        v_flex()
+            .p_4()
+            .gap_3()
+            .child(div().text_sm().text_color(muted).child(what))
+            .child(
+                h_flex().child(
+                    button_icon(
+                        "drawer-start-session",
+                        icon,
+                        label,
+                        true,
+                        Emphasis::Danger,
+                        cx.theme(),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.confirm_session(tab, window, cx);
+                    })),
+                ),
+            )
+            .into_any_element()
     }
 
     fn render_events(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -527,6 +655,20 @@ impl Render for DrawerView {
                                 "Terminal",
                                 cx,
                             ))
+                            .child(self.render_tab(
+                                Tab::Debug,
+                                IconName::Cog,
+                                "Debug",
+                                cx,
+                            ))
+                        })
+                        .when(self.has_node_shell(), |tabs| {
+                            tabs.child(self.render_tab(
+                                Tab::NodeShell,
+                                IconName::SquareTerminal,
+                                "Node shell",
+                                cx,
+                            ))
                         }),
                 ),
             )
@@ -558,6 +700,14 @@ impl Render for DrawerView {
                         Tab::Terminal => match &self.terminal {
                             Some(terminal) => terminal.clone().into_any_element(),
                             None => div().into_any_element(),
+                        },
+                        Tab::Debug => match &self.debug {
+                            Some(terminal) => terminal.clone().into_any_element(),
+                            None => self.render_start(Tab::Debug, cx),
+                        },
+                        Tab::NodeShell => match &self.node_shell {
+                            Some(terminal) => terminal.clone().into_any_element(),
+                            None => self.render_start(Tab::NodeShell, cx),
                         },
                     }),
             )

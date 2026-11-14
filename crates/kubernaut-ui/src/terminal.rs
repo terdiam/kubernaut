@@ -12,11 +12,13 @@ use gpui_kit::{
     *,
 };
 use k8s_app::AppCore;
-use k8s_ops::exec::{ExecOptions, TerminalEvent};
+use k8s_ops::exec::{
+    DEFAULT_DEBUG_IMAGE, EphemeralOptions, ExecOptions, NodeShellOptions, TerminalEvent,
+    TerminalSession,
+};
 use tokio::{runtime::Handle, sync::mpsc as tokio_mpsc, task::JoinHandle};
 
 use crate::{
-    drawer::Target,
     emulator::{Emulator, Frame, Paint, Style as RunStyle},
     keys,
 };
@@ -30,8 +32,36 @@ enum Input {
     Resize(u16, u16),
 }
 
+/// What to open a terminal on.
+#[derive(Clone)]
+pub enum Request {
+    /// A shell in an existing container.
+    Shell { namespace: String, pod: String },
+    /// A debug container added to a running pod. It stays until the pod is
+    /// recreated, so the caller asks first.
+    Debug { namespace: String, pod: String },
+    /// A privileged pod on a node, entered as root. It is removed when the
+    /// terminal closes.
+    Node { node: String },
+}
+
+impl Request {
+    /// What the audit log calls this, for the ones that change the cluster.
+    fn audit(&self) -> Option<(&'static str, String)> {
+        match self {
+            Self::Shell { .. } => None,
+            Self::Debug { namespace, pod } => {
+                Some(("debugContainer", format!("{namespace}/{pod}")))
+            }
+            Self::Node { node } => Some(("nodeShell", node.clone())),
+        }
+    }
+}
+
 /// What the session task tells the UI.
 enum Message {
+    /// What the session leaves behind or the privileges it holds.
+    Warning(String),
     Events(Vec<TerminalEvent>),
     Failed(String),
     Ended,
@@ -48,6 +78,9 @@ pub struct TerminalView {
     /// The size last sent to the pty, so a resize is sent once, not per paint.
     sent_size: (usize, usize),
     status: Option<SharedString>,
+    /// Shown above the terminal for a session that leaves something behind or
+    /// holds elevated privileges.
+    warning: Option<SharedString>,
     ended: bool,
 }
 
@@ -62,8 +95,8 @@ impl TerminalView {
     pub fn new(
         core: &Arc<AppCore>,
         runtime: &Handle,
-        target: &Target,
-        namespace: String,
+        cluster: SharedString,
+        request: Request,
         cx: &mut Context<Self>,
     ) -> Self {
         let (tx, mut rx) = mpsc::unbounded::<Message>();
@@ -80,18 +113,10 @@ impl TerminalView {
         .detach();
 
         let (input, input_rx) = tokio_mpsc::unbounded_channel();
-        let options = ExecOptions {
-            namespace,
-            pod: target.name.to_string(),
-            container: None,
-            command: Vec::new(),
-            columns: 80,
-            rows: 24,
-        };
         let task = runtime.spawn(run_session(
             Arc::clone(core),
-            target.cluster.clone(),
-            options,
+            cluster,
+            request,
             input_rx,
             tx,
         ));
@@ -104,6 +129,7 @@ impl TerminalView {
             task,
             sent_size: (80, 24),
             status: Some("Connecting…".into()),
+            warning: None,
             ended: false,
         }
     }
@@ -132,6 +158,7 @@ impl TerminalView {
 
     fn on_message(&mut self, message: Message, cx: &mut Context<Self>) {
         match message {
+            Message::Warning(text) => self.warning = Some(text.into()),
             Message::Events(events) => {
                 for event in events {
                     match event {
@@ -223,10 +250,21 @@ impl TerminalView {
 impl Render for TerminalView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (background, muted) = (theme.background, theme.muted_foreground);
+        let (background, muted, warning) =
+            (theme.background, theme.muted_foreground, theme.warning);
         v_flex()
             .size_full()
             .bg(background)
+            .when_some(self.warning.clone(), |column, text| {
+                column.child(
+                    div()
+                        .px_3()
+                        .py_1()
+                        .text_xs()
+                        .text_color(warning)
+                        .child(text),
+                )
+            })
             .when_some(self.status.clone(), |column, status| {
                 column.child(
                     div()
@@ -256,25 +294,107 @@ impl Render for TerminalView {
     }
 }
 
-/// Run one shell session until it ends or is aborted.
+/// Open the session a request asks for. The two that create something in the
+/// cluster are refused on a protected cluster, like any other change.
+async fn open(
+    core: &AppCore,
+    cluster: &str,
+    request: &Request,
+) -> Result<Arc<TerminalSession>, String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    if request.audit().is_some() {
+        core.ensure_writable(cluster)?;
+    }
+    let (columns, rows) = (80, 24);
+    match request {
+        Request::Shell { namespace, pod } => {
+            core.terminals
+                .open(
+                    &handle,
+                    ExecOptions {
+                        namespace: namespace.clone(),
+                        pod: pod.clone(),
+                        container: None,
+                        command: Vec::new(),
+                        columns,
+                        rows,
+                    },
+                )
+                .await
+        }
+        Request::Debug { namespace, pod } => {
+            // Join the first container's process namespace, so `ps` and
+            // `/proc/1/root` show the application rather than only the debug
+            // shell itself.
+            let target_container =
+                k8s_core::objects::get(&handle, "core/v1/pods", Some(namespace), pod)
+                    .await
+                    .ok()
+                    .and_then(|object| k8s_core::objects::to_value(&object).ok())
+                    .and_then(|value| {
+                        value
+                            .pointer("/spec/containers/0/name")
+                            .and_then(|name| name.as_str().map(str::to_string))
+                    });
+            core.terminals
+                .open_ephemeral(
+                    &handle,
+                    EphemeralOptions {
+                        namespace: namespace.clone(),
+                        pod: pod.clone(),
+                        target_container,
+                        image: DEFAULT_DEBUG_IMAGE.to_string(),
+                        // The front end has asked and been told it stays.
+                        confirmation: pod.clone(),
+                        columns,
+                        rows,
+                    },
+                )
+                .await
+        }
+        Request::Node { node } => {
+            core.terminals
+                .open_node_shell(
+                    &handle,
+                    NodeShellOptions {
+                        node: node.clone(),
+                        namespace: "default".to_string(),
+                        image: DEFAULT_DEBUG_IMAGE.to_string(),
+                        confirmation: node.clone(),
+                        columns,
+                        rows,
+                    },
+                )
+                .await
+        }
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// Run one terminal session until it ends or is aborted.
 async fn run_session(
     core: Arc<AppCore>,
     cluster: SharedString,
-    options: ExecOptions,
+    request: Request,
     mut input: tokio_mpsc::UnboundedReceiver<Input>,
     tx: mpsc::UnboundedSender<Message>,
 ) {
-    let session = match core.clusters.require(&cluster) {
-        Ok(handle) => core.terminals.open(&handle, options).await,
-        Err(err) => Err(err.into()),
-    };
-    let session = match session {
+    let opened = open(&core, &cluster, &request).await;
+    // A debug container or a node shell changes the cluster, so it is audited
+    // whether or not it opened.
+    if let Some((action, target)) = request.audit() {
+        core.record_audit(&cluster, action, &target, &opened.as_ref().map(|_| ()));
+    }
+    let session = match opened {
         Ok(session) => session,
         Err(err) => {
-            let _ = tx.unbounded_send(Message::Failed(err.to_string()));
+            let _ = tx.unbounded_send(Message::Failed(err));
             return;
         }
     };
+    if let Some(warning) = session.descriptor.warning.clone() {
+        let _ = tx.unbounded_send(Message::Warning(warning));
+    }
 
     // Writes go through their own task so a slow write never holds up reading
     // output, and keystrokes stay in order.
