@@ -23,7 +23,7 @@ use tokio::runtime::Handle;
 
 use crate::{
     diff::{self, DiffLine},
-    form::{FormEvent, FormView},
+    form::{FormContext, FormEvent, FormView},
     ui::{Emphasis, button_icon, chip, page_title, pill, toast_error, toast_success},
 };
 
@@ -225,15 +225,13 @@ impl CreateView {
     /// filled in.
     fn open_form(&mut self, kind: &'static str, window: &mut Window, cx: &mut Context<Self>) {
         let namespace = self.namespace_text(cx);
-        let Some(view) = FormView::create(
-            &self.core,
-            &self.runtime,
-            self.cluster.clone(),
-            kind,
-            (!namespace.is_empty()).then_some(namespace.as_str()),
-            window,
-            cx,
-        ) else {
+        let place = FormContext {
+            core: Arc::clone(&self.core),
+            runtime: self.runtime.clone(),
+            cluster: self.cluster.clone(),
+            namespace: (!namespace.is_empty()).then_some(namespace),
+        };
+        let Some(view) = FormView::create(&place, kind, window, cx) else {
             return;
         };
         let subscription = cx.subscribe_in(

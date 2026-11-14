@@ -114,6 +114,12 @@ version had that this one does not yet.
 
 ### Create and edit
 
+- **Edit with a form**: the same eight kinds have a Form switch beside the YAML
+  of an existing object. It starts from the fields the object has, leaves
+  everything the form does not cover exactly as it is (an environment variable
+  that reads from a Secret survives an edit of the plain ones), and cannot change
+  the name, the namespace or a deployment's selector. It writes into the same
+  text, so Preview and Apply are unchanged.
 - **Edit** an object's YAML with a server-side dry-run diff before anything is
   applied, explicit field-manager conflicts, and an option to take ownership.
   Apply is enabled only for the exact text that was previewed.
@@ -190,8 +196,7 @@ hours or a day, or end a silence early.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Field-based forms for *editing* an existing object (YAML edit works), YAML
-  validation against the cluster's OpenAPI schema, node label and taint
+- YAML validation against the cluster's OpenAPI schema, node label and taint
   editing, and pruning on apply.
 - Ephemeral debug-container and node shells, and a local kubectl shell.
 - Local crash-log viewing.

@@ -60,7 +60,19 @@ pub struct FormView {
     /// fresh form is not a wall of red.
     problems: Vec<(&'static str, String)>,
     touched: bool,
+    /// The object being edited, whose fields the form changes and whose other
+    /// fields it leaves exactly as they are. `None` when creating.
+    editing: Option<forms::Object>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Where a form works: which cluster it reads suggestions from, and the
+/// namespace it starts in.
+pub struct FormContext {
+    pub core: Arc<AppCore>,
+    pub runtime: Handle,
+    pub cluster: SharedString,
+    pub namespace: Option<String>,
 }
 
 impl EventEmitter<FormEvent> for FormView {}
@@ -68,27 +80,50 @@ impl EventEmitter<FormEvent> for FormView {}
 impl FormView {
     /// A form for a kind that has a layout, made from any view's context.
     pub fn create<T: 'static>(
-        core: &Arc<AppCore>,
-        runtime: &Handle,
-        cluster: SharedString,
+        place: &FormContext,
         kind: &str,
-        namespace: Option<&str>,
         window: &mut Window,
         cx: &mut Context<T>,
     ) -> Option<Entity<Self>> {
         let spec = SPECS.iter().find(|spec| spec.kind == kind)?;
-        Some(cx.new(|cx| Self::build(spec, core, runtime, cluster, namespace, window, cx)))
+        Some(cx.new(|cx| Self::build(spec, place, None, window, cx)))
+    }
+
+    /// A form over an object that exists, for changing the fields its layout
+    /// covers. Its name and namespace cannot change, so they are not shown.
+    pub fn edit<T: 'static>(
+        place: &FormContext,
+        kind: &str,
+        object: forms::Object,
+        window: &mut Window,
+        cx: &mut Context<T>,
+    ) -> Option<Entity<Self>> {
+        let spec = SPECS.iter().find(|spec| spec.kind == kind)?;
+        Some(cx.new(|cx| Self::build(spec, place, Some(object), window, cx)))
     }
 
     fn build(
         spec: &'static FormSpec,
-        core: &Arc<AppCore>,
-        runtime: &Handle,
-        cluster: SharedString,
-        namespace: Option<&str>,
+        place: &FormContext,
+        object: Option<forms::Object>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let (core, runtime, cluster, namespace) = (
+            &place.core,
+            &place.runtime,
+            place.cluster.clone(),
+            place.namespace.as_deref(),
+        );
+        // What an existing object already holds, to start from.
+        let initial: Values = object
+            .as_ref()
+            .map(|object| forms::read_values(spec, object))
+            .unwrap_or_default();
+        let text_start = |key: &str| match initial.get(key) {
+            Some(FieldValue::Text(text)) => Some(text.clone()),
+            _ => None,
+        };
         let mut subscriptions = Vec::new();
         let mut slots = Vec::new();
         for field in spec.fields() {
@@ -97,23 +132,43 @@ impl FormView {
                     options
                         .iter()
                         .copied()
-                        .find(|option| *option == field.default)
+                        .find(|option| Some(*option) == text_start(field.key).as_deref())
+                        .or_else(|| {
+                            options
+                                .iter()
+                                .copied()
+                                .find(|option| *option == field.default)
+                        })
                         .or_else(|| options.first().copied())
                         .unwrap_or(""),
                 ),
                 Kind::Pairs { .. } => {
-                    State::Pairs(vec![Self::pair(window, cx, &mut subscriptions)])
+                    let existing = match initial.get(field.key) {
+                        Some(FieldValue::Pairs(pairs)) => pairs.clone(),
+                        _ => Vec::new(),
+                    };
+                    let mut rows: Vec<_> = existing
+                        .iter()
+                        .map(|(key, value)| {
+                            Self::pair_with(window, cx, &mut subscriptions, key, value)
+                        })
+                        .collect();
+                    // A blank row to type into, as when creating.
+                    rows.push(Self::pair(window, cx, &mut subscriptions));
+                    State::Pairs(rows)
                 }
                 _ => {
-                    let start = if field.key == "namespace" {
-                        namespace.unwrap_or(field.default)
+                    let start = if object.is_some() {
+                        text_start(field.key).unwrap_or_default()
+                    } else if field.key == "namespace" {
+                        namespace.unwrap_or(field.default).to_string()
                     } else {
-                        field.default
+                        field.default.to_string()
                     };
                     let input = cx.new(|cx| {
                         let mut state = InputState::new(window, cx).placeholder(field.placeholder);
                         if !start.is_empty() {
-                            state.set_value(start.to_string(), window, cx);
+                            state.set_value(start.clone(), window, cx);
                         }
                         state
                     });
@@ -150,11 +205,35 @@ impl FormView {
             options: HashMap::new(),
             problems: Vec::new(),
             touched: false,
+            editing: object,
             _subscriptions: subscriptions,
         };
-        view.changed(cx);
+        if view.editing.is_some() {
+            // Opening an object to edit it is not a change: the editor keeps its
+            // text until a field is touched.
+            view.problems = view.problems_now(cx);
+        } else {
+            view.changed(cx);
+        }
         view.load_options(cx);
         view
+    }
+
+    /// A row that already holds a key and a value.
+    fn pair_with(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        subscriptions: &mut Vec<Subscription>,
+        key: &str,
+        value: &str,
+    ) -> (Entity<InputState>, Entity<InputState>) {
+        let row = Self::pair(window, cx, subscriptions);
+        row.0
+            .update(cx, |input, cx| input.set_value(key.to_string(), window, cx));
+        row.1.update(cx, |input, cx| {
+            input.set_value(value.to_string(), window, cx)
+        });
+        row
     }
 
     /// A key and a value box, whose edits count as changes of the form.
@@ -225,11 +304,33 @@ impl FormView {
     /// Rebuild the manifest and tell the page.
     pub fn changed(&mut self, cx: &mut Context<Self>) {
         let values = self.values(cx);
-        self.problems = forms::problems(self.spec, &values);
-        if let Ok(yaml) = forms::to_yaml(&forms::build(self.spec, &values)) {
+        self.problems = self.problems_for(&values);
+        let manifest = match &self.editing {
+            Some(object) => {
+                let mut edited = object.clone();
+                forms::apply_values(self.spec, &values, &mut edited);
+                edited
+            }
+            None => forms::build(self.spec, &values),
+        };
+        if let Ok(yaml) = forms::to_yaml(&manifest) {
             cx.emit(FormEvent::Changed(yaml));
         }
         cx.notify();
+    }
+
+    fn problems_now(&self, cx: &App) -> Vec<(&'static str, String)> {
+        self.problems_for(&self.values(cx))
+    }
+
+    /// What is wrong, leaving out the name and namespace of an object being
+    /// edited: they are not on the form, and cannot be changed.
+    fn problems_for(&self, values: &Values) -> Vec<(&'static str, String)> {
+        let mut found = forms::problems(self.spec, values);
+        if self.editing.is_some() {
+            found.retain(|(key, _)| !matches!(*key, "name" | "namespace"));
+        }
+        found
     }
 
     /// Read the suggestions for every field that has some from the cluster.
@@ -490,13 +591,22 @@ impl Render for FormView {
                     .text_color(muted)
                     .child(section.title.to_uppercase()),
             );
+            let mut shown = 0;
             for _ in section.fields {
                 if let Some(slot) = self.slots.get(index) {
-                    card = card.child(self.render_field(index, slot, cx));
+                    // An object that exists keeps its name and namespace.
+                    let fixed =
+                        self.editing.is_some() && matches!(slot.field.key, "name" | "namespace");
+                    if !fixed {
+                        card = card.child(self.render_field(index, slot, cx));
+                        shown += 1;
+                    }
                 }
                 index += 1;
             }
-            column = column.child(card);
+            if shown > 0 {
+                column = column.child(card);
+            }
         }
         div()
             .id("form-scroll")

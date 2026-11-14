@@ -16,7 +16,7 @@ use gpui_kit::{
     prelude::FluentBuilder,
     *,
 };
-use k8s_app::AppCore;
+use k8s_app::{AppCore, forms};
 use k8s_core::objects;
 use k8s_ops::apply::{self, ApplyOutcome, DiffResult, EditRequest, FieldConflict};
 use tokio::runtime::Handle;
@@ -24,7 +24,8 @@ use tokio::runtime::Handle;
 use crate::{
     diff::{self, DiffLine},
     drawer::Target,
-    ui::{Emphasis, button_icon, chip, toast_success},
+    form::{FormContext, FormEvent, FormView},
+    ui::{Emphasis, button_icon, chip, segment, segmented_bar, toast_success},
 };
 
 /// A dry run for one exact text and one setting of "take ownership".
@@ -68,6 +69,9 @@ pub struct YamlView {
     busy: Option<&'static str>,
     notice: Option<Notice>,
     diff_scroll: UniformListScrollHandle,
+    /// The form over the object, when its fields are being edited instead of
+    /// its text.
+    form: Option<(Entity<FormView>, Subscription)>,
     _edit: Subscription,
 }
 
@@ -122,6 +126,7 @@ impl YamlView {
             busy: None,
             notice: None,
             diff_scroll: UniformListScrollHandle::new(),
+            form: None,
             _edit: edit,
         }
     }
@@ -284,6 +289,8 @@ impl YamlView {
                 self.original = applied.as_str().into();
                 self.previewed = None;
                 self.force = false;
+                // What the form was over has been replaced by what was applied.
+                self.form = None;
                 self.editor
                     .update(cx, |editor, cx| editor.set_value(applied, window, cx));
                 self.notice = None;
@@ -322,6 +329,67 @@ impl YamlView {
         self.previewed = None;
         self.force = false;
         self.notice = None;
+        // The form was over text that is gone.
+        self.form = None;
+        cx.notify();
+    }
+
+    /// Whether this kind has a form to edit it with.
+    fn has_form(&self) -> bool {
+        forms::SPECS
+            .iter()
+            .any(|spec| spec.kind == &*self.target.kind)
+    }
+
+    /// Edit the object's fields instead of its text. The form starts from what
+    /// the editor holds now, hand edits included, and writes back into it, so
+    /// Preview and Apply see one text either way.
+    fn show_form(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.form.is_some() || !matches!(self.load, Load::Ready) {
+            return;
+        }
+        let object = match forms::parse_yaml(&self.text(cx)) {
+            Ok(object) => object,
+            Err(reason) => {
+                self.notice = Some(Notice::Error(
+                    format!("The YAML does not parse, so there is no form for it yet: {reason}")
+                        .into(),
+                ));
+                cx.notify();
+                return;
+            }
+        };
+        let place = FormContext {
+            core: Arc::clone(&self.core),
+            runtime: self.runtime.clone(),
+            cluster: self.target.cluster.clone(),
+            namespace: self.target.namespace.as_ref().map(ToString::to_string),
+        };
+        let Some(view) = FormView::edit(&place, &self.target.kind, object, window, cx) else {
+            return;
+        };
+        let subscription = cx.subscribe_in(
+            &view,
+            window,
+            |this, _, event: &FormEvent, window, cx| match event {
+                FormEvent::Changed(yaml) => this.take_form_yaml(yaml, window, cx),
+            },
+        );
+        self.form = Some((view, subscription));
+        self.notice = None;
+        cx.notify();
+    }
+
+    fn show_text(&mut self, cx: &mut Context<Self>) {
+        self.form = None;
+        cx.notify();
+    }
+
+    /// A field changed: the object, with that change, is the editor's text.
+    fn take_form_yaml(&mut self, yaml: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.editor.update(cx, |editor, cx| {
+            editor.set_value(yaml.to_string(), window, cx)
+        });
         cx.notify();
     }
 
@@ -343,11 +411,25 @@ impl YamlView {
             .as_ref()
             .is_some_and(|p| !p.conflicts.is_empty());
 
+        let in_form = self.form.is_some();
+        let switch = self.has_form().then(|| {
+            segmented_bar(cx.theme())
+                .child(
+                    segment("yaml-mode-text", "YAML", !in_form, cx.theme())
+                        .on_click(cx.listener(|this, _, _, cx| this.show_text(cx))),
+                )
+                .child(
+                    segment("yaml-mode-form", "Form", in_form, cx.theme())
+                        .on_click(cx.listener(|this, _, window, cx| this.show_form(window, cx))),
+                )
+        });
+
         h_flex()
             .flex_none()
             .px_3()
             .pb_2()
             .gap_2()
+            .children(switch)
             .items_center()
             .flex_wrap()
             .child({
@@ -479,7 +561,13 @@ impl Render for YamlView {
             Load::Ready => div()
                 .flex_1()
                 .min_h_0()
-                .child(Editor::new(&self.editor).appearance(false).h(relative(1.)))
+                .child(match &self.form {
+                    Some((form, _)) => form.clone().into_any_element(),
+                    None => Editor::new(&self.editor)
+                        .appearance(false)
+                        .h(relative(1.))
+                        .into_any_element(),
+                })
                 .into_any_element(),
         };
 

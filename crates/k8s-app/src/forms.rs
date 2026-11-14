@@ -11,6 +11,10 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value, json};
 
+/// An object as the forms read and write it, so a front end can hold one
+/// without depending on a JSON crate of its own.
+pub use serde_json::Value as Object;
+
 /// What a field holds, and so how it is drawn and written.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -601,6 +605,187 @@ fn derive(spec: &FormSpec, values: &Values, manifest: &mut Value) {
     }
 }
 
+/// An object from YAML text, for reading its fields into a form.
+pub fn parse_yaml(text: &str) -> Result<Value, String> {
+    let value: Value = serde_yaml_ng::from_str(text).map_err(|err| err.to_string())?;
+    if value.is_object() {
+        Ok(value)
+    } else {
+        Err("That is not a Kubernetes object.".to_string())
+    }
+}
+
+/// The value at a dotted path, where a number is a list index.
+fn get_path<'a>(root: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut cursor = root;
+    for segment in path.split('.') {
+        cursor = match segment.parse::<usize>() {
+            Ok(index) => cursor.get(index)?,
+            Err(_) => cursor.get(segment)?,
+        };
+    }
+    Some(cursor)
+}
+
+/// Remove the value at a dotted path, and the objects it leaves empty, so an
+/// emptied field does not leave `resources: {requests: {}}` behind.
+fn remove_path(root: &mut Value, path: &str) {
+    fn go(value: &mut Value, segments: &[&str]) {
+        let Some((first, rest)) = segments.split_first() else {
+            return;
+        };
+        let child = match first.parse::<usize>() {
+            Ok(index) => value.get_mut(index),
+            Err(_) => value.get_mut(*first),
+        };
+        let Some(child) = child else { return };
+        if rest.is_empty() {
+            if let (Value::Object(map), false) = (&mut *value, first.parse::<usize>().is_ok()) {
+                map.remove(*first);
+            }
+            return;
+        }
+        go(child, rest);
+        // Tidy an object this left empty, but never a list element: removing
+        // one would renumber the rest.
+        if let Value::Object(map) = value
+            && map
+                .get(*first)
+                .is_some_and(|v| v.as_object().is_some_and(Map::is_empty))
+        {
+            map.remove(*first);
+        }
+    }
+    go(root, &path.split('.').collect::<Vec<_>>());
+}
+
+fn text_of(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Number(number) => Some(number.to_string()),
+        Value::Bool(flag) => Some(flag.to_string()),
+        _ => None,
+    }
+}
+
+/// What a form shows for an existing object: the value at each field's path.
+/// A field the object does not set is blank, as it is when creating.
+pub fn read_values(spec: &FormSpec, object: &Value) -> Values {
+    let mut values = Values::new();
+    for field in spec.fields() {
+        let at = get_path(object, field.path);
+        let value = match field.kind {
+            Kind::Pairs { list: false } => FieldValue::Pairs(
+                at.and_then(Value::as_object)
+                    .map(|map| {
+                        map.iter()
+                            .map(|(key, value)| (key.clone(), text_of(value).unwrap_or_default()))
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            ),
+            Kind::Pairs { list: true } => FieldValue::Pairs(
+                at.and_then(Value::as_array)
+                    .map(|list| {
+                        list.iter()
+                            // An entry that takes its value from a Secret or a
+                            // ConfigMap has none to show; it is kept as it is.
+                            .filter_map(|entry| {
+                                Some((
+                                    entry.get("name")?.as_str()?.to_string(),
+                                    entry.get("value").and_then(text_of)?,
+                                ))
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+            ),
+            Kind::Words => FieldValue::Text(
+                at.and_then(Value::as_array)
+                    .map(|words| {
+                        words
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    })
+                    .unwrap_or_default(),
+            ),
+            Kind::Lookup { numeric: true, .. } => FieldValue::Text(
+                at.and_then(text_of)
+                    .or_else(|| {
+                        // A backend port set by name.
+                        let named = field.path.strip_suffix("number")?;
+                        get_path(object, &format!("{named}name")).and_then(text_of)
+                    })
+                    .unwrap_or_default(),
+            ),
+            _ => FieldValue::Text(at.and_then(text_of).unwrap_or_default()),
+        };
+        values.insert(field.key, value);
+    }
+    values
+}
+
+/// Fields that identify an object, which cannot be changed once it exists.
+const IMMUTABLE: &[&str] = &["name", "namespace"];
+
+/// Write a form's values back into an existing object, touching only the
+/// fields the layout covers. A field emptied is removed, so the cluster's
+/// default applies again, and everything the layout does not know about,
+/// including the selector a Deployment cannot change, is left exactly as it was.
+pub fn apply_values(spec: &FormSpec, values: &Values, object: &mut Value) {
+    for field in spec
+        .fields()
+        .filter(|field| !IMMUTABLE.contains(&field.key))
+    {
+        let desired = values
+            .get(field.key)
+            .and_then(|value| field_json(field, value));
+        let path = match (field.kind, &desired) {
+            (Kind::Lookup { numeric: true, .. }, Some(Value::String(_))) => field
+                .path
+                .strip_suffix("number")
+                .map_or_else(|| field.path.to_string(), |stem| format!("{stem}name")),
+            _ => field.path.to_string(),
+        };
+        match desired {
+            Some(Value::Array(mut written)) if matches!(field.kind, Kind::Pairs { list: true }) => {
+                // Keep the entries that read from a Secret or ConfigMap: the
+                // form only shows plain values, and must not drop the rest.
+                if let Some(Value::Array(existing)) = get_path(object, &path) {
+                    written.extend(
+                        existing
+                            .iter()
+                            .filter(|e| e.get("value").is_none())
+                            .cloned(),
+                    );
+                }
+                set_path(object, &path, Value::Array(written));
+            }
+            Some(value) => {
+                // A port that changed between a number and a name leaves the
+                // other form of it behind otherwise.
+                if let Kind::Lookup { numeric: true, .. } = field.kind
+                    && let Some(stem) = field.path.strip_suffix("number")
+                {
+                    remove_path(object, &format!("{stem}number"));
+                    remove_path(object, &format!("{stem}name"));
+                }
+                set_path(object, &path, value);
+            }
+            None => {
+                remove_path(object, field.path);
+                if let Kind::Lookup { numeric: true, .. } = field.kind
+                    && let Some(stem) = field.path.strip_suffix("number")
+                {
+                    remove_path(object, &format!("{stem}name"));
+                }
+            }
+        }
+    }
+}
+
 pub fn to_yaml(manifest: &Value) -> Result<String, String> {
     serde_yaml_ng::to_string(manifest).map_err(|err| err.to_string())
 }
@@ -805,5 +990,135 @@ mod tests {
             assert_eq!(manifest["kind"], json!(spec.kind));
             assert!(to_yaml(&manifest).is_ok(), "{}", spec.kind);
         }
+    }
+
+    #[test]
+    fn what_a_form_reads_from_an_object_it_writes_back_unchanged() {
+        let object = json!({
+            "apiVersion": "apps/v1", "kind": "Deployment",
+            "metadata": {"name": "web", "namespace": "shop", "labels": {"app": "web"}, "uid": "u1"},
+            "spec": {
+                "replicas": 3,
+                "selector": {"matchLabels": {"app": "web"}},
+                "template": {"spec": {"containers": [{
+                    "name": "app", "image": "nginx:1.27",
+                    "env": [{"name": "MODE", "value": "prod"}],
+                    "resources": {"requests": {"cpu": "100m"}}
+                }]}}
+            }
+        });
+        let values = super::read_values(spec("Deployment"), &object);
+        assert_eq!(values.get("replicas"), Some(&text("3")));
+        assert_eq!(values.get("image"), Some(&text("nginx:1.27")));
+        let mut rewritten = object.clone();
+        super::apply_values(spec("Deployment"), &values, &mut rewritten);
+        assert_eq!(rewritten, object, "reading then writing changes nothing");
+    }
+
+    #[test]
+    fn an_edit_changes_its_field_and_leaves_everything_else_alone() {
+        let object = json!({
+            "kind": "Deployment",
+            "metadata": {"name": "web", "uid": "u1"},
+            "spec": {"replicas": 1, "paused": true, "template": {"spec": {"containers": [{"name": "app", "image": "a"}]}}}
+        });
+        let mut values = super::read_values(spec("Deployment"), &object);
+        values.insert("replicas", text("5"));
+        values.insert("image", text("b"));
+        values.insert("name", text("renamed"));
+        let mut edited = object.clone();
+        super::apply_values(spec("Deployment"), &values, &mut edited);
+        assert_eq!(edited["spec"]["replicas"], json!(5));
+        assert_eq!(
+            edited["spec"]["template"]["spec"]["containers"][0]["image"],
+            json!("b")
+        );
+        assert_eq!(
+            edited["spec"]["paused"],
+            json!(true),
+            "a field the layout does not cover"
+        );
+        assert_eq!(
+            edited["metadata"]["name"],
+            json!("web"),
+            "a name cannot be changed"
+        );
+        assert!(
+            edited["spec"].get("selector").is_none(),
+            "no selector is invented on an edit"
+        );
+    }
+
+    #[test]
+    fn an_emptied_field_is_removed_with_the_objects_it_leaves_empty() {
+        let object = json!({
+            "kind": "Deployment",
+            "metadata": {"name": "web"},
+            "spec": {"template": {"spec": {"containers": [{
+                "name": "app", "image": "a", "resources": {"requests": {"cpu": "100m"}}
+            }]}}}
+        });
+        let mut values = super::read_values(spec("Deployment"), &object);
+        values.insert("cpu_request", text(""));
+        let mut edited = object.clone();
+        super::apply_values(spec("Deployment"), &values, &mut edited);
+        assert!(
+            edited
+                .pointer("/spec/template/spec/containers/0/resources")
+                .is_none()
+        );
+        assert_eq!(
+            edited["spec"]["template"]["spec"]["containers"][0]["image"],
+            json!("a")
+        );
+    }
+
+    #[test]
+    fn an_environment_value_from_a_secret_survives_an_edit_of_the_plain_ones() {
+        let object = json!({
+            "kind": "Deployment",
+            "metadata": {"name": "web"},
+            "spec": {"template": {"spec": {"containers": [{
+                "name": "app", "image": "a",
+                "env": [
+                    {"name": "PLAIN", "value": "1"},
+                    {"name": "TOKEN", "valueFrom": {"secretKeyRef": {"name": "s", "key": "k"}}}
+                ]
+            }]}}}
+        });
+        let mut values = super::read_values(spec("Deployment"), &object);
+        assert_eq!(
+            values.get("env"),
+            Some(&FieldValue::Pairs(vec![("PLAIN".into(), "1".into())])),
+            "only the plain value is shown"
+        );
+        values.insert("env", FieldValue::Pairs(vec![("PLAIN".into(), "2".into())]));
+        let mut edited = object.clone();
+        super::apply_values(spec("Deployment"), &values, &mut edited);
+        let env = &edited["spec"]["template"]["spec"]["containers"][0]["env"];
+        assert_eq!(env[0], json!({"name": "PLAIN", "value": "2"}));
+        assert_eq!(env[1]["name"], json!("TOKEN"));
+        assert!(
+            env[1].get("valueFrom").is_some(),
+            "the secret reference is kept"
+        );
+    }
+
+    #[test]
+    fn a_backend_port_read_by_name_is_written_back_by_name() {
+        let object = json!({"kind": "Ingress", "metadata": {"name": "s"}, "spec": {"rules": [{"http": {"paths": [{
+            "backend": {"service": {"name": "web", "port": {"name": "http"}}}
+        }]}}]}});
+        let mut values = super::read_values(spec("Ingress"), &object);
+        assert_eq!(values.get("service_port"), Some(&text("http")));
+        values.insert("service_port", text("8080"));
+        let mut edited = object.clone();
+        super::apply_values(spec("Ingress"), &values, &mut edited);
+        let port = &edited["spec"]["rules"][0]["http"]["paths"][0]["backend"]["service"]["port"];
+        assert_eq!(
+            port,
+            &json!({"number": 8080}),
+            "the name is gone when a number is chosen"
+        );
     }
 }
