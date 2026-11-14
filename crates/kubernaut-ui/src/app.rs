@@ -52,6 +52,7 @@ use crate::{
     table::{ResourceDelegate, RowContext},
     theme,
     ui::{Emphasis, button_icon, chip, pill, toast_error, toast_success},
+    usage::{UsageEvent, UsageView},
     yaml::fetch_yaml,
 };
 
@@ -255,6 +256,12 @@ struct OpenAddCluster {
     _events: Subscription,
 }
 
+/// The usage heatmap and the subscription that opens a namespace from it.
+struct OpenUsage {
+    view: Entity<UsageView>,
+    _events: Subscription,
+}
+
 /// The Alerts page and the subscription that opens objects from it.
 struct OpenAlerts {
     view: Entity<AlertsView>,
@@ -313,6 +320,8 @@ pub struct AppView {
     create: Option<Entity<CreateView>>,
     /// The port forwards of the open cluster.
     ports: Option<Entity<PortsView>>,
+    /// Every namespace's use against its requests.
+    usage: Option<OpenUsage>,
     /// What the app changed, across every cluster.
     activity: Option<Entity<ActivityView>>,
     /// The page for adding and removing clusters, which belongs to none.
@@ -437,6 +446,7 @@ impl AppView {
             alerts: None,
             create: None,
             ports: None,
+            usage: None,
             activity: None,
             add_cluster: None,
             settings: None,
@@ -472,6 +482,7 @@ impl AppView {
         self.alerts = None;
         self.create = None;
         self.ports = None;
+        self.usage = None;
         self.activity = None;
         self.add_cluster = None;
         self.settings = None;
@@ -621,6 +632,7 @@ impl AppView {
             && self.alerts.is_none()
             && self.create.is_none()
             && self.ports.is_none()
+            && self.usage.is_none()
             && self.activity.is_none()
             && self.add_cluster.is_none()
             && self.settings.is_none()
@@ -829,6 +841,12 @@ impl AppView {
                 command: Command::Alerts,
             });
             items.push(Item {
+                label: "Usage".into(),
+                hint: "Page".into(),
+                icon: IconName::Gauge,
+                command: Command::Usage,
+            });
+            items.push(Item {
                 label: "Create resource".into(),
                 hint: "Page".into(),
                 icon: IconName::Plus,
@@ -895,6 +913,7 @@ impl AppView {
             Command::Settings => self.open_settings(window, cx),
             Command::AddCluster => self.open_add_cluster(window, cx),
             Command::Activity => self.open_activity(window, cx),
+            Command::Usage => self.open_usage(window, cx),
             Command::Ports => self.open_ports(None, window, cx),
             Command::Create => self.open_create(window, cx),
             Command::Cluster(index) => self.select_cluster(*index, window, cx),
@@ -959,6 +978,8 @@ impl AppView {
             self.open_security(window, cx);
         } else if self.alerts.is_some() {
             self.open_alerts(window, cx);
+        } else if self.usage.is_some() {
+            self.open_usage(window, cx);
         }
         cx.notify();
     }
@@ -1068,6 +1089,37 @@ impl AppView {
         self.clear_pages();
         let (core, runtime) = (&self.core, &self.runtime);
         self.ports = Some(cx.new(|cx| PortsView::new(core, runtime, cluster, target, window, cx)));
+        cx.notify();
+    }
+
+    /// Show every namespace's use against what it requested.
+    fn open_usage(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cluster) = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone())
+        else {
+            return;
+        };
+        let scope = self
+            .active_state()
+            .map(|state| state.scope.clone())
+            .unwrap_or_default();
+        self.clear_pages();
+        let (core, runtime) = (&self.core, &self.runtime);
+        let view = cx.new(|cx| UsageView::new(core, runtime, cluster, scope, cx));
+        let events =
+            cx.subscribe_in(
+                &view,
+                window,
+                |this, _, event: &UsageEvent, window, cx| match event {
+                    UsageEvent::Open(target) => this.show_drawer(target.clone(), window, cx),
+                },
+            );
+        self.usage = Some(OpenUsage {
+            view,
+            _events: events,
+        });
         cx.notify();
     }
 
@@ -2329,6 +2381,7 @@ impl AppView {
         let open_overview = cx.listener(|this, _, window, cx| this.open_overview(window, cx));
         let open_helm = cx.listener(|this, _, window, cx| this.open_helm(window, cx));
         let open_gitops = cx.listener(|this, _, window, cx| this.open_gitops(window, cx));
+        let open_usage = cx.listener(|this, _, window, cx| this.open_usage(window, cx));
         let open_activity = cx.listener(|this, _, window, cx| this.open_activity(window, cx));
         let open_create = cx.listener(|this, _, window, cx| this.open_create(window, cx));
         let open_ports = cx.listener(|this, _, window, cx| this.open_ports(None, window, cx));
@@ -2368,6 +2421,10 @@ impl AppView {
             .child(
                 pinned("alerts", IconName::Bell, "Alerts", self.alerts.is_some())
                     .on_click(open_alerts),
+            )
+            .child(
+                pinned("usage", IconName::Gauge, "Usage", self.usage.is_some())
+                    .on_click(open_usage),
             )
             .child(
                 pinned("create", IconName::Plus, "Create", self.create.is_some())
@@ -2622,6 +2679,20 @@ impl AppView {
 
         if let Some(settings) = &self.settings {
             return main.child(settings.view.clone());
+        }
+        if let Some(usage) = &self.usage {
+            // The drawer opens beside the grid, as it does for a list.
+            return main.child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(usage.view.clone())
+                    .when_some(self.drawer.as_ref(), |row, drawer| {
+                        row.child(drawer.view.clone())
+                    }),
+            );
         }
         if let Some(activity) = &self.activity {
             return main.child(activity.clone());

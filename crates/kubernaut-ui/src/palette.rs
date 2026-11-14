@@ -36,6 +36,7 @@ pub enum Command {
     Settings,
     AddCluster,
     Activity,
+    Usage,
     Cluster(usize),
     Resource(SharedString),
     /// Add a namespace to the selection, or take it out.

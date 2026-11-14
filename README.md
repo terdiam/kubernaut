@@ -89,6 +89,10 @@ version had that this one does not yet.
 - A command palette (⌘K) across clusters, pages, namespaces and resource kinds.
 - **Overview** of a cluster: CPU, memory and pod gauges and the issues worth
   looking at, read from `metrics.k8s.io`.
+- A **Usage** page: a heatmap of every namespace, coloured by how much of its
+  requested CPU or memory it uses (mostly idle, comfortable, near the request,
+  over it, or no request to compare with), busiest first. A tile opens the
+  namespace.
 - A **Metrics** tab for a pod, node, namespace or workload: CPU and memory over
   the last hour against what is declared. A Prometheus-compatible endpoint,
   found through the apiserver proxy, gives history at once; with only
@@ -167,8 +171,8 @@ hours or a day, or end a silence early.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Metrics beyond those: the namespace heatmap, node usage in the node list, and
-  the topology graph. Network and disk series are not charted yet.
+- Metrics beyond those: node usage in the node list and the topology graph.
+  Network and disk series are not charted yet.
 - Field-based create and edit forms (YAML create and edit work), YAML
   validation against the cluster's OpenAPI schema, node label and taint
   editing, and pruning on apply.

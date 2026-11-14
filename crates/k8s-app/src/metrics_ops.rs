@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use k8s_metrics::{
-    MetricTarget, NamespaceQuotaInfo, ObjectMetrics, Point, Recommendation, quantity, quota,
-    recommend, resolve,
+    MetricTarget, NamespaceQuotaInfo, NamespaceUsage, ObjectMetrics, Point, Recommendation,
+    quantity, quota, recommend, resolve,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -94,6 +94,17 @@ fn sum_usage(usages: impl Iterator<Item = (bool, f64, f64)>) -> Option<Point> {
         memory,
         ..Default::default()
     })
+}
+
+/// What every namespace uses against what it declares, for the heatmap.
+///
+/// Pod-level metrics are only polled while someone asks, so asking is what
+/// keeps this fed; the first answer can be empty until a sample has completed.
+pub fn namespace_usage(core: &AppCore, cluster: &str) -> Result<Vec<NamespaceUsage>, String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let sampler = core.metrics.ensure(&handle);
+    sampler.request_pod_metrics();
+    Ok(sampler.namespace_usage())
 }
 
 /// A namespace's `ResourceQuota` and `LimitRange` objects.

@@ -31,6 +31,7 @@ mod terminal;
 mod theme;
 mod ui;
 mod upgrade;
+mod usage;
 mod yaml;
 
 use std::{cell::Cell, process::ExitCode, rc::Rc, sync::Arc};
