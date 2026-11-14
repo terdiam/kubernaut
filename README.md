@@ -193,6 +193,15 @@ hours or a day, or end a silence early.
 - Both ask first, name the pod or node, are refused on a protected cluster and
   are written to the audit log.
 
+### Local shell
+
+The **Shell** page opens a shell on this machine with `KUBECONFIG` pointing at a
+temporary file that holds only the open cluster's context (and its namespace,
+when exactly one is selected), so `kubectl` there cannot reach another cluster.
+The file is private to you and deleted when you leave the page. Because
+`kubectl` can change the cluster, it is refused on a protected cluster and
+audited like the other shells.
+
 ### Safety and privacy
 
 - Deleting, restarting, Helm changes, reconcile, suspend and silencing each ask
@@ -209,7 +218,6 @@ The Tauri and React version had these; they are not ported yet.
 
 - YAML validation against the cluster's OpenAPI schema, node label and taint
   editing, and pruning on apply.
-- A local kubectl shell.
 - Local crash-log viewing.
 - Automatic updates, and builds for Linux and Windows.
 

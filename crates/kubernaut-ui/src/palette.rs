@@ -37,6 +37,7 @@ pub enum Command {
     AddCluster,
     Activity,
     Usage,
+    Shell,
     Topology,
     Cluster(usize),
     Resource(SharedString),

@@ -1,4 +1,4 @@
-//! The Terminal tab: a shell in a pod, drawn on a custom GPUI element.
+//! Terminal sessions: a shell in a pod, a debug container, a node or this machine, drawn on a custom GPUI element.
 //!
 //! Output flows pty → tokio task → `Emulator`; keys flow back through a channel
 //! to a second task, so keystrokes are written in the order they were typed.
@@ -13,8 +13,8 @@ use gpui_kit::{
 };
 use k8s_app::AppCore;
 use k8s_ops::exec::{
-    DEFAULT_DEBUG_IMAGE, EphemeralOptions, ExecOptions, NodeShellOptions, TerminalEvent,
-    TerminalSession,
+    DEFAULT_DEBUG_IMAGE, EphemeralOptions, ExecOptions, LocalShellOptions, NodeShellOptions,
+    TerminalEvent, TerminalSession,
 };
 use tokio::{runtime::Handle, sync::mpsc as tokio_mpsc, task::JoinHandle};
 
@@ -43,6 +43,10 @@ pub enum Request {
     /// A privileged pod on a node, entered as root. It is removed when the
     /// terminal closes.
     Node { node: String },
+    /// A shell on this machine whose `KUBECONFIG` holds only this cluster's
+    /// context. `kubectl` there can change the cluster, so it is gated like
+    /// any other change.
+    Local { namespace: Option<String> },
 }
 
 impl Request {
@@ -54,6 +58,10 @@ impl Request {
                 Some(("debugContainer", format!("{namespace}/{pod}")))
             }
             Self::Node { node } => Some(("nodeShell", node.clone())),
+            Self::Local { namespace } => Some((
+                "localShell",
+                namespace.clone().unwrap_or_else(|| "all namespaces".into()),
+            )),
         }
     }
 }
@@ -352,6 +360,23 @@ async fn open(
                 )
                 .await
         }
+        Request::Local { namespace } => {
+            let kubeconfig = core
+                .clusters
+                .minified_kubeconfig(cluster, namespace.as_deref())
+                .map_err(|e| e.to_string())?;
+            core.terminals
+                .open_local_shell(
+                    &handle,
+                    kubeconfig,
+                    LocalShellOptions {
+                        namespace: namespace.clone(),
+                        columns,
+                        rows,
+                    },
+                )
+                .await
+        }
         Request::Node { node } => {
             core.terminals
                 .open_node_shell(
@@ -613,5 +638,29 @@ impl Element for TerminalElement {
             ));
         }
         self.view.read(cx).frame.replace(frame);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Request;
+
+    #[test]
+    fn a_pod_shell_is_not_audited_but_a_local_shell_is() {
+        let pod = Request::Shell {
+            namespace: "a".into(),
+            pod: "b".into(),
+        };
+        assert!(pod.audit().is_none());
+
+        let local = Request::Local {
+            namespace: Some("dev".into()),
+        };
+        assert_eq!(local.audit(), Some(("localShell", "dev".to_string())));
+        let all = Request::Local { namespace: None };
+        assert_eq!(
+            all.audit(),
+            Some(("localShell", "all namespaces".to_string()))
+        );
     }
 }

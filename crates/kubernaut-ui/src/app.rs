@@ -50,6 +50,7 @@ use crate::{
     security::{SecurityEvent, SecurityView},
     settings::{SettingsEvent, SettingsView},
     table::{ResourceDelegate, RowContext},
+    terminal::{Request, TerminalView},
     theme,
     topology::{TopologyEvent, TopologyView},
     ui::{Emphasis, button_icon, chip, pill, toast_error, toast_success},
@@ -337,6 +338,8 @@ pub struct AppView {
     topology: Option<OpenTopology>,
     /// Every namespace's use against its requests.
     usage: Option<OpenUsage>,
+    /// A shell on this machine pinned to the open cluster.
+    shell: Option<Entity<TerminalView>>,
     /// What the app changed, across every cluster.
     activity: Option<Entity<ActivityView>>,
     /// The page for adding and removing clusters, which belongs to none.
@@ -463,6 +466,7 @@ impl AppView {
             ports: None,
             topology: None,
             usage: None,
+            shell: None,
             activity: None,
             add_cluster: None,
             settings: None,
@@ -500,6 +504,7 @@ impl AppView {
         self.ports = None;
         self.topology = None;
         self.usage = None;
+        self.shell = None;
         self.activity = None;
         self.add_cluster = None;
         self.settings = None;
@@ -651,6 +656,7 @@ impl AppView {
             && self.ports.is_none()
             && self.topology.is_none()
             && self.usage.is_none()
+            && self.shell.is_none()
             && self.activity.is_none()
             && self.add_cluster.is_none()
             && self.settings.is_none()
@@ -892,6 +898,12 @@ impl AppView {
                 command: Command::Usage,
             });
             items.push(Item {
+                label: "Local shell".into(),
+                hint: "Page".into(),
+                icon: IconName::SquareTerminal,
+                command: Command::Shell,
+            });
+            items.push(Item {
                 label: "Create resource".into(),
                 hint: "Page".into(),
                 icon: IconName::Plus,
@@ -959,6 +971,7 @@ impl AppView {
             Command::AddCluster => self.open_add_cluster(window, cx),
             Command::Activity => self.open_activity(window, cx),
             Command::Usage => self.open_usage(window, cx),
+            Command::Shell => self.open_shell(window, cx),
             Command::Topology => self.open_topology(window, cx),
             Command::Ports => self.open_ports(None, window, cx),
             Command::Create => self.open_create(window, cx),
@@ -1196,6 +1209,32 @@ impl AppView {
             view,
             _events: events,
         });
+        cx.notify();
+    }
+
+    /// Open a shell on this machine whose `kubectl` reaches only the active
+    /// cluster, in the one namespace selected if exactly one is.
+    fn open_shell(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cluster) = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone())
+        else {
+            return;
+        };
+        let namespace = self
+            .active_state()
+            .and_then(|state| match state.scope.as_slice() {
+                [only] => Some(only.to_string()),
+                _ => None,
+            });
+        self.clear_pages();
+        let (core, runtime) = (&self.core, &self.runtime);
+        let view = cx
+            .new(|cx| TerminalView::new(core, runtime, cluster, Request::Local { namespace }, cx));
+        let focus = view.read(cx).focus_handle().clone();
+        window.focus(&focus, cx);
+        self.shell = Some(view);
         cx.notify();
     }
 
@@ -2459,6 +2498,7 @@ impl AppView {
         let open_gitops = cx.listener(|this, _, window, cx| this.open_gitops(window, cx));
         let open_topology = cx.listener(|this, _, window, cx| this.open_topology(window, cx));
         let open_usage = cx.listener(|this, _, window, cx| this.open_usage(window, cx));
+        let open_shell = cx.listener(|this, _, window, cx| this.open_shell(window, cx));
         let open_activity = cx.listener(|this, _, window, cx| this.open_activity(window, cx));
         let open_create = cx.listener(|this, _, window, cx| this.open_create(window, cx));
         let open_ports = cx.listener(|this, _, window, cx| this.open_ports(None, window, cx));
@@ -2511,6 +2551,15 @@ impl AppView {
             .child(
                 pinned("usage", IconName::Gauge, "Usage", self.usage.is_some())
                     .on_click(open_usage),
+            )
+            .child(
+                pinned(
+                    "shell",
+                    IconName::SquareTerminal,
+                    "Shell",
+                    self.shell.is_some(),
+                )
+                .on_click(open_shell),
             )
             .child(
                 pinned("create", IconName::Plus, "Create", self.create.is_some())
@@ -2793,6 +2842,9 @@ impl AppView {
                         row.child(drawer.view.clone())
                     }),
             );
+        }
+        if let Some(shell) = &self.shell {
+            return main.child(div().flex_1().min_h_0().min_w_0().child(shell.clone()));
         }
         if let Some(activity) = &self.activity {
             return main.child(activity.clone());
