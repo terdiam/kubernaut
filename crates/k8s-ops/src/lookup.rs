@@ -24,6 +24,17 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::{OpsError, Result};
 
+/// Whether a port name is one a backend can use: at most 15 letters, digits
+/// and hyphens, with a letter in it, and no hyphen at either end or doubled.
+fn is_service_port_name(name: &str) -> bool {
+    (1..=15).contains(&name.len())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        && name.chars().any(|c| c.is_ascii_alphabetic())
+        && !name.starts_with('-')
+        && !name.ends_with('-')
+        && !name.contains("--")
+}
+
 /// One choice in a form select.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -209,9 +220,14 @@ pub async fn lookup(
                 .iter()
                 .flat_map(|spec| spec.ports.iter().flatten())
                 .map(|port| {
-                    // A named port survives renumbering, so prefer it as the
-                    // value when the Service defines one.
-                    let value = port.name.clone().unwrap_or_else(|| port.port.to_string());
+                    // A named port survives renumbering, so prefer its name as the
+                    // value, but only when it is one a backend may refer to:
+                    // `kubectl create service --tcp=8080:80` names the port
+                    // `8080-80`, which an Ingress refuses.
+                    let value = match &port.name {
+                        Some(name) if is_service_port_name(name) => name.clone(),
+                        _ => port.port.to_string(),
+                    };
                     let target = port
                         .target_port
                         .as_ref()
@@ -347,4 +363,28 @@ pub async fn lookup(
     out.sort_by(|a, b| a.value.cmp(&b.value));
     out.dedup_by(|a, b| a.value == b.value);
     Ok(out)
+}
+
+#[cfg(test)]
+mod port_name_tests {
+    use super::is_service_port_name;
+
+    #[test]
+    fn a_port_name_needs_a_letter_and_the_right_shape() {
+        for ok in ["http", "web-1", "metrics"] {
+            assert!(is_service_port_name(ok), "{ok}");
+        }
+        for bad in [
+            "",
+            "8080-80",
+            "123",
+            "-a",
+            "a-",
+            "a--b",
+            "has_underscore",
+            "abcdefghijklmnop",
+        ] {
+            assert!(!is_service_port_name(bad), "{bad}");
+        }
+    }
 }

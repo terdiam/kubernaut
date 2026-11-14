@@ -9,6 +9,7 @@ mod diagnose;
 mod diff;
 mod drawer;
 mod emulator;
+mod form;
 mod gitops;
 mod helm;
 mod icons;

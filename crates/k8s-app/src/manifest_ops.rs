@@ -69,3 +69,24 @@ pub async fn kustomize_build(core: &AppCore, directory: &Path) -> Result<String,
     let kustomize = core.kustomize().map_err(|e| e.to_string())?;
     kustomize.build(directory).await.map_err(|e| e.to_string())
 }
+
+/// Suggestions for a form field that refers to another object: the services in
+/// a namespace, the storage classes, and so on. `param` narrows a dependent
+/// list, such as the ports of the service already chosen.
+///
+/// A cluster that cannot answer is not an error to the form, which falls back
+/// to the field being typed, so failures give an empty list.
+pub async fn lookup_options(
+    core: &AppCore,
+    cluster: &str,
+    source: &str,
+    namespace: Option<&str>,
+    param: Option<&str>,
+) -> Vec<k8s_ops::lookup::LookupOption> {
+    let Ok(handle) = core.clusters.require(cluster) else {
+        return Vec::new();
+    };
+    k8s_ops::lookup::lookup(&handle, source, namespace, param)
+        .await
+        .unwrap_or_default()
+}

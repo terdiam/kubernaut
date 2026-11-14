@@ -121,6 +121,15 @@ version had that this one does not yet.
   document in a multi-document manifest is planned and applied independently
   — one failure does not block the rest — and re-applying an unchanged
   manifest reports "unchanged".
+- **Create from a form** for Deployment, Service, ConfigMap, Secret, Ingress,
+  PersistentVolumeClaim, CronJob and Namespace: fields instead of YAML, with the
+  manifest written into the editor as you fill them in, so what is previewed and
+  applied is always the text on screen. References are read from the cluster and
+  offered as suggestions (an Ingress's backend service and its ports, the ingress
+  class, storage class, image pull secret, service account), a deployment's
+  selector and pod labels follow its name, and a blank field is left out so the
+  cluster's own default applies. Edit the YAML by hand and the form stops
+  overwriting it until you ask.
 
 ### Logs, terminal and port forwarding
 
@@ -181,7 +190,7 @@ hours or a day, or end a silence early.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Field-based create and edit forms (YAML create and edit work), YAML
+- Field-based forms for *editing* an existing object (YAML edit works), YAML
   validation against the cluster's OpenAPI schema, node label and taint
   editing, and pruning on apply.
 - Ephemeral debug-container and node shells, and a local kubectl shell.

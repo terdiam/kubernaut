@@ -23,6 +23,7 @@ use tokio::runtime::Handle;
 
 use crate::{
     diff::{self, DiffLine},
+    form::{FormEvent, FormView},
     ui::{Emphasis, button_icon, chip, page_title, pill, toast_error, toast_success},
 };
 
@@ -109,6 +110,13 @@ pub struct CreateView {
     busy: Option<&'static str>,
     notice: Option<Notice>,
     diff_scroll: UniformListScrollHandle,
+    /// The form, when one is filling in the editor.
+    form: Option<(Entity<FormView>, Subscription)>,
+    /// The text the form last wrote. An editor that differs from it was edited
+    /// by hand.
+    last_form_yaml: SharedString,
+    /// True once the YAML was edited by hand: the form no longer overwrites it.
+    detached: bool,
     _edit: Subscription,
     _namespace: Subscription,
 }
@@ -167,6 +175,9 @@ impl CreateView {
             busy: None,
             notice: None,
             diff_scroll: UniformListScrollHandle::new(),
+            form: None,
+            last_form_yaml: SharedString::default(),
+            detached: false,
             _edit: edit,
             _namespace: namespace_edit,
         }
@@ -184,6 +195,10 @@ impl CreateView {
     /// describing text that is no longer there.
     fn on_edit(&mut self, cx: &mut Context<Self>) {
         let (text, namespace) = (self.text(cx), self.namespace_text(cx));
+        // The form's own write is not an edit; anything else is.
+        if self.form.is_some() && !self.detached && *text != *self.last_form_yaml {
+            self.detached = true;
+        }
         if self
             .previewed
             .as_ref()
@@ -195,12 +210,68 @@ impl CreateView {
     }
 
     fn load_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        // Text from a template, a file or a folder replaces the form's.
+        self.form = None;
+        self.detached = false;
         self.editor
             .update(cx, |editor, cx| editor.set_value(text, window, cx));
         self.previewed = None;
         self.results = None;
         self.notice = None;
         cx.notify();
+    }
+
+    /// Open the form for a kind. It writes the manifest into the editor as it is
+    /// filled in.
+    fn open_form(&mut self, kind: &'static str, window: &mut Window, cx: &mut Context<Self>) {
+        let namespace = self.namespace_text(cx);
+        let Some(view) = FormView::create(
+            &self.core,
+            &self.runtime,
+            self.cluster.clone(),
+            kind,
+            (!namespace.is_empty()).then_some(namespace.as_str()),
+            window,
+            cx,
+        ) else {
+            return;
+        };
+        let subscription = cx.subscribe_in(
+            &view,
+            window,
+            |this, _, event: &FormEvent, window, cx| match event {
+                FormEvent::Changed(yaml) => this.take_form_yaml(yaml, window, cx),
+            },
+        );
+        self.form = Some((view.clone(), subscription));
+        self.detached = false;
+        // The form wrote its first manifest while being made, before anyone
+        // listened.
+        view.update(cx, |form, cx| form.changed(cx));
+        cx.notify();
+    }
+
+    /// Put what the form describes into the editor, unless it was edited by hand.
+    fn take_form_yaml(&mut self, yaml: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.detached {
+            return;
+        }
+        self.last_form_yaml = yaml.to_string().into();
+        self.editor.update(cx, |editor, cx| {
+            editor.set_value(yaml.to_string(), window, cx)
+        });
+        self.previewed = None;
+        self.results = None;
+        self.notice = None;
+        cx.notify();
+    }
+
+    /// Let the form write the editor again, discarding the hand edits.
+    fn use_form_again(&mut self, cx: &mut Context<Self>) {
+        self.detached = false;
+        if let Some((form, _)) = &self.form {
+            form.update(cx, |form, cx| form.changed(cx));
+        }
     }
 
     fn use_template(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
@@ -453,6 +524,23 @@ impl CreateView {
                 )
             });
 
+        let open_kind = self.form.as_ref().map(|(form, _)| form.read(cx).kind());
+        let forms_row = k8s_app::forms::SPECS
+            .iter()
+            .enumerate()
+            .map(|(index, spec)| {
+                let kind = spec.kind;
+                chip(
+                    ("create-form", index),
+                    kind,
+                    true,
+                    open_kind == Some(kind),
+                    cx.theme(),
+                )
+                .on_click(cx.listener(move |this, _, window, cx| this.open_form(kind, window, cx)))
+            })
+            .collect::<Vec<_>>();
+
         v_flex()
             .flex_none()
             .px_4()
@@ -467,6 +555,14 @@ impl CreateView {
                     .flex_wrap()
                     .child(div().text_xs().text_color(muted).child("Start from"))
                     .children(templates),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .flex_wrap()
+                    .child(div().text_xs().text_color(muted).child("Or fill in a form"))
+                    .children(forms_row),
             )
             .child(
                 h_flex()
@@ -717,9 +813,9 @@ impl CreateView {
 
 impl Render for CreateView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (muted, danger) = {
+        let (muted, danger, border_color) = {
             let theme = cx.theme();
-            (theme.muted_foreground, theme.danger)
+            (theme.muted_foreground, theme.danger, theme.border)
         };
         let toolbar = self.render_toolbar(cx).into_any_element();
         let panel = if let Some(previewed) = &self.previewed {
@@ -748,11 +844,53 @@ impl Render for CreateView {
                 };
                 column.child(div().px_4().py_1().text_xs().text_color(color).child(text))
             })
+            .when(self.detached && self.form.is_some(), |column| {
+                column.child(
+                    h_flex()
+                        .px_4()
+                        .py_1()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(muted)
+                                .child("You edited the YAML, so the form no longer changes it."),
+                        )
+                        .child(
+                            chip(
+                                "create-form-again",
+                                "Let the form write it again",
+                                true,
+                                false,
+                                cx.theme(),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.use_form_again(cx))),
+                        ),
+                )
+            })
             .child(
-                div()
+                h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(Editor::new(&self.editor).appearance(false).h(relative(1.))),
+                    .when_some(self.form.as_ref(), |row, (form, _)| {
+                        row.child(
+                            div()
+                                .w(px(440.))
+                                .h_full()
+                                .flex_none()
+                                .border_r_1()
+                                .border_color(border_color)
+                                .child(form.clone()),
+                        )
+                    })
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(Editor::new(&self.editor).appearance(false).h(relative(1.))),
+                    ),
             )
             .children(panel)
     }
