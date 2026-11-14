@@ -93,7 +93,9 @@ version had that this one does not yet.
   memory against what it can allocate, pod slots, and the kubelet's disk, with
   the figure turning amber past 75% and red past 90%. What was not measured
   shows a dash, not a zero.
-- A **Topology** page: one namespace drawn left to right, ingresses to services
+- A **Topology** page: one namespace, the first one selected in the toolbar
+  (it follows the selector, and with none selected keeps what was drawn), drawn
+  left to right, ingresses to services
   to workloads to pods to nodes, with columns ordered so lines run mostly
   straight. A service that selects nothing, or a pod that is failing, is red.
   Clicking a card opens its object and draws its connections strongly.

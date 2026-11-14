@@ -20,7 +20,7 @@ use tokio::runtime::Handle;
 
 use crate::{
     drawer::Target,
-    ui::{Palette, chip, message, page_title, pill},
+    ui::{Palette, message, page_title, pill},
 };
 
 const CARD_W: f32 = 200.;
@@ -455,26 +455,6 @@ impl TopologyView {
 impl Render for TopologyView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = Palette::of(cx);
-        let chips = self
-            .known
-            .iter()
-            .enumerate()
-            .map(|(index, namespace)| {
-                let (active, target) = (
-                    self.namespace.as_ref() == Some(namespace),
-                    namespace.clone(),
-                );
-                chip(
-                    ("topology-ns", index),
-                    namespace.clone(),
-                    true,
-                    active,
-                    cx.theme(),
-                )
-                .on_click(cx.listener(move |this, _, _, cx| this.choose(target.clone(), cx)))
-            })
-            .collect::<Vec<_>>();
-
         let body = match &self.load {
             Load::Failed(reason) => message(reason.clone(), palette.danger).into_any_element(),
             Load::Loading => message("Drawing the graph…", palette.muted).into_any_element(),
@@ -517,16 +497,6 @@ impl Render for TopologyView {
                     .when_some(self.namespace.clone(), |row, namespace| {
                         row.child(pill(namespace, palette.muted))
                     }),
-            )
-            .child(
-                h_flex()
-                    .flex_none()
-                    .px_4()
-                    .pb_2()
-                    .gap_2()
-                    .items_center()
-                    .flex_wrap()
-                    .children(chips),
             )
             .child(body)
     }
