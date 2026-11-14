@@ -137,7 +137,8 @@ hours or a day, or end a silence early.
 - Deleting, restarting, Helm changes, reconcile, suspend and silencing each ask
   first, and applying YAML needs a preview. Every change is refused on a
   protected cluster and written to a local audit log: timestamp, cluster,
-  target, outcome. Nothing leaves the machine.
+  target, outcome. The Activity page reads it back, newest first, with the
+  failures marked, and it is kept for a week. Nothing leaves the machine.
 - **No telemetry.** The app talks only to clusters you added, and to nothing
   else on its own.
 
@@ -153,7 +154,7 @@ The Tauri and React version had these; they are not ported yet.
   validation against the cluster's OpenAPI schema, node label and taint
   editing, and pruning on apply.
 - Ephemeral debug-container and node shells, and a local kubectl shell.
-- A viewer for the audit log, and local crash-log viewing.
+- Local crash-log viewing.
 - Automatic updates, and builds for Linux and Windows.
 
 ## Build

@@ -30,6 +30,7 @@ use k8s_ops::actions::TargetRef;
 use tokio::{runtime::Handle, sync::broadcast::error::RecvError, task::JoinHandle};
 
 use crate::{
+    activity::ActivityView,
     add_cluster::{AddClusterEvent, AddClusterView},
     alerts::{AlertsEvent, AlertsView},
     categories::{self, Category},
@@ -287,6 +288,8 @@ pub struct AppView {
     create: Option<Entity<CreateView>>,
     /// The port forwards of the open cluster.
     ports: Option<Entity<PortsView>>,
+    /// What the app changed, across every cluster.
+    activity: Option<Entity<ActivityView>>,
     /// The page for adding and removing clusters, which belongs to none.
     add_cluster: Option<OpenAddCluster>,
     /// The settings page, which belongs to no cluster.
@@ -405,6 +408,7 @@ impl AppView {
             alerts: None,
             create: None,
             ports: None,
+            activity: None,
             add_cluster: None,
             settings: None,
             overview: None,
@@ -438,6 +442,7 @@ impl AppView {
         self.alerts = None;
         self.create = None;
         self.ports = None;
+        self.activity = None;
         self.add_cluster = None;
         self.settings = None;
         self.overview = None;
@@ -586,6 +591,7 @@ impl AppView {
             && self.alerts.is_none()
             && self.create.is_none()
             && self.ports.is_none()
+            && self.activity.is_none()
             && self.add_cluster.is_none()
             && self.settings.is_none()
             && self.overview.is_none();
@@ -828,6 +834,12 @@ impl AppView {
             }
         }
         items.push(Item {
+            label: "Activity".into(),
+            hint: "Page".into(),
+            icon: IconName::Clock,
+            command: Command::Activity,
+        });
+        items.push(Item {
             label: "Add cluster".into(),
             hint: "Page".into(),
             icon: IconName::Plus,
@@ -851,6 +863,7 @@ impl AppView {
             Command::Alerts => self.open_alerts(window, cx),
             Command::Settings => self.open_settings(window, cx),
             Command::AddCluster => self.open_add_cluster(window, cx),
+            Command::Activity => self.open_activity(window, cx),
             Command::Ports => self.open_ports(None, window, cx),
             Command::Create => self.open_create(window, cx),
             Command::Cluster(index) => self.select_cluster(*index, window, cx),
@@ -1027,6 +1040,15 @@ impl AppView {
         cx.notify();
     }
 
+    /// Show what the app has changed. It reads a local log, so no cluster is
+    /// needed.
+    fn open_activity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_pages();
+        let (core, runtime) = (&self.core, &self.runtime);
+        self.activity = Some(cx.new(|cx| ActivityView::new(core, runtime, window, cx)));
+        cx.notify();
+    }
+
     /// Show the page for adding and removing clusters.
     fn open_add_cluster(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_pages();
@@ -1063,10 +1085,15 @@ impl AppView {
         self.active = active.and_then(|name| self.tiles.iter().position(|tile| tile.name == name));
         if self.active.is_none() {
             // Keep the page that is open; only the cluster pages belong to it.
-            let (add, settings) = (self.add_cluster.take(), self.settings.take());
+            let (add, settings, activity) = (
+                self.add_cluster.take(),
+                self.settings.take(),
+                self.activity.take(),
+            );
             self.clear_pages();
             self.add_cluster = add;
             self.settings = settings;
+            self.activity = activity;
             self.refresh_rows(cx);
         }
         cx.notify();
@@ -1826,6 +1853,7 @@ impl AppView {
         let open_overview = cx.listener(|this, _, window, cx| this.open_overview(window, cx));
         let open_helm = cx.listener(|this, _, window, cx| this.open_helm(window, cx));
         let open_gitops = cx.listener(|this, _, window, cx| this.open_gitops(window, cx));
+        let open_activity = cx.listener(|this, _, window, cx| this.open_activity(window, cx));
         let open_create = cx.listener(|this, _, window, cx| this.open_create(window, cx));
         let open_ports = cx.listener(|this, _, window, cx| this.open_ports(None, window, cx));
         let open_alerts = cx.listener(|this, _, window, cx| this.open_alerts(window, cx));
@@ -1886,6 +1914,15 @@ impl AppView {
                     self.helm.is_some(),
                 )
                 .on_click(open_helm),
+            )
+            .child(
+                pinned(
+                    "activity",
+                    IconName::Clock,
+                    "Activity",
+                    self.activity.is_some(),
+                )
+                .on_click(open_activity),
             );
 
         shell
@@ -2107,6 +2144,9 @@ impl AppView {
 
         if let Some(settings) = &self.settings {
             return main.child(settings.view.clone());
+        }
+        if let Some(activity) = &self.activity {
+            return main.child(activity.clone());
         }
         if let Some(add) = &self.add_cluster {
             return main.child(add.view.clone());

@@ -1,3 +1,4 @@
+mod activity;
 mod add_cluster;
 mod alerts;
 mod app;
