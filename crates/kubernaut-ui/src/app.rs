@@ -14,6 +14,7 @@ use gpui_kit::{
         button::ButtonVariant,
         h_flex,
         input::{Input, InputEvent, InputState},
+        menu::{ContextMenuExt, PopupMenuItem},
         table::{DataTable, TableEvent, TableState},
         tooltip::Tooltip,
         v_flex,
@@ -38,6 +39,7 @@ use crate::{
     add_cluster::{AddClusterEvent, AddClusterView},
     alerts::{AlertsEvent, AlertsView},
     categories::{self, Category},
+    cluster_info,
     crashes::CrashView,
     create::CreateView,
     drawer::{DrawerEvent, DrawerView, Tab as DrawerTab, Target},
@@ -1372,6 +1374,65 @@ impl AppView {
         cx.notify();
     }
 
+    /// Say how a cluster is connected: where, as whom, and anything unusual.
+    fn show_cluster_info(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(tile) = self.tiles.get(index) else {
+            return;
+        };
+        let (name, display) = (tile.name.clone(), tile.display.clone());
+        let entry = self
+            .core
+            .clusters
+            .contexts()
+            .into_iter()
+            .find(|context| context.name == *name);
+        let state = self.clusters.get(&name);
+        let status = state.map_or_else(
+            || "Not connected".to_string(),
+            |state| state.status_label.to_string(),
+        );
+        let preferences = self.core.preferences();
+        let rows = cluster_info::rows(
+            entry.as_ref(),
+            &status,
+            state.map(|state| state.namespaces.len()),
+            &preferences.profile(&name),
+            preferences.is_protected(&name),
+        );
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
+            let muted = cx.theme().muted_foreground;
+            dialog
+                .title(display.clone())
+                .description(v_flex().gap_1().children(rows.iter().map(|(label, value)| {
+                    h_flex()
+                        .gap_3()
+                        .items_start()
+                        .child(
+                            div()
+                                .w(px(130.))
+                                .flex_none()
+                                .text_color(muted)
+                                .child(*label),
+                        )
+                        .child(div().flex_1().min_w_0().child(value.clone()))
+                })))
+                .ok_text("Close")
+        });
+    }
+
+    /// Open Settings at this cluster's card.
+    fn edit_cluster(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(name) = self.tiles.get(index).map(|tile| tile.name.clone()) else {
+            return;
+        };
+        self.open_settings(window, cx);
+        if let Some(settings) = &self.settings {
+            settings
+                .view
+                .update(cx, |settings, cx| settings.show_cluster(&name, window, cx));
+        }
+    }
+
     /// Show the settings. They belong to the app, so no cluster is needed.
     pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_pages();
@@ -2402,6 +2463,8 @@ impl AppView {
             theme.title_bar,
         );
         let tip: SharedString = format!("{} · {state}", tile.display).into();
+        let owner = cx.entity().downgrade();
+        let connected = self.clusters.contains_key(&tile.name);
 
         div()
             .id(("tile", index))
@@ -2463,6 +2526,40 @@ impl AppView {
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.select_cluster(index, window, cx);
             }))
+            .context_menu(move |menu, _, _| {
+                let owner_for =
+                    |act: fn(&mut AppView, usize, &mut Window, &mut Context<AppView>)| {
+                        let owner = owner.clone();
+                        move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                            owner.update(cx, |app, cx| act(app, index, window, cx)).ok();
+                        }
+                    };
+                let menu = menu
+                    .item(
+                        PopupMenuItem::new("Info")
+                            .icon(Icon::new(IconName::Info))
+                            .on_click(owner_for(AppView::show_cluster_info)),
+                    )
+                    .item(
+                        PopupMenuItem::new("Edit…")
+                            .icon(Icon::new(IconName::Settings2))
+                            .on_click(owner_for(AppView::edit_cluster)),
+                    )
+                    .separator();
+                if connected {
+                    menu.item(
+                        PopupMenuItem::new("Disconnect")
+                            .icon(Icon::new(IconName::Close))
+                            .on_click(owner_for(|app, index, _, cx| app.disconnect(index, cx))),
+                    )
+                } else {
+                    menu.item(
+                        PopupMenuItem::new("Connect")
+                            .icon(Icon::new(IconName::Play))
+                            .on_click(owner_for(AppView::select_cluster)),
+                    )
+                }
+            })
     }
 
     fn render_row(&self, index: usize, row: &SidebarRow, cx: &mut Context<Self>) -> AnyElement {

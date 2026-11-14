@@ -11,6 +11,7 @@ mod alerts;
 mod app;
 mod categories;
 mod charts;
+mod cluster_info;
 mod crashes;
 mod create;
 mod diagnose;

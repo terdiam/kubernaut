@@ -98,6 +98,9 @@ version had that this one does not yet.
 - **Pin** any object from its menu for one-click access under a PINNED heading
   in the sidebar, whatever list or page is open; unpin with the × on the row.
   Pins are kept per cluster.
+- Right-clicking a cluster in the rail offers **Info** (server, user, sign-in
+  plugin, protection, and anything unusual such as ignored certificate checks),
+  **Edit…** (opens Settings at that cluster) and **Connect** or **Disconnect**.
 - A command palette (⌘K) across clusters, pages, namespaces and resource kinds.
 - Double-clicking empty space in the title bar maximises the window, or restores it.
 - On macOS an application menu with **About**, **Check for Updates…** and

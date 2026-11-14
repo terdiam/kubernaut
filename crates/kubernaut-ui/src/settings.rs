@@ -118,6 +118,8 @@ pub struct SettingsView {
     tail: i64,
     check_on_startup: bool,
     update: UpdateState,
+    /// The cluster whose card is marked, because it was sent here to be edited.
+    highlighted: Option<usize>,
     rows: Vec<ClusterRow>,
     path: Option<SharedString>,
 }
@@ -182,6 +184,7 @@ impl SettingsView {
             tail: preferences.log_tail_lines,
             check_on_startup: preferences.check_updates_on_startup,
             update: UpdateState::Idle,
+            highlighted: None,
             rows,
             path: preferences.path().map(Into::into),
         }
@@ -233,6 +236,21 @@ impl SettingsView {
             window,
             cx,
         );
+        cx.notify();
+    }
+
+    /// Mark a cluster's card and put the cursor in its name, which is what a
+    /// person coming to edit it types first.
+    pub fn show_cluster(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(index) = self.rows.iter().position(|row| *row.name == *name) else {
+            return;
+        };
+        self.highlighted = Some(index);
+        if let Some(row) = self.rows.get(index) {
+            row.display
+                .input
+                .update(cx, |input, cx| input.focus(window, cx));
+        }
         cx.notify();
     }
 
@@ -401,13 +419,14 @@ impl SettingsView {
 
 impl Render for SettingsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (border, muted, danger, secondary) = {
+        let (border, muted, danger, secondary, primary) = {
             let theme = cx.theme();
             (
                 theme.border,
                 theme.muted_foreground,
                 theme.danger,
                 theme.secondary,
+                theme.primary,
             )
         };
         let card = || {
@@ -619,6 +638,9 @@ impl Render for SettingsView {
                     .py_3()
                     .gap_2()
                     .when(index > 0, |column| column.border_t_1().border_color(border))
+                    .when(self.highlighted == Some(index), |column| {
+                        column.bg(primary.opacity(0.08))
+                    })
                     .child(
                         h_flex()
                             .gap_3()
