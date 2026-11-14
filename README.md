@@ -102,7 +102,9 @@ version had that this one does not yet.
   over it, or no request to compare with), busiest first. A tile opens the
   namespace.
 - A **Metrics** tab for a pod, node, namespace or workload: CPU and memory over
-  the last hour against what is declared. A Prometheus-compatible endpoint,
+  the last hour against what is declared, and for a pod or a node network
+  traffic in and out and disk (the container layer and volumes), read from the
+  kubelet. A Prometheus-compatible endpoint,
   found through the apiserver proxy, gives history at once; with only
   metrics-server the chart fills while the tab is open, and says so. For a
   workload it also suggests requests and limits per container from observed
@@ -179,7 +181,6 @@ hours or a day, or end a silence early.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Network and disk series in the charts.
 - Field-based create and edit forms (YAML create and edit work), YAML
   validation against the cluster's OpenAPI schema, node label and taint
   editing, and pruning on apply.

@@ -84,6 +84,20 @@ pub fn bytes(value: f64) -> String {
     }
 }
 
+/// Network traffic as a rate: `1.2 MB/s`.
+pub fn rate(bytes_per_second: f64) -> String {
+    const KB: f64 = 1024.0;
+    if bytes_per_second < 1.0 {
+        "0 B/s".to_string()
+    } else if bytes_per_second < KB {
+        format!("{bytes_per_second:.0} B/s")
+    } else if bytes_per_second < KB * KB {
+        format!("{:.0} KB/s", bytes_per_second / KB)
+    } else {
+        format!("{:.1} MB/s", bytes_per_second / (KB * KB))
+    }
+}
+
 /// `150m` against a declared `100m` request and `500m` limit, or the words for
 /// nothing being declared.
 fn declared_line(request: f64, limit: f64, format: fn(f64) -> String) -> String {
@@ -101,6 +115,31 @@ fn declared_line(request: f64, limit: f64, format: fn(f64) -> String) -> String 
 struct Pt {
     label: SharedString,
     value: f64,
+}
+
+/// A point with two values, for a chart that draws two lines.
+#[derive(Clone)]
+struct Duo {
+    label: SharedString,
+    first: f64,
+    second: f64,
+}
+
+/// Two series over the same moments, labelled by how long before the newest.
+fn series_pair(
+    points: &[k8s_metrics::Point],
+    first: impl Fn(&k8s_metrics::Point) -> f64,
+    second: impl Fn(&k8s_metrics::Point) -> f64,
+) -> Vec<Duo> {
+    series(points, &first)
+        .into_iter()
+        .zip(series(points, &second))
+        .map(|(a, b)| Duo {
+            label: a.label,
+            first: a.value,
+            second: b.value,
+        })
+        .collect()
 }
 
 /// A series for the chart, oldest first, labelled by how long ago.
@@ -285,8 +324,66 @@ impl MetricsView {
                     AreaChart::new(data)
                         .x(|point: &Pt| point.label.clone())
                         .y(|point: &Pt| point.value)
+                        .linear()
                         .stroke(color)
                         .fill(color.opacity(0.18))
+                        .x_axis(false)
+                        .grid(false),
+                ),
+            )
+    }
+
+    /// A chart of two series, with a key that names each.
+    fn render_duo(
+        &self,
+        title: &'static str,
+        now: String,
+        key: [(&'static str, Hsla); 2],
+        data: Vec<Duo>,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let (border, muted) = {
+            let theme = cx.theme();
+            (theme.border, theme.muted_foreground)
+        };
+        v_flex()
+            .p_3()
+            .gap_1()
+            .rounded_lg()
+            .border_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_baseline()
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(muted)
+                            .child(title),
+                    )
+                    .child(div().text_lg().font_semibold().child(now)),
+            )
+            .child(h_flex().gap_3().children(key.map(|(label, color)| {
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .child(div().size(px(8.)).rounded_full().bg(color))
+                    .child(div().text_xs().text_color(muted).child(label))
+            })))
+            .child(
+                div().h(px(110.)).child(
+                    AreaChart::new(data)
+                        .x(|point: &Duo| point.label.clone())
+                        .y(|point: &Duo| point.first)
+                        .linear()
+                        .stroke(key[0].1)
+                        .fill(key[0].1.opacity(0.14))
+                        .y(|point: &Duo| point.second)
+                        .linear()
+                        .stroke(key[1].1)
+                        .fill(key[1].1.opacity(0.14))
                         .x_axis(false)
                         .grid(false),
                 ),
@@ -456,6 +553,53 @@ impl Render for MetricsView {
                         warning,
                         cx,
                     ));
+                // Network and disk are only attributable to one pod or one node.
+                if matches!(
+                    self.metric,
+                    MetricTarget::Pod { .. } | MetricTarget::Node { .. }
+                ) {
+                    if metrics.io_points.is_empty() {
+                        column = column.child(div().text_xs().text_color(palette.muted).child(
+                            metrics.io_note.clone().unwrap_or_else(|| {
+                                "Network and disk fill in as samples arrive.".to_string()
+                            }),
+                        ));
+                    } else {
+                        let io = &metrics.io_points;
+                        let last = io.last().copied().unwrap_or_default();
+                        let (success, danger) = {
+                            let theme = cx.theme();
+                            (theme.success, theme.danger)
+                        };
+                        column = column
+                            .child(self.render_duo(
+                                "NETWORK",
+                                format!("↓ {} ↑ {}", rate(last.network_rx), rate(last.network_tx)),
+                                [("received", success), ("sent", info)],
+                                series_pair(
+                                    io,
+                                    |p| p.network_rx / 1024.0,
+                                    |p| p.network_tx / 1024.0,
+                                ),
+                                cx,
+                            ))
+                            .child(self.render_duo(
+                                "DISK",
+                                format!(
+                                    "{} · volumes {}",
+                                    bytes(last.fs_used),
+                                    bytes(last.volume_used)
+                                ),
+                                [("container layer and logs", warning), ("volumes", danger)],
+                                series_pair(
+                                    io,
+                                    |p| p.fs_used / (1024.0 * 1024.0),
+                                    |p| p.volume_used / (1024.0 * 1024.0),
+                                ),
+                                cx,
+                            ));
+                    }
+                }
                 if let Some(report) = &self.sizing {
                     column = column.child(self.render_sizing(report, cx));
                 }
@@ -473,7 +617,7 @@ impl Render for MetricsView {
 
 #[cfg(test)]
 mod tests {
-    use super::{bytes, cores, declared_line, metric_target, series};
+    use super::{bytes, cores, declared_line, metric_target, rate, series, series_pair};
     use crate::drawer::Target;
     use k8s_metrics::{MetricTarget, Point};
 
@@ -535,5 +679,31 @@ mod tests {
         assert_eq!(&*data[0].label, "1m0s ago");
         assert_eq!(&*data[1].label, "now");
         assert!(series(&[], |p| p.cpu).is_empty());
+    }
+
+    #[test]
+    fn network_traffic_reads_as_a_rate() {
+        assert_eq!(rate(0.0), "0 B/s");
+        assert_eq!(rate(512.0), "512 B/s");
+        assert_eq!(rate(2048.0), "2 KB/s");
+        assert_eq!(rate(3.0 * 1024.0 * 1024.0), "3.0 MB/s");
+    }
+
+    #[test]
+    fn two_series_share_their_moments() {
+        let point = |at: i64, rx: f64, tx: f64| Point {
+            at,
+            network_rx: rx,
+            network_tx: tx,
+            ..Default::default()
+        };
+        let pair = series_pair(
+            &[point(0, 1.0, 2.0), point(1000, 3.0, 4.0)],
+            |p| p.network_rx,
+            |p| p.network_tx,
+        );
+        assert_eq!(pair.len(), 2);
+        assert_eq!((pair[1].first, pair[1].second), (3.0, 4.0));
+        assert_eq!(&*pair[1].label, "now");
     }
 }
