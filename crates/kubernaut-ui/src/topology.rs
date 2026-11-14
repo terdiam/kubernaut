@@ -5,7 +5,10 @@
 //! workload with no ready pod, is the kind of thing that is invisible in lists
 //! and obvious in a picture.
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use gpui_kit::{
     assets::IconName,
@@ -20,7 +23,7 @@ use tokio::runtime::Handle;
 
 use crate::{
     drawer::Target,
-    ui::{Palette, message, page_title, pill},
+    ui::{Emphasis, Palette, button, message, page_title, pill},
 };
 
 const CARD_W: f32 = 200.;
@@ -33,6 +36,16 @@ const HEADING: f32 = 22.;
 
 /// Left to right, the way traffic and ownership run.
 const COLUMNS: [&str; 5] = ["Ingress", "Service", "Workload", "Pod", "Node"];
+
+/// How far the pointer must move before a press on a card is a drag and not a
+/// click, in pixels.
+const DRAG_SLOP: f32 = 4.;
+/// Space between the dots that run along a line, and how fast they run, in
+/// pixels and pixels per second.
+const DOT_SPACING: f32 = 48.;
+const DOT_SPEED: f32 = 70.;
+/// How often the dots are redrawn.
+const FRAME: Duration = Duration::from_millis(33);
 
 pub enum TopologyEvent {
     /// Show the object behind a card.
@@ -144,6 +157,27 @@ fn layout(nodes: &[TopologyNode], edges: &[k8s_metrics::TopologyEdge]) -> Layout
     }
 }
 
+/// Where along a line (0 at its start, 1 at its end) each travelling dot is
+/// `seconds` into the animation. Longer lines carry more dots, so the spacing
+/// and the speed look the same on every line.
+fn flow(length: f32, seconds: f32) -> impl Iterator<Item = f32> {
+    let count = ((length / DOT_SPACING).round() as usize).max(1);
+    let shift = if length > 0. {
+        seconds * DOT_SPEED / length
+    } else {
+        0.
+    };
+    (0..count).map(move |at| (shift + at as f32 / count as f32).fract())
+}
+
+/// A point on the cubic Bézier through `p` at `t`.
+fn bezier(p: [(f32, f32); 4], t: f32) -> (f32, f32) {
+    let u = 1. - t;
+    let weight = [u * u * u, 3. * u * u * t, 3. * u * t * t, t * t * t];
+    let at = |axis: fn((f32, f32)) -> f32| (0..4).map(|i| weight[i] * axis(p[i])).sum::<f32>();
+    (at(|point| point.0), at(|point| point.1))
+}
+
 fn health_color(health: &str, theme: &Theme) -> Hsla {
     match health {
         "ok" => theme.success,
@@ -158,6 +192,8 @@ fn health_color(health: &str, theme: &Theme) -> Hsla {
 struct Card {
     x: f32,
     y: f32,
+    /// Where the layout put it, to go back to after it was dragged.
+    home: (f32, f32),
     name: SharedString,
     detail: SharedString,
     health: SharedString,
@@ -186,6 +222,7 @@ fn drawn(topology: &Topology, cluster: &SharedString) -> Drawn {
         cards.push(Card {
             x,
             y,
+            home: (x, y),
             name: node.name.clone().into(),
             detail: node.detail.clone().unwrap_or_default().into(),
             health: node.health.clone().into(),
@@ -223,6 +260,22 @@ enum Load {
     Failed(SharedString),
 }
 
+/// What a held mouse button is doing on the page.
+enum Drag {
+    /// Moving a card: where the pointer and the card were when it was pressed.
+    Card {
+        index: usize,
+        pointer: Point<Pixels>,
+        origin: (f32, f32),
+        moved: bool,
+    },
+    /// Panning the view: where the pointer and the scroll position were.
+    Pan {
+        pointer: Point<Pixels>,
+        offset: Point<Pixels>,
+    },
+}
+
 pub struct TopologyView {
     core: Arc<AppCore>,
     runtime: Handle,
@@ -234,6 +287,11 @@ pub struct TopologyView {
     /// The card whose lines are drawn strongly.
     focus: Option<usize>,
     scroll: ScrollHandle,
+    drag: Option<Drag>,
+    /// A card was just dragged, so the click that ends the drag opens nothing.
+    just_dragged: bool,
+    /// The animation's clock.
+    started: Instant,
 }
 
 impl EventEmitter<TopologyEvent> for TopologyView {}
@@ -267,8 +325,29 @@ impl TopologyView {
             load: Load::Loading,
             focus: None,
             scroll: ScrollHandle::new(),
+            drag: None,
+            just_dragged: false,
+            started: Instant::now(),
         };
         view.refresh(cx);
+        // Redraw only while there are lines to animate, and for as long as the
+        // page exists: the view going away ends the loop.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(FRAME).await;
+                let alive = this
+                    .update(cx, |this, cx| {
+                        if this.animating() {
+                            cx.notify();
+                        }
+                    })
+                    .is_ok();
+                if !alive {
+                    break;
+                }
+            }
+        })
+        .detach();
         view
     }
 
@@ -295,6 +374,93 @@ impl TopologyView {
             .ok();
         })
         .detach();
+        cx.notify();
+    }
+
+    fn animating(&self) -> bool {
+        matches!(&self.load, Load::Ready(drawn) if !drawn.links.is_empty())
+    }
+
+    fn press_card(&mut self, index: usize, event: &MouseDownEvent) {
+        let Load::Ready(drawn) = &self.load else {
+            return;
+        };
+        let Some(card) = drawn.cards.get(index) else {
+            return;
+        };
+        self.just_dragged = false;
+        self.drag = Some(Drag::Card {
+            index,
+            pointer: event.position,
+            origin: (card.x, card.y),
+            moved: false,
+        });
+    }
+
+    fn press_background(&mut self, event: &MouseDownEvent) {
+        self.drag = Some(Drag::Pan {
+            pointer: event.position,
+            offset: self.scroll.offset(),
+        });
+    }
+
+    fn drag_to(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        if event.pressed_button != Some(MouseButton::Left) {
+            // The release happened where nothing was listening.
+            self.release(cx);
+            return;
+        }
+        match &mut self.drag {
+            Some(Drag::Card {
+                index,
+                pointer,
+                origin,
+                moved,
+            }) => {
+                let delta = event.position - *pointer;
+                let (dx, dy) = (f32::from(delta.x), f32::from(delta.y));
+                if !*moved && dx.abs() + dy.abs() < DRAG_SLOP {
+                    return;
+                }
+                *moved = true;
+                if let Load::Ready(drawn) = &mut self.load
+                    && let Some(card) = drawn.cards.get_mut(*index)
+                {
+                    card.x = (origin.0 + dx).max(0.);
+                    card.y = (origin.1 + dy).max(0.);
+                }
+                cx.notify();
+            }
+            Some(Drag::Pan { pointer, offset }) => {
+                let delta = event.position - *pointer;
+                let max = self.scroll.max_offset();
+                let clamp = |value: Pixels, limit: Pixels| value.min(px(0.)).max(-limit);
+                self.scroll.set_offset(point(
+                    clamp(offset.x + delta.x, max.x),
+                    clamp(offset.y + delta.y, max.y),
+                ));
+                cx.notify();
+            }
+            None => {}
+        }
+    }
+
+    fn release(&mut self, cx: &mut Context<Self>) {
+        if let Some(Drag::Card { moved: true, .. }) = self.drag {
+            self.just_dragged = true;
+        }
+        if self.drag.take().is_some() {
+            cx.notify();
+        }
+    }
+
+    /// Put every card back where the layout placed it.
+    fn reset_layout(&mut self, cx: &mut Context<Self>) {
+        if let Load::Ready(drawn) = &mut self.load {
+            for card in &mut drawn.cards {
+                (card.x, card.y) = card.home;
+            }
+        }
         cx.notify();
     }
 
@@ -342,7 +508,9 @@ impl TopologyView {
             })
             .collect();
         let faint = muted.opacity(if self.focus.is_some() { 0.25 } else { 0.5 });
+        let seconds = self.started.elapsed().as_secs_f32();
 
+        let dot = muted.opacity(0.9);
         let edges = canvas(
             |_, _, _| (),
             move |bounds, (), window, _| {
@@ -362,17 +530,43 @@ impl TopologyView {
                     if let Ok(path) = path.build() {
                         window.paint_path(path, if strong { primary } else { faint });
                     }
+
+                    // Dots run from the source to what it feeds.
+                    let curve = [(x1, y1), (x1 + reach, y1), (x2 - reach, y2), (x2, y2)];
+                    let length = ((x2 - x1).powi(2) + (y2 - y1).powi(2)).sqrt() * 1.1;
+                    let size_px = if strong { 5. } else { 3.5 };
+                    for t in flow(length, seconds) {
+                        let (cx_, cy_) = bezier(curve, t);
+                        // Fade in and out so a dot does not pop at either end.
+                        let fade = (t * std::f32::consts::PI).sin();
+                        let color = if strong { primary } else { dot }.opacity(fade);
+                        let center = bounds.origin + point(px(cx_), px(cy_));
+                        window.paint_quad(
+                            fill(
+                                Bounds::centered_at(center, size(px(size_px), px(size_px))),
+                                color,
+                            )
+                            .corner_radii(px(size_px / 2.)),
+                        );
+                    }
                 }
             },
         )
         .absolute()
         .size_full();
 
-        let mut canvas_box = div()
-            .relative()
-            .w(px(drawn.width))
-            .h(px(drawn.height))
-            .child(edges);
+        // Room for wherever the cards have been dragged to.
+        let (width, height) =
+            drawn
+                .cards
+                .iter()
+                .fold((drawn.width, drawn.height), |(width, height), card| {
+                    (
+                        width.max(card.x + CARD_W + PAD),
+                        height.max(card.y + CARD_H + PAD),
+                    )
+                });
+        let mut canvas_box = div().relative().w(px(width)).h(px(height)).child(edges);
         for (name, x) in &drawn.headings {
             canvas_box = canvas_box.child(
                 div()
@@ -410,6 +604,14 @@ impl TopologyView {
                     })
                     .cursor_pointer()
                     .hover(|card| card.bg(secondary))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            this.press_card(index, event);
+                            // The press belongs to the card, not to the page behind it.
+                            cx.stop_propagation();
+                        }),
+                    )
                     .child(
                         h_flex()
                             .gap_2()
@@ -433,6 +635,12 @@ impl TopologyView {
                             .child(card.detail.clone()),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
+                        // The click that ends a drag opens nothing. It arrives before
+                        // the page sees the button go up, so the drag may still be live.
+                        let dragging = matches!(this.drag, Some(Drag::Card { moved: true, .. }));
+                        if std::mem::take(&mut this.just_dragged) || dragging {
+                            return;
+                        }
                         this.focus = Some(index);
                         if let Some(target) = &target {
                             cx.emit(TopologyEvent::Open(target.clone()));
@@ -447,6 +655,27 @@ impl TopologyView {
             .min_h_0()
             .overflow_scroll()
             .track_scroll(&self.scroll)
+            .when(matches!(self.drag, Some(Drag::Pan { .. })), |page| {
+                page.cursor_grabbing()
+            })
+            .when(!matches!(self.drag, Some(Drag::Pan { .. })), |page| {
+                page.cursor_grab()
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseDownEvent, _, _| this.press_background(event)),
+            )
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
+                this.drag_to(event, cx);
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.release(cx)),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, cx| this.release(cx)),
+            )
             .child(canvas_box)
             .into_any_element()
     }
@@ -455,6 +684,9 @@ impl TopologyView {
 impl Render for TopologyView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = Palette::of(cx);
+        // Whether any card is away from where the layout put it.
+        let moved = matches!(&self.load, Load::Ready(drawn)
+            if drawn.cards.iter().any(|card| (card.x, card.y) != card.home));
         let body = match &self.load {
             Load::Failed(reason) => message(reason.clone(), palette.danger).into_any_element(),
             Load::Loading => message("Drawing the graph…", palette.muted).into_any_element(),
@@ -496,6 +728,19 @@ impl Render for TopologyView {
                     .child(page_title(IconName::Network, "Topology", cx.theme()))
                     .when_some(self.namespace.clone(), |row, namespace| {
                         row.child(pill(namespace, palette.muted))
+                    })
+                    .child(div().flex_1())
+                    .when(moved, |row| {
+                        row.child(
+                            button(
+                                "topology-reset",
+                                "Reset layout",
+                                true,
+                                Emphasis::Plain,
+                                cx.theme(),
+                            )
+                            .on_click(cx.listener(|this, _, _, cx| this.reset_layout(cx))),
+                        )
                     }),
             )
             .child(body)
@@ -504,7 +749,9 @@ impl Render for TopologyView {
 
 #[cfg(test)]
 mod tests {
-    use super::{CARD_H, CARD_W, COLUMN_GAP, PAD, ROW_GAP, followed, layout};
+    use super::{
+        CARD_H, CARD_W, COLUMN_GAP, DOT_SPACING, PAD, ROW_GAP, bezier, flow, followed, layout,
+    };
     use k8s_metrics::{TopologyEdge, TopologyNode};
 
     fn node(id: &str, kind: &str, name: &str) -> TopologyNode {
@@ -599,5 +846,40 @@ mod tests {
             followed(&known, &[]).is_none(),
             "all namespaces keeps the picture"
         );
+    }
+
+    #[test]
+    fn dots_run_along_a_line_and_longer_lines_carry_more() {
+        let at = |length: f32, seconds: f32| flow(length, seconds).collect::<Vec<_>>();
+        let short = at(DOT_SPACING * 2., 0.);
+        let long = at(DOT_SPACING * 6., 0.);
+        assert_eq!((short.len(), long.len()), (2, 6));
+        assert!(at(10., 0.).len() == 1, "a short line still carries a dot");
+
+        // They move forward with time and stay on the line.
+        let later = at(DOT_SPACING * 6., 0.3);
+        assert!(later.iter().all(|t| (0. ..1.).contains(t)));
+        assert!(later[0] > long[0], "moved toward the end");
+        // After a whole spacing they are back in step with the start.
+        let period = DOT_SPACING / super::DOT_SPEED;
+        let again = at(DOT_SPACING * 6., period);
+        let mut a: Vec<_> = again.iter().map(|t| (t * 1000.).round()).collect();
+        let mut b: Vec<_> = long.iter().map(|t| (t * 1000.).round()).collect();
+        a.sort_by(f32::total_cmp);
+        b.sort_by(f32::total_cmp);
+        assert_eq!(a, b);
+        assert!(
+            at(0., 5.).iter().all(|t| *t == 0.),
+            "no length, no movement"
+        );
+    }
+
+    #[test]
+    fn a_curve_starts_and_ends_on_its_ends_and_bends_between() {
+        let curve = [(0., 0.), (50., 0.), (50., 100.), (100., 100.)];
+        assert_eq!(bezier(curve, 0.), (0., 0.));
+        assert_eq!(bezier(curve, 1.), (100., 100.));
+        let middle = bezier(curve, 0.5);
+        assert!((middle.0 - 50.).abs() < 0.01 && (middle.1 - 50.).abs() < 0.01);
     }
 }

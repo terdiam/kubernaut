@@ -83,6 +83,16 @@ actions!(
     ]
 );
 
+/// Empty space in the title bar. Double-clicking it maximises the window, as it
+/// does on a native title bar; the bar is drawn by the app, so that is done here.
+fn titlebar_gap(id: &'static str) -> Stateful<Div> {
+    div().id(id).flex_1().h_full().on_click(|event, window, _| {
+        if event.click_count() == 2 {
+            window.zoom_window();
+        }
+    })
+}
+
 /// The key context the app's shortcuts are bound under.
 pub const KEY_CONTEXT: &str = "Kubernaut";
 
@@ -2767,9 +2777,9 @@ impl AppView {
         let (Some(index), Some(state)) = (self.active, self.active_state()) else {
             return bar
                 .child(div().font_semibold().text_color(muted).child("Kubernaut"))
-                .child(div().flex_1())
+                .child(titlebar_gap("titlebar-gap-a"))
                 .child(search)
-                .child(div().flex_1());
+                .child(titlebar_gap("titlebar-gap-b"));
         };
         let tile = &self.tiles[index];
         let tone = match state.status {
@@ -2881,9 +2891,9 @@ impl AppView {
         .child(pill(state.status_label.clone(), tone))
         .child(namespace_button)
         .child(namespace_pills)
-        .child(div().flex_1())
+        .child(titlebar_gap("titlebar-gap-c"))
         .child(search)
-        .child(div().flex_1())
+        .child(titlebar_gap("titlebar-gap-d"))
         .child(
             chip("disconnect", "Disconnect", true, false, theme)
                 .on_click(cx.listener(move |this, _, _, cx| this.disconnect(index, cx))),

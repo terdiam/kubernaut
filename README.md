@@ -99,6 +99,7 @@ version had that this one does not yet.
   in the sidebar, whatever list or page is open; unpin with the × on the row.
   Pins are kept per cluster.
 - A command palette (⌘K) across clusters, pages, namespaces and resource kinds.
+- Double-clicking empty space in the title bar maximises the window, or restores it.
 - On macOS an application menu with **About**, **Check for Updates…** and
   **Settings…** (⌘,), plus Hide and Quit. Check for Updates opens Settings and
   looks for a newer version there. Linux and Windows have no native menu bar, so
@@ -115,6 +116,9 @@ version had that this one does not yet.
   to workloads to pods to nodes, with columns ordered so lines run mostly
   straight. A service that selects nothing, or a pod that is failing, is red.
   Clicking a card opens its object and draws its connections strongly.
+  Cards can be dragged to untangle a picture (the lines follow, and **Reset
+  layout** puts them back), the background drags to pan, and small dots run along
+  each line from what feeds to what is fed. Clicking a card still opens its object.
 - A **Usage** page: a heatmap of every namespace, coloured by how much of its
   requested CPU or memory it uses (mostly idle, comfortable, near the request,
   over it, or no request to compare with), busiest first. A tile opens the
