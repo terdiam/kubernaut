@@ -1,0 +1,89 @@
+name: legacy-updater
+
+# Installs of the old Tauri app (0.1.x) ask `releases/latest/download/latest.json`
+# whether there is an update. Once the latest release is a native one, that file
+# no longer exists and they report "Could not fetch a valid release JSON".
+#
+# This publishes that file for a native release, so an old macOS (Apple silicon)
+# install is offered the new app through its own updater: the release's zip is
+# repacked as `Kubernaut.app.tar.gz` and signed with the Tauri key whose public
+# half those installs carry. Run it by hand once per release that should be
+# offered:
+#
+#   gh workflow run legacy-updater.yml -f tag=v1.0.0
+#
+# Only darwin-aarch64 is listed. The old Intel build was a universal app, and
+# offering it this arm64-only one would break those installs; Windows and Linux
+# installs need installers this release does not have. Those platforms keep
+# failing to find an update, and download the release by hand.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to offer, such as v1.0.0
+        required: true
+
+env:
+  # Pinned deliberately, like the other tools fetched during a release.
+  TAURI_CLI_VERSION: 2.12.4
+
+jobs:
+  bridge:
+    runs-on: macos-15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - name: Download the release's macOS zip
+        run: |
+          mkdir work && cd work
+          gh release download "$TAG" -p 'Kubernaut-*-macos-arm64.zip'
+          ls -la
+
+      - name: Repack it as the archive the old updater expects
+        run: |
+          cd work
+          ditto -x -k Kubernaut-*-macos-arm64.zip unpacked
+          test -d unpacked/Kubernaut.app
+          COPYFILE_DISABLE=1 tar -czf Kubernaut.app.tar.gz -C unpacked Kubernaut.app
+          ls -la Kubernaut.app.tar.gz
+
+      - name: Sign it with the old updater key
+        working-directory: work
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          [ -n "$TAURI_SIGNING_PRIVATE_KEY" ] || { echo "TAURI_SIGNING_PRIVATE_KEY is not set" >&2; exit 1; }
+          npx --yes "@tauri-apps/cli@${TAURI_CLI_VERSION}" signer sign Kubernaut.app.tar.gz
+          test -s Kubernaut.app.tar.gz.sig
+
+      - name: Write latest.json
+        working-directory: work
+        run: |
+          python3 - <<'PY'
+          import datetime, json, os
+          tag = os.environ["TAG"]
+          repo = os.environ["GH_REPO"]
+          signature = open("Kubernaut.app.tar.gz.sig").read().strip()
+          entry = {
+              "signature": signature,
+              "url": f"https://github.com/{repo}/releases/download/{tag}/Kubernaut.app.tar.gz",
+          }
+          manifest = {
+              "version": tag.lstrip("v"),
+              "notes": f"Kubernaut {tag} is a rewrite as a native app. Release notes: https://github.com/{repo}/releases/tag/{tag}",
+              "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z"),
+              "platforms": {"darwin-aarch64": entry, "darwin-aarch64-app": entry},
+          }
+          json.dump(manifest, open("latest.json", "w"), indent=2)
+          PY
+          cat latest.json
+
+      - name: Attach to the release
+        working-directory: work
+        run: gh release upload "$TAG" Kubernaut.app.tar.gz Kubernaut.app.tar.gz.sig latest.json --clobber
