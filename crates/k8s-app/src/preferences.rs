@@ -81,6 +81,29 @@ pub struct PinnedObject {
     pub namespace: Option<String>,
     pub name: String,
     pub label: Option<String>,
+    /// The kind's name, for the icon and the label. Missing in files saved
+    /// before it was recorded.
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+impl PinnedObject {
+    /// Whether two pins are the same object, whatever else they carry.
+    pub fn same_object(&self, other: &Self) -> bool {
+        self.cluster == other.cluster
+            && self.resource_key == other.resource_key
+            && self.namespace == other.namespace
+            && self.name == other.name
+    }
+}
+
+/// Add a pin, or remove it, leaving the others. Pinning what is already pinned
+/// changes nothing, so it can be applied to a copy and to the saved list alike.
+pub fn set_pinned(list: &mut Vec<PinnedObject>, pin: PinnedObject, pinned: bool) {
+    list.retain(|existing| !existing.same_object(&pin));
+    if pinned {
+        list.push(pin);
+    }
 }
 
 /// A user-defined row action that opens the local kubectl shell with a
@@ -252,6 +275,10 @@ impl Preferences {
         }
     }
 
+    pub fn is_pinned(&self, pin: &PinnedObject) -> bool {
+        self.pinned.iter().any(|existing| existing.same_object(pin))
+    }
+
     /// Mark a context protected or not. Matching ignores case, as
     /// [`Self::is_protected`] does, so un-protecting removes every spelling.
     pub fn set_protected(&mut self, context: &str, protected: bool) {
@@ -342,6 +369,44 @@ mod tests {
 
         preferences.set_protected("Prod", false);
         assert!(preferences.protected_contexts.is_empty());
+    }
+
+    fn pin(name: &str) -> PinnedObject {
+        PinnedObject {
+            cluster: "prod".into(),
+            resource_key: "apps/v1/deployments".into(),
+            namespace: Some("shop".into()),
+            name: name.into(),
+            label: None,
+            kind: Some("Deployment".into()),
+        }
+    }
+
+    #[test]
+    fn pinning_is_idempotent_and_unpinning_leaves_the_others() {
+        let mut list = Vec::new();
+        set_pinned(&mut list, pin("web"), true);
+        set_pinned(&mut list, pin("web"), true);
+        set_pinned(&mut list, pin("api"), true);
+        assert_eq!(list.len(), 2);
+
+        set_pinned(&mut list, pin("web"), false);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "api");
+        set_pinned(&mut list, pin("web"), false);
+        assert_eq!(
+            list.len(),
+            1,
+            "unpinning what is not pinned changes nothing"
+        );
+    }
+
+    #[test]
+    fn a_pin_saved_before_kinds_were_recorded_still_loads() {
+        let json = r#"{"pinned":[{"cluster":"c","resourceKey":"core/v1/pods","namespace":"a","name":"p","label":null}]}"#;
+        let preferences: Preferences = serde_json::from_str(json).unwrap();
+        assert_eq!(preferences.pinned[0].kind, None);
+        assert!(preferences.is_pinned(&preferences.pinned[0].clone()));
     }
 
     #[test]

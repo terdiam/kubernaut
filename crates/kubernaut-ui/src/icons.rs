@@ -31,6 +31,8 @@ assets::icon_assets!(
         ListChecks,
         Lock,
         Network,
+        Pin,
+        PinOff,
         Puzzle,
         Route,
         Ruler,

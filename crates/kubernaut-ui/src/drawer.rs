@@ -50,6 +50,20 @@ pub struct Target {
     pub name: SharedString,
 }
 
+impl Target {
+    /// This object as a sidebar pin.
+    pub fn pin(&self) -> k8s_app::preferences::PinnedObject {
+        k8s_app::preferences::PinnedObject {
+            cluster: self.cluster.to_string(),
+            resource_key: self.resource.to_string(),
+            namespace: self.namespace.as_ref().map(ToString::to_string),
+            name: self.name.to_string(),
+            label: None,
+            kind: Some(self.kind.to_string()),
+        }
+    }
+}
+
 pub enum DrawerEvent {
     Close,
     /// An entry of the actions menu, for the app to carry out.
@@ -397,6 +411,7 @@ impl Render for DrawerView {
                     .child({
                         let owner = cx.entity().downgrade();
                         let resource = self.target.resource.clone();
+                        let pinned = self.core.preferences().is_pinned(&self.target.pin());
                         Button::new("drawer-actions")
                             .ghost()
                             .compact()
@@ -408,6 +423,7 @@ impl Render for DrawerView {
                                     menu,
                                     &resource,
                                     false,
+                                    pinned,
                                     move |action, _, cx| {
                                         owner
                                             .update(cx, |_, cx| cx.emit(DrawerEvent::Row(action)))

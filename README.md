@@ -83,6 +83,9 @@ version had that this one does not yet.
   is reported.
 - A right-click menu per row: open, logs, shell, forward a port, copy name or
   YAML, restart, cordon, delete — only what applies to the kind.
+- **Pin** any object from its menu for one-click access under a PINNED heading
+  in the sidebar, whatever list or page is open; unpin with the × on the row.
+  Pins are kept per cluster.
 - A command palette (⌘K) across clusters, pages, namespaces and resource kinds.
 - **Overview** of a cluster: CPU, memory and pod gauges, an hour of history and
   the issues worth looking at, read from `metrics.k8s.io` and a discovered
@@ -159,7 +162,6 @@ The Tauri and React version had these; they are not ported yet.
 
 - Metrics beyond the overview: namespace heatmap, per-object charts, node
   usage, the topology graph, sizing recommendations, and the Quota tab.
-- Pinning objects.
 - Field-based create and edit forms (YAML create and edit work), YAML
   validation against the cluster's OpenAPI schema, node label and taint
   editing, and pruning on apply.

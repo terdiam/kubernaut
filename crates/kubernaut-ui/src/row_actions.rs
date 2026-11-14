@@ -17,6 +17,8 @@ pub enum RowAction {
     Logs,
     Shell,
     Forward,
+    Pin,
+    Unpin,
     CopyName,
     CopyYaml,
     Restart,
@@ -32,6 +34,8 @@ impl RowAction {
             Self::Logs => "View logs",
             Self::Shell => "Open shell",
             Self::Forward => "Forward port…",
+            Self::Pin => "Pin to sidebar",
+            Self::Unpin => "Unpin from sidebar",
             Self::CopyName => "Copy name",
             Self::CopyYaml => "Copy YAML",
             Self::Restart => "Restart",
@@ -47,6 +51,8 @@ impl RowAction {
             Self::Logs => IconName::FileText,
             Self::Shell => IconName::SquareTerminal,
             Self::Forward => IconName::ArrowLeftRight,
+            Self::Pin => IconName::Pin,
+            Self::Unpin => IconName::PinOff,
             Self::CopyName | Self::CopyYaml => IconName::Copy,
             Self::Restart => IconName::RotateCw,
             Self::Cordon => IconName::Pause,
@@ -70,7 +76,7 @@ pub fn is_workload(resource: &str) -> bool {
 }
 
 /// The menu as groups; the caller draws a separator between groups.
-pub fn groups(resource: &str) -> Vec<Vec<RowAction>> {
+pub fn groups(resource: &str, pinned: bool) -> Vec<Vec<RowAction>> {
     let is_pod = resource == "core/v1/pods";
     let is_workload = WORKLOADS.contains(&resource);
     let is_node = resource == "core/v1/nodes";
@@ -98,7 +104,19 @@ pub fn groups(resource: &str) -> Vec<Vec<RowAction>> {
     // hit by accident while reaching for something else.
     change.push(RowAction::Delete);
 
-    vec![view, vec![RowAction::CopyName, RowAction::CopyYaml], change]
+    vec![
+        view,
+        vec![
+            if pinned {
+                RowAction::Unpin
+            } else {
+                RowAction::Pin
+            },
+            RowAction::CopyName,
+            RowAction::CopyYaml,
+        ],
+        change,
+    ]
 }
 
 /// Fill a menu with the entries for a kind, calling `pick` with the choice.
@@ -107,11 +125,12 @@ pub fn build_menu(
     menu: PopupMenu,
     resource: &str,
     include_open: bool,
+    pinned: bool,
     pick: impl Fn(RowAction, &mut Window, &mut App) + Clone + 'static,
 ) -> PopupMenu {
     let mut menu = menu;
     let mut first = true;
-    for group in groups(resource) {
+    for group in groups(resource, pinned) {
         let group: Vec<RowAction> = group
             .into_iter()
             .filter(|action| include_open || *action != RowAction::Open)
@@ -140,7 +159,7 @@ mod tests {
     use super::{RowAction, groups};
 
     fn flat(resource: &str) -> Vec<RowAction> {
-        groups(resource).into_iter().flatten().collect()
+        groups(resource, false).into_iter().flatten().collect()
     }
 
     #[test]
@@ -163,6 +182,20 @@ mod tests {
         let pod = flat("core/v1/pods");
         assert!(pod.contains(&RowAction::Logs) && pod.contains(&RowAction::Shell));
         assert!(!pod.contains(&RowAction::Restart));
+    }
+
+    #[test]
+    fn a_pinned_object_offers_unpin_instead_of_pin() {
+        let flat_of = |pinned| -> Vec<RowAction> {
+            groups("core/v1/pods", pinned)
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        assert!(flat_of(false).contains(&RowAction::Pin));
+        assert!(!flat_of(false).contains(&RowAction::Unpin));
+        assert!(flat_of(true).contains(&RowAction::Unpin));
+        assert!(!flat_of(true).contains(&RowAction::Pin));
     }
 
     #[test]

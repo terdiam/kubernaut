@@ -21,7 +21,10 @@ use gpui_kit::{
     prelude::FluentBuilder,
     *,
 };
-use k8s_app::{AppCore, object_ops, preferences::Preferences};
+use k8s_app::{
+    AppCore, object_ops,
+    preferences::{PinnedObject, Preferences, set_pinned},
+};
 use k8s_core::{
     ClusterStatus, ContextEntry, DiscoveryCache, ResourceDescriptor, TableSpec, WatchBatch,
     WatchRequest, WatchState, watch::SubscriptionId,
@@ -319,6 +322,9 @@ pub struct AppView {
     /// The cluster overview, the page a cluster opens on.
     overview: Option<OpenOverview>,
     palette: Option<OpenPalette>,
+    /// Objects pinned to the sidebar, across every cluster. Kept here so a
+    /// frame does not read the preferences.
+    pins: Vec<PinnedObject>,
     /// Keeps keyboard shortcuts working when no control has focus.
     focus: FocusHandle,
     next_generation: u64,
@@ -339,6 +345,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) -> Self {
         let (tiles, rail) = build_tiles(&core.clusters.contexts(), &core.preferences());
+        let pins = core.preferences().pinned;
 
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter resources"));
         let subscription =
@@ -435,6 +442,7 @@ impl AppView {
             settings: None,
             overview: None,
             palette: None,
+            pins,
             focus,
             next_generation: 0,
             table_filter,
@@ -685,6 +693,7 @@ impl AppView {
         self.next_generation += 1;
 
         let context = RowContext {
+            core: Arc::clone(&self.core),
             scope: client_scope,
             owner: cx.entity().downgrade(),
             cluster: cluster.clone(),
@@ -1282,6 +1291,8 @@ impl AppView {
             RowAction::Logs => self.open_drawer_tab(target, DrawerTab::Logs, window, cx),
             RowAction::Shell => self.open_drawer_tab(target, DrawerTab::Terminal, window, cx),
             RowAction::Forward => self.open_ports(Some(target), window, cx),
+            RowAction::Pin => self.set_pin(&target, true, window, cx),
+            RowAction::Unpin => self.set_pin(&target, false, window, cx),
             RowAction::CopyName => {
                 cx.write_to_clipboard(ClipboardItem::new_string(target.name.to_string()));
                 toast_success(window, cx, format!("Copied {}", target.name));
@@ -1306,6 +1317,164 @@ impl AppView {
                 cx,
             ),
         }
+    }
+
+    /// Pin an object to the sidebar, or take it off. The list on screen changes
+    /// at once; the file follows.
+    fn set_pin(
+        &mut self,
+        target: &Target,
+        pinned: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let pin = target.pin();
+        set_pinned(&mut self.pins, pin.clone(), pinned);
+        let core = Arc::clone(&self.core);
+        let task = self.runtime.spawn(async move {
+            core.update_preferences(|preferences| set_pinned(&mut preferences.pinned, pin, pinned))
+        });
+        cx.spawn_in(window, async move |_, cx| {
+            if let Err(reason) = task.await.unwrap_or_else(|err| Err(err.to_string())) {
+                cx.update(|window, cx| toast_error(window, cx, "Could not save the pin", reason))
+                    .ok();
+            }
+        })
+        .detach();
+        toast_success(
+            window,
+            cx,
+            if pinned {
+                format!("Pinned {}", target.name)
+            } else {
+                format!("Unpinned {}", target.name)
+            },
+        );
+        cx.notify();
+    }
+
+    /// Open a pinned object. The drawer shows beside a list or an overview, so
+    /// from a page that has none, go to the overview first.
+    fn open_pinned(&mut self, pin: &PinnedObject, window: &mut Window, cx: &mut Context<Self>) {
+        let target = Target {
+            cluster: pin.cluster.clone().into(),
+            resource: pin.resource_key.clone().into(),
+            kind: pin
+                .kind
+                .clone()
+                .unwrap_or_else(|| crate::diagnose::kind_of(&pin.resource_key))
+                .into(),
+            namespace: pin.namespace.clone().map(Into::into),
+            name: pin.name.clone().into(),
+        };
+        let without_drawer = self.helm.is_some()
+            || self.create.is_some()
+            || self.ports.is_some()
+            || self.activity.is_some()
+            || self.add_cluster.is_some()
+            || self.settings.is_some();
+        if without_drawer {
+            self.open_overview(window, cx);
+        }
+        self.show_drawer(target, window, cx);
+    }
+
+    /// The pins of the open cluster, under the pages.
+    fn render_pins(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let cluster = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone())?;
+        let mine: Vec<(usize, &PinnedObject)> = self
+            .pins
+            .iter()
+            .enumerate()
+            .filter(|(_, pin)| *pin.cluster == *cluster)
+            .collect();
+        if mine.is_empty() {
+            return None;
+        }
+        let (muted, hover) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.sidebar_accent)
+        };
+        let mut rows = v_flex().gap_0p5();
+        for (index, pin) in mine {
+            let icon = pin
+                .kind
+                .as_deref()
+                .and_then(kind_icon)
+                .unwrap_or(IconName::Pin);
+            let open_pin = pin.clone();
+            let unpin = Target {
+                cluster: pin.cluster.clone().into(),
+                resource: pin.resource_key.clone().into(),
+                kind: pin.kind.clone().unwrap_or_default().into(),
+                namespace: pin.namespace.clone().map(Into::into),
+                name: pin.name.clone().into(),
+            };
+            rows = rows.child(
+                h_flex()
+                    .id(("pin", index))
+                    .group("pin-row")
+                    .h(px(26.))
+                    .px_2()
+                    .gap_2()
+                    .items_center()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_sm()
+                    .hover(|row| row.bg(hover))
+                    .child(Icon::new(icon).size_3p5().text_color(muted).flex_none())
+                    .child(div().flex_1().min_w_0().truncate().child(pin.name.clone()))
+                    .child(
+                        div()
+                            .max_w(px(70.))
+                            .flex_none()
+                            .truncate()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(pin.namespace.clone().unwrap_or_default()),
+                    )
+                    .child(
+                        div()
+                            .id(("unpin", index))
+                            .flex_none()
+                            .invisible()
+                            .group_hover("pin-row", |button| button.visible())
+                            .tooltip(|window, cx| Tooltip::new("Unpin").build(window, cx))
+                            .child(Icon::new(IconName::Close).size_3().text_color(muted))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.set_pin(&unpin, false, window, cx);
+                            })),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_pinned(&open_pin, window, cx);
+                    })),
+            );
+        }
+        Some(
+            v_flex()
+                .px_2()
+                .pt_2()
+                .gap_1()
+                .child(
+                    div()
+                        .px_2()
+                        .text_xs()
+                        .font_semibold()
+                        .text_color(muted)
+                        .child("PINNED"),
+                )
+                .child(
+                    div()
+                        .id("pins")
+                        .max_h(px(150.))
+                        .overflow_y_scroll()
+                        .child(rows),
+                )
+                .into_any_element(),
+        )
     }
 
     fn open_drawer_tab(
@@ -2232,8 +2401,10 @@ impl AppView {
                 .on_click(open_activity),
             );
 
+        let pins = self.render_pins(cx);
         shell
             .child(pinned_rows)
+            .children(pins)
             .child(div().p_2().child(Input::new(&self.filter)))
             .child(body)
     }

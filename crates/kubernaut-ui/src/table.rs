@@ -52,6 +52,7 @@ impl Field {
 
 /// Where a row's right-click menu sends its choice, and what the rows are.
 pub struct RowContext {
+    pub core: std::sync::Arc<k8s_app::AppCore>,
     pub owner: WeakEntity<AppView>,
     pub cluster: SharedString,
     /// `group/version/plural`.
@@ -281,10 +282,12 @@ impl TableDelegate for ResourceDelegate {
         };
 
         let owner = self.context.owner.clone();
+        let pinned = self.context.core.preferences().is_pinned(&target.pin());
         row_actions::build_menu(
             menu,
             &self.context.resource,
             true,
+            pinned,
             move |action, window, cx| {
                 owner
                     .update(cx, |app, cx| {
