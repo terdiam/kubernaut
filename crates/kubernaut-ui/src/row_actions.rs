@@ -63,6 +63,12 @@ const WORKLOADS: [&str; 3] = [
     "apps/v1/daemonsets",
 ];
 
+/// Whether a kind is a workload that can be rolled, so a set of them can be
+/// restarted together.
+pub fn is_workload(resource: &str) -> bool {
+    WORKLOADS.contains(&resource)
+}
+
 /// The menu as groups; the caller draws a separator between groups.
 pub fn groups(resource: &str) -> Vec<Vec<RowAction>> {
     let is_pod = resource == "core/v1/pods";

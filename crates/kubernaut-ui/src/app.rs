@@ -43,7 +43,7 @@ use crate::{
     overview::{OverviewEvent, OverviewView},
     palette::{Command, Item, PaletteEvent, PaletteView},
     ports::PortsView,
-    row_actions::RowAction,
+    row_actions::{self, RowAction},
     security::{SecurityEvent, SecurityView},
     settings::{SettingsEvent, SettingsView},
     table::{ResourceDelegate, RowContext},
@@ -203,6 +203,28 @@ fn target_ref(target: &Target) -> TargetRef {
         namespace: target.namespace.as_ref().map(ToString::to_string),
         name: target.name.to_string(),
     }
+}
+
+/// What the bar over a ticked selection does.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BulkOp {
+    Delete,
+    Restart,
+}
+
+/// Names to show in a confirmation: the first few, then how many more.
+fn name_list(names: &[SharedString]) -> String {
+    const SHOWN: usize = 6;
+    let mut text = names
+        .iter()
+        .take(SHOWN)
+        .map(|name| name.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > SHOWN {
+        text.push_str(&format!(" and {} more", names.len() - SHOWN));
+    }
+    text
 }
 
 /// The command palette and the subscription that hears its choice.
@@ -1354,6 +1376,213 @@ impl AppView {
         });
     }
 
+    /// The ticked rows of the open table, as the objects to act on.
+    fn checked_targets(&self, cx: &App) -> Vec<Target> {
+        let (Some(table), Some(cluster)) = (
+            &self.table,
+            self.active
+                .and_then(|index| self.tiles.get(index))
+                .map(|tile| tile.name.clone()),
+        ) else {
+            return Vec::new();
+        };
+        table
+            .state
+            .read(cx)
+            .delegate()
+            .checked_targets()
+            .into_iter()
+            .map(|(name, namespace)| Target {
+                cluster: cluster.clone(),
+                resource: table.resource.clone(),
+                kind: table.title.clone(),
+                namespace,
+                name,
+            })
+            .collect()
+    }
+
+    fn clear_checked(&mut self, cx: &mut Context<Self>) {
+        if let Some(table) = &self.table {
+            table.state.update(cx, |table, cx| {
+                table.delegate_mut().clear_checked();
+                cx.notify();
+            });
+        }
+        cx.notify();
+    }
+
+    /// Ask before changing a set of objects. The dialog says how many and
+    /// names the first few, so the count cannot be read past.
+    fn confirm_bulk(&mut self, op: BulkOp, window: &mut Window, cx: &mut Context<Self>) {
+        let targets = self.checked_targets(cx);
+        let Some(first) = targets.first() else {
+            return;
+        };
+        let (verb, detail) = match op {
+            BulkOp::Delete => ("Delete", "This cannot be undone."),
+            BulkOp::Restart => (
+                "Restart",
+                "Their pods are replaced one by one, as with kubectl rollout restart.",
+            ),
+        };
+        let count = targets.len();
+        let question: SharedString = if count == 1 {
+            format!("{verb} 1 {}?", first.kind).into()
+        } else {
+            format!("{verb} {count} {} objects?", first.kind).into()
+        };
+        let names: Vec<SharedString> = targets.iter().map(|t| t.name.clone()).collect();
+        let description: SharedString = format!("{}. {detail}", name_list(&names)).into();
+        let owner = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let owner = owner.clone();
+            let dialog = dialog
+                .title(question.clone())
+                .description(description.clone())
+                .ok_text(verb)
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    owner
+                        .update(cx, |app, cx| app.run_bulk(op, window, cx))
+                        .ok();
+                    true
+                });
+            if op == BulkOp::Delete {
+                dialog.ok_variant(ButtonVariant::Danger)
+            } else {
+                dialog
+            }
+        });
+    }
+
+    fn run_bulk(&mut self, op: BulkOp, window: &mut Window, cx: &mut Context<Self>) {
+        let targets = self.checked_targets(cx);
+        let Some(cluster) = targets.first().map(|t| t.cluster.clone()) else {
+            return;
+        };
+        let references: Vec<TargetRef> = targets.iter().map(target_ref).collect();
+        let core = Arc::clone(&self.core);
+        let task = self.runtime.spawn(async move {
+            match op {
+                BulkOp::Delete => object_ops::delete_many(&core, &cluster, references).await,
+                BulkOp::Restart => object_ops::restart_many(&core, &cluster, references).await,
+            }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update_in(cx, |this, window, cx| {
+                this.finish_bulk(op, result, window, cx)
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn finish_bulk(
+        &mut self,
+        op: BulkOp,
+        result: Result<Vec<k8s_ops::actions::BulkOutcome>, String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let (done, past) = match op {
+            BulkOp::Delete => ("delete", "Deleted"),
+            BulkOp::Restart => ("restart", "Restarted"),
+        };
+        match result {
+            Ok(outcomes) => {
+                self.clear_checked(cx);
+                let failed: Vec<String> = outcomes
+                    .iter()
+                    .filter(|outcome| !outcome.ok)
+                    .map(|outcome| {
+                        format!(
+                            "{}: {}",
+                            outcome.name,
+                            outcome.error.as_deref().unwrap_or("failed")
+                        )
+                    })
+                    .collect();
+                if failed.is_empty() {
+                    toast_success(window, cx, format!("{past} {}", outcomes.len()));
+                } else {
+                    let shown: Vec<&str> = failed.iter().take(3).map(String::as_str).collect();
+                    let more = failed.len().saturating_sub(shown.len());
+                    let mut reason = shown.join("\n");
+                    if more > 0 {
+                        reason.push_str(&format!("\nand {more} more"));
+                    }
+                    toast_error(
+                        window,
+                        cx,
+                        format!("Could not {done} {} of {}", failed.len(), outcomes.len()),
+                        reason,
+                    );
+                }
+            }
+            Err(reason) => toast_error(window, cx, format!("Could not {done}"), reason),
+        }
+    }
+
+    /// Save the ticked objects as a zip, one YAML file each.
+    fn export_checked(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let targets = self.checked_targets(cx);
+        let Some(cluster) = targets.first().map(|t| t.cluster.clone()) else {
+            return;
+        };
+        let directory = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        let chosen = cx.prompt_for_new_path(&directory, Some("kubernaut-export.zip"));
+        let references: Vec<TargetRef> = targets.iter().map(target_ref).collect();
+        let core = Arc::clone(&self.core);
+        let runtime = self.runtime.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            let Some(path) = chosen.await.ok().and_then(Result::ok).flatten() else {
+                return;
+            };
+            let task = runtime.spawn(async move {
+                object_ops::export_archive(&core, &cluster, references, path).await
+            });
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(exported) => {
+                    this.clear_checked(cx);
+                    if exported.failed.is_empty() {
+                        toast_success(window, cx, format!("Exported {}", exported.exported));
+                    } else {
+                        toast_error(
+                            window,
+                            cx,
+                            format!(
+                                "Exported {}, {} could not be read",
+                                exported.exported,
+                                exported.failed.len()
+                            ),
+                            exported
+                                .failed
+                                .iter()
+                                .take(3)
+                                .map(|f| {
+                                    format!(
+                                        "{}: {}",
+                                        f.name,
+                                        f.error.as_deref().unwrap_or("failed")
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n"),
+                        );
+                    }
+                }
+                Err(reason) => toast_error(window, cx, "Could not export", reason),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Run an operation on the runtime and report how it went.
     fn run_op(&mut self, op: Op, target: Target, window: &mut Window, cx: &mut Context<Self>) {
         let core = Arc::clone(&self.core);
@@ -1475,7 +1704,83 @@ impl AppView {
         }
     }
 
+    /// The bar over a ticked selection: how many, and what can be done to them.
+    fn render_bulk_bar(&self, table: &OpenTable, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let count = table.state.read(cx).delegate().checked_count();
+        if count == 0 {
+            return None;
+        }
+        let (background, border) = {
+            let theme = cx.theme();
+            (theme.secondary, theme.border)
+        };
+        let workload = row_actions::is_workload(&table.resource);
+        Some(
+            h_flex()
+                .flex_none()
+                .px_4()
+                .py_2()
+                .gap_2()
+                .items_center()
+                .bg(background)
+                .border_b_1()
+                .border_color(border)
+                .child(
+                    div()
+                        .text_sm()
+                        .font_semibold()
+                        .child(format!("{count} selected")),
+                )
+                .child(div().flex_1())
+                .when(workload, |bar| {
+                    bar.child(
+                        button_icon(
+                            "bulk-restart",
+                            IconName::RotateCw,
+                            "Restart",
+                            true,
+                            Emphasis::Plain,
+                            cx.theme(),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.confirm_bulk(BulkOp::Restart, window, cx);
+                        })),
+                    )
+                })
+                .child(
+                    button_icon(
+                        "bulk-export",
+                        IconName::Download,
+                        "Export",
+                        true,
+                        Emphasis::Plain,
+                        cx.theme(),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| this.export_checked(window, cx))),
+                )
+                .child(
+                    button_icon(
+                        "bulk-delete",
+                        IconName::Delete,
+                        "Delete",
+                        true,
+                        Emphasis::Danger,
+                        cx.theme(),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.confirm_bulk(BulkOp::Delete, window, cx);
+                    })),
+                )
+                .child(
+                    chip("bulk-clear", "Clear", true, false, cx.theme())
+                        .on_click(cx.listener(|this, _, _, cx| this.clear_checked(cx))),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_table(&self, table: &OpenTable, cx: &mut Context<Self>) -> impl IntoElement {
+        let bulk_bar = self.render_bulk_bar(table, cx);
         let theme = cx.theme();
         let delegate = table.state.read(cx).delegate();
         let empty = delegate.shown() == 0 && matches!(delegate.watch_state(), WatchState::Ready);
@@ -1506,6 +1811,7 @@ impl AppView {
                     .child(div().flex_1())
                     .child(div().w(px(260.)).child(Input::new(&self.table_filter))),
             )
+            .children(bulk_bar)
             .when_some(table.status.clone(), |column, text| {
                 column.child(
                     div()

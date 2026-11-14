@@ -70,6 +70,11 @@ version had that this one does not yet.
 - Shared, ref-counted watches batched into deltas, so many open views of the
   same resource cost one watch.
 - A detail drawer per object: YAML, events, logs and a terminal.
+- **Row selection**: a checkbox column with select-all, and a bar over the
+  ticked rows to restart (workloads), export as a zip, or delete. Only rows in
+  view are acted on, so a filter cannot hide a row that is about to go; the
+  confirmation names the first few; one failure does not stop the rest and each
+  is reported.
 - A right-click menu per row: open, logs, shell, forward a port, copy name or
   YAML, restart, cordon, delete — only what applies to the kind.
 - A command palette (⌘K) across clusters, pages, namespaces and resource kinds.
@@ -149,7 +154,7 @@ The Tauri and React version had these; they are not ported yet.
 - Diagnose tab (a pod's status explained from the cluster's own evidence).
 - Metrics beyond the overview: namespace heatmap, per-object charts, node
   usage, the topology graph, sizing recommendations, and the Quota tab.
-- Row selection with bulk delete, restart and zip export; pinning objects.
+- Pinning objects.
 - Field-based create and edit forms (YAML create and edit work), YAML
   validation against the cluster's OpenAPI schema, node label and taint
   editing, and pruning on apply.

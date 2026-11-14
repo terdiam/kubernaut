@@ -5,7 +5,9 @@
 
 use gpui_kit::{
     component::{
-        ActiveTheme, Theme, h_flex,
+        ActiveTheme, Theme,
+        checkbox::Checkbox,
+        h_flex,
         menu::PopupMenu,
         table::{Column, ColumnSort, TableDelegate, TableState},
     },
@@ -22,9 +24,13 @@ use crate::{
     rows::{RowStore, Sort, SortKey, StoredRow},
 };
 
+use std::collections::HashSet;
+
 /// What a displayed column shows.
 #[derive(Clone, Copy)]
 enum Field {
+    /// The selection checkbox.
+    Check,
     Name,
     Namespace,
     /// Index into the watch's columns.
@@ -33,13 +39,14 @@ enum Field {
 }
 
 impl Field {
-    fn sort_key(self) -> SortKey {
-        match self {
+    fn sort_key(self) -> Option<SortKey> {
+        Some(match self {
+            Self::Check => return None,
             Self::Name => SortKey::Name,
             Self::Namespace => SortKey::Namespace,
             Self::Cell(column) => SortKey::Cell(column),
             Self::Age => SortKey::Age,
-        }
+        })
     }
 }
 
@@ -67,6 +74,9 @@ pub struct ResourceDelegate {
     sort: Option<Sort>,
     needle: String,
     selected: Option<SharedString>,
+    /// Rows ticked for a bulk action, by uid so a sort or a new batch does not
+    /// lose them. Only the ones still in view are acted on.
+    checked: HashSet<SharedString>,
     watch_state: WatchState,
 }
 
@@ -81,6 +91,7 @@ impl ResourceDelegate {
             sort: None,
             needle: String::new(),
             selected: None,
+            checked: HashSet::new(),
             watch_state: WatchState::Initializing,
         }
     }
@@ -97,7 +108,8 @@ impl ResourceDelegate {
             .collect();
 
         self.fields.clear();
-        self.fields.reserve(self.shown_cells.len() + 3);
+        self.fields.reserve(self.shown_cells.len() + 4);
+        self.fields.push(Field::Check);
         self.fields.push(Field::Name);
         if spec.namespaced {
             self.fields.push(Field::Namespace);
@@ -143,6 +155,57 @@ impl ResourceDelegate {
         Some((row.name.clone(), namespace))
     }
 
+    /// The rows in view, in order.
+    fn visible(&self) -> impl Iterator<Item = &StoredRow> + '_ {
+        (0..self.store.len()).filter_map(|view_ix| self.store.row(view_ix))
+    }
+
+    /// How many ticked rows are in view. A row a filter hides is not counted,
+    /// and is not acted on: a bulk delete must touch only what is on screen.
+    pub fn checked_count(&self) -> usize {
+        self.visible()
+            .filter(|row| self.checked.contains(&row.uid))
+            .count()
+    }
+
+    fn all_visible_checked(&self) -> bool {
+        self.store.len() > 0 && self.visible().all(|row| self.checked.contains(&row.uid))
+    }
+
+    fn toggle_checked(&mut self, uid: &SharedString) {
+        if !self.checked.remove(uid) {
+            self.checked.insert(uid.clone());
+        }
+    }
+
+    /// Tick every row in view, or untick them when they all are already.
+    fn toggle_all(&mut self) {
+        if self.all_visible_checked() {
+            let visible: Vec<SharedString> = self.visible().map(|row| row.uid.clone()).collect();
+            for uid in visible {
+                self.checked.remove(&uid);
+            }
+        } else {
+            let visible: Vec<SharedString> = self.visible().map(|row| row.uid.clone()).collect();
+            self.checked.extend(visible);
+        }
+    }
+
+    pub fn clear_checked(&mut self) {
+        self.checked.clear();
+    }
+
+    /// The ticked rows that are in view, as the objects to act on.
+    pub fn checked_targets(&self) -> Vec<(SharedString, Option<SharedString>)> {
+        self.visible()
+            .filter(|row| self.checked.contains(&row.uid))
+            .map(|row| {
+                let namespace = (!row.namespace.is_empty()).then(|| row.namespace.clone());
+                (row.name.clone(), namespace)
+            })
+            .collect()
+    }
+
     pub fn watch_state(&self) -> &WatchState {
         &self.watch_state
     }
@@ -184,6 +247,16 @@ fn health_color(health: RowHealth, theme: &Theme) -> Option<Hsla> {
     }
 }
 
+/// A checkbox that does not also select the row it sits in: ticking a row for a
+/// bulk action must not open its drawer.
+fn contained(id: impl Into<ElementId>, checkbox: Checkbox) -> Stateful<Div> {
+    div()
+        .id(id)
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .on_click(|_, _, cx| cx.stop_propagation())
+        .child(checkbox)
+}
+
 fn is_numeric(kind: &str) -> bool {
     matches!(kind, "integer" | "number")
 }
@@ -222,6 +295,36 @@ impl TableDelegate for ResourceDelegate {
         )
     }
 
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        if !matches!(self.fields.get(col_ix), Some(Field::Check)) {
+            return div()
+                .w_full()
+                .child(self.column(col_ix, cx).name)
+                .into_any_element();
+        }
+        let (state, owner) = (cx.entity().downgrade(), self.context.owner.clone());
+        contained(
+            "check-all-cell",
+            Checkbox::new("check-all")
+                .checked(self.all_visible_checked())
+                .on_click(move |_, _, cx| {
+                    state
+                        .update(cx, |table, cx| {
+                            table.delegate_mut().toggle_all();
+                            cx.notify();
+                        })
+                        .ok();
+                    owner.update(cx, |_, cx| cx.notify()).ok();
+                }),
+        )
+        .into_any_element()
+    }
+
     fn columns_count(&self, _: &App) -> usize {
         self.fields.len()
     }
@@ -232,6 +335,7 @@ impl TableDelegate for ResourceDelegate {
 
     fn column(&self, col_ix: usize, _: &App) -> Column {
         match self.fields.get(col_ix) {
+            Some(Field::Check) => Column::new("check", "").width(px(40.)),
             Some(Field::Name) => Column::new("name", "Name").width(px(280.)).sortable(),
             Some(Field::Namespace) => Column::new("namespace", "Namespace")
                 .width(px(160.))
@@ -261,7 +365,7 @@ impl TableDelegate for ResourceDelegate {
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
     ) {
-        let key = self.fields.get(col_ix).copied().map(Field::sort_key);
+        let key = self.fields.get(col_ix).copied().and_then(Field::sort_key);
         self.sort = match (key, sort) {
             (Some(key), ColumnSort::Ascending) => Some(Sort {
                 key,
@@ -306,6 +410,25 @@ impl TableDelegate for ResourceDelegate {
         };
 
         match field {
+            Field::Check => {
+                let (uid, checked) = (row.uid.clone(), self.checked.contains(&row.uid));
+                let (state, owner) = (cx.entity().downgrade(), self.context.owner.clone());
+                contained(
+                    ("check-cell", row_ix),
+                    Checkbox::new(("check", row_ix))
+                        .checked(checked)
+                        .on_click(move |_, _, cx| {
+                            state
+                                .update(cx, |table, cx| {
+                                    table.delegate_mut().toggle_checked(&uid);
+                                    cx.notify();
+                                })
+                                .ok();
+                            owner.update(cx, |_, cx| cx.notify()).ok();
+                        }),
+                )
+                .into_any_element()
+            }
             Field::Name => h_flex()
                 .w_full()
                 .gap_2()
@@ -351,6 +474,7 @@ impl TableDelegate for ResourceDelegate {
     fn cell_label(&self, row_ix: usize, col_ix: usize, _: &App) -> Option<SharedString> {
         let row = self.store.row(row_ix)?;
         match self.fields.get(col_ix)? {
+            Field::Check => None,
             Field::Name => Some(row.name.clone()),
             Field::Namespace => Some(row.namespace.clone()),
             Field::Cell(at) => row.cells.get(*at).cloned(),

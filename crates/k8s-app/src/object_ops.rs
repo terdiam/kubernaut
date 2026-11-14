@@ -4,7 +4,7 @@
 //! an audit entry whatever the outcome. Confirming with the user is the front
 //! end's job: by the time these run, they have said yes.
 
-use k8s_ops::actions::{self, DeleteRequest, TargetRef};
+use k8s_ops::actions::{self, BulkOutcome, DeleteRequest, ExportResult, TargetRef};
 
 use crate::state::AppCore;
 
@@ -110,4 +110,116 @@ pub async fn gitops_survey(
     k8s_ops::gitops::survey(&handle, namespace)
         .await
         .map_err(|e| e.to_string())
+}
+
+// -------------------------------------------------------------------- bulk
+
+/// How many of a bulk operation's objects did not go through.
+pub fn failed(outcomes: &[BulkOutcome]) -> usize {
+    outcomes.iter().filter(|outcome| !outcome.ok).count()
+}
+
+/// The audit line for a bulk change: a failure to do all of it is a failure,
+/// so it is not recorded as "ok".
+fn bulk_result(outcomes: &[BulkOutcome]) -> Result<(), String> {
+    match failed(outcomes) {
+        0 => Ok(()),
+        n => Err(format!("{n} of {} were not done", outcomes.len())),
+    }
+}
+
+fn bulk_label(targets: &[TargetRef]) -> String {
+    match targets.first() {
+        Some(first) => format!("{} × {}", targets.len(), first.resource),
+        None => "nothing".to_string(),
+    }
+}
+
+/// Delete several objects. One that fails does not stop the rest, and each
+/// one's outcome is returned.
+pub async fn delete_many(
+    core: &AppCore,
+    cluster: &str,
+    targets: Vec<TargetRef>,
+) -> Result<Vec<BulkOutcome>, String> {
+    core.ensure_writable(cluster)?;
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    // The count is the guard the backend asks for. The front end has already
+    // shown what is about to go and asked, so it is supplied here.
+    let confirmation = targets.len().to_string();
+    let result = actions::delete_many(&handle, &targets, &confirmation).await;
+    let audited = match &result {
+        Ok(outcomes) => bulk_result(outcomes),
+        Err(err) => Err(err.to_string()),
+    };
+    core.record_audit(cluster, "bulkDelete", &bulk_label(&targets), &audited);
+    result.map_err(|e| e.to_string())
+}
+
+/// Roll several workloads, as `kubectl rollout restart` does.
+pub async fn restart_many(
+    core: &AppCore,
+    cluster: &str,
+    targets: Vec<TargetRef>,
+) -> Result<Vec<BulkOutcome>, String> {
+    core.ensure_writable(cluster)?;
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let result = actions::restart_many(&handle, &targets).await;
+    let audited = match &result {
+        Ok(outcomes) => bulk_result(outcomes),
+        Err(err) => Err(err.to_string()),
+    };
+    core.record_audit(cluster, "bulkRestart", &bulk_label(&targets), &audited);
+    result.map_err(|e| e.to_string())
+}
+
+/// Write the objects to a zip, one YAML file per object. It only reads the
+/// cluster, so a protected one may be exported.
+pub async fn export_archive(
+    core: &AppCore,
+    cluster: &str,
+    targets: Vec<TargetRef>,
+    path: std::path::PathBuf,
+) -> Result<ExportResult, String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    actions::export_archive(&handle, &targets, &path)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BulkOutcome, bulk_label, bulk_result, failed};
+    use k8s_ops::actions::TargetRef;
+
+    fn outcome(ok: bool) -> BulkOutcome {
+        BulkOutcome {
+            resource: "core/v1/pods".into(),
+            namespace: Some("shop".into()),
+            name: "a".into(),
+            ok,
+            error: (!ok).then(|| "forbidden".to_string()),
+        }
+    }
+
+    #[test]
+    fn a_bulk_change_is_ok_only_when_every_object_went_through() {
+        assert_eq!(failed(&[outcome(true), outcome(false), outcome(false)]), 2);
+        assert!(bulk_result(&[outcome(true), outcome(true)]).is_ok());
+        assert_eq!(
+            bulk_result(&[outcome(true), outcome(false)]),
+            Err("1 of 2 were not done".to_string())
+        );
+    }
+
+    #[test]
+    fn the_audit_label_says_how_many_of_what() {
+        let target = |name: &str| TargetRef {
+            resource: "core/v1/pods".into(),
+            namespace: None,
+            name: name.into(),
+        };
+        assert_eq!(bulk_label(&[target("a"), target("b")]), "2 × core/v1/pods");
+        assert_eq!(bulk_label(&[]), "nothing");
+    }
 }
