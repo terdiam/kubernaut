@@ -7,6 +7,7 @@
 use std::{ops::Range, sync::Arc, time::Duration};
 
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
     component::{
         ActiveTheme, WindowExt,
@@ -26,7 +27,10 @@ use crate::{
     drawer::Target,
     namespaces,
     rows::contains_ignore_case,
-    ui::{Emphasis, Palette, button, message, pill, toast_error, toast_success, tone_color},
+    ui::{
+        Emphasis, Palette, button_icon, message, page_title, pill, toast_error, toast_success,
+        tone_color,
+    },
 };
 
 const ROW_HEIGHT: Pixels = px(32.);
@@ -544,8 +548,9 @@ impl GitOpsView {
                     .border_t_1()
                     .border_color(border)
                     .child(
-                        button(
+                        button_icon(
                             "gitops-reconcile",
+                            IconName::RefreshCw,
                             "Reconcile now",
                             idle && entry.reconcilable,
                             Emphasis::Primary,
@@ -555,8 +560,13 @@ impl GitOpsView {
                     )
                     .when(entry.controller == "flux", |row| {
                         row.child(
-                            button(
+                            button_icon(
                                 "gitops-suspend",
+                                if entry.suspended {
+                                    IconName::Play
+                                } else {
+                                    IconName::Pause
+                                },
                                 if entry.suspended { "Resume" } else { "Suspend" },
                                 idle,
                                 Emphasis::Plain,
@@ -566,8 +576,9 @@ impl GitOpsView {
                         )
                     })
                     .child(
-                        button(
+                        button_icon(
                             "gitops-open",
+                            IconName::FileCode,
                             "Open YAML",
                             true,
                             Emphasis::Plain,
@@ -717,7 +728,7 @@ impl Render for GitOpsView {
                             .px_4()
                             .gap_3()
                             .items_center()
-                            .child(div().font_semibold().child("GitOps"))
+                            .child(page_title(IconName::GitBranch, "GitOps", cx.theme()))
                             .children(
                                 self.controllers
                                     .iter()

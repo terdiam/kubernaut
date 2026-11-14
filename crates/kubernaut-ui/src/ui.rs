@@ -1,8 +1,9 @@
 //! Small widgets several views share.
 
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
-    component::{ActiveTheme, Theme, WindowExt, notification::Notification},
+    component::{ActiveTheme, Icon, Theme, WindowExt, notification::Notification},
     prelude::FluentBuilder,
     *,
 };
@@ -96,13 +97,7 @@ pub fn segmented_bar(theme: &Theme) -> Div {
         .bg(theme.secondary)
 }
 
-/// One option of a segmented control. The caller attaches `on_click`.
-pub fn segment(
-    id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
-    active: bool,
-    theme: &Theme,
-) -> Stateful<Div> {
+fn segment_base(id: impl Into<ElementId>, active: bool, theme: &Theme) -> Stateful<Div> {
     div()
         .id(id)
         .px_3()
@@ -122,6 +117,31 @@ pub fn segment(
                 .text_color(theme.muted_foreground)
                 .hover(|segment| segment.text_color(theme.foreground))
         })
+}
+
+/// One option of a segmented control. The caller attaches `on_click`.
+pub fn segment(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    active: bool,
+    theme: &Theme,
+) -> Stateful<Div> {
+    segment_base(id, active, theme).child(label.into())
+}
+
+/// A segment with an icon before its label.
+pub fn segment_icon(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    label: impl Into<SharedString>,
+    active: bool,
+    theme: &Theme,
+) -> Stateful<Div> {
+    segment_base(id, active, theme)
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .child(Icon::new(icon).size_3())
         .child(label.into())
 }
 
@@ -135,10 +155,8 @@ pub enum Emphasis {
     Danger,
 }
 
-/// A button. Like [`chip`], the caller attaches `on_click` when it is enabled.
-pub fn button(
+fn button_base(
     id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
     enabled: bool,
     emphasis: Emphasis,
     theme: &Theme,
@@ -168,7 +186,46 @@ pub fn button(
                 .hover(|button| button.bg(fill_hover))
         })
         .when(!enabled, |button| button.opacity(0.4))
+}
+
+/// A button. Like [`chip`], the caller attaches `on_click` when it is enabled.
+pub fn button(
+    id: impl Into<ElementId>,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    emphasis: Emphasis,
+    theme: &Theme,
+) -> Stateful<Div> {
+    button_base(id, enabled, emphasis, theme).child(label.into())
+}
+
+/// A button with an icon before its label, for the actions people look for by
+/// shape: refresh, preview, apply, open.
+pub fn button_icon(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    emphasis: Emphasis,
+    theme: &Theme,
+) -> Stateful<Div> {
+    button_base(id, enabled, emphasis, theme)
+        .flex()
+        .items_center()
+        .gap_1p5()
+        .child(Icon::new(icon).size_3p5())
         .child(label.into())
+}
+
+/// The title of a page: its icon, then its name.
+pub fn page_title(icon: IconName, text: impl Into<SharedString>, theme: &Theme) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .font_semibold()
+        .child(Icon::new(icon).size_4().text_color(theme.muted_foreground))
+        .child(text.into())
 }
 
 /// A brief confirmation that something worked. It fades on its own.

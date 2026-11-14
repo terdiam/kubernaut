@@ -7,6 +7,7 @@
 use std::{ops::Range, sync::Arc, time::Duration};
 
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
     component::{
         ActiveTheme, WindowExt,
@@ -27,8 +28,8 @@ use crate::{
     namespaces,
     rows::contains_ignore_case,
     ui::{
-        Emphasis, Palette, button, message, pill, segment, segmented_bar, toast_error,
-        toast_success, tone_color,
+        Emphasis, Palette, button_icon, message, page_title, pill, segment, segmented_bar,
+        toast_error, toast_success, tone_color,
     },
 };
 
@@ -544,8 +545,9 @@ impl AlertsView {
                             .gap_2()
                             .items_center()
                             .child(if line.silenced {
-                                button(
+                                button_icon(
                                     "alerts-expire",
+                                    IconName::Bell,
                                     "Stop silencing",
                                     idle,
                                     Emphasis::Primary,
@@ -553,8 +555,9 @@ impl AlertsView {
                                 )
                                 .when(idle, |b| b.on_click(expire))
                             } else {
-                                button(
+                                button_icon(
                                     "alerts-silence",
+                                    IconName::BellOff,
                                     "Silence",
                                     idle,
                                     Emphasis::Primary,
@@ -564,8 +567,9 @@ impl AlertsView {
                             })
                             .when_some(open, |row, open| {
                                 row.child(
-                                    button(
+                                    button_icon(
                                         "alerts-open",
+                                        IconName::FileCode,
                                         "Open YAML",
                                         true,
                                         Emphasis::Plain,
@@ -721,7 +725,7 @@ impl Render for AlertsView {
                             .px_4()
                             .gap_3()
                             .items_center()
-                            .child(div().font_semibold().child("Alerts"))
+                            .child(page_title(IconName::Bell, "Alerts", cx.theme()))
                             .when(firing > 0, |row| {
                                 row.child(pill(format!("{firing} firing"), danger))
                             })

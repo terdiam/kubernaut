@@ -8,7 +8,7 @@
 use std::{ops::Range, path::PathBuf, sync::Arc};
 
 use gpui_kit::{
-    base::StyledExt,
+    assets::IconName,
     component::{
         ActiveTheme, Theme, h_flex,
         input::{Editor, EditorState, Input, InputEvent, InputState},
@@ -23,7 +23,7 @@ use tokio::runtime::Handle;
 
 use crate::{
     diff::{self, DiffLine},
-    ui::{Emphasis, button, chip, pill, toast_error, toast_success},
+    ui::{Emphasis, button_icon, chip, page_title, pill, toast_error, toast_success},
 };
 
 /// Larger than any manifest a person writes; a bigger file is more likely the
@@ -474,8 +474,9 @@ impl CreateView {
                     .items_center()
                     .flex_wrap()
                     .child(
-                        button(
+                        button_icon(
                             "create-import",
+                            IconName::Upload,
                             "Import file…",
                             idle,
                             Emphasis::Plain,
@@ -488,8 +489,9 @@ impl CreateView {
                         }),
                     )
                     .child(
-                        button(
+                        button_icon(
                             "create-kustomize",
+                            IconName::Hammer,
                             "Build kustomize folder…",
                             idle,
                             Emphasis::Plain,
@@ -504,8 +506,9 @@ impl CreateView {
                     .child(div().text_xs().text_color(muted).child("Namespace"))
                     .child(div().w(px(160.)).child(Input::new(&self.namespace)))
                     .child(
-                        button(
+                        button_icon(
                             "create-preview",
+                            IconName::Eye,
                             "Preview",
                             idle,
                             Emphasis::Plain,
@@ -516,8 +519,9 @@ impl CreateView {
                         }),
                     )
                     .child(
-                        button(
+                        button_icon(
                             "create-apply",
+                            IconName::Check,
                             "Apply",
                             applicable,
                             Emphasis::Primary,
@@ -734,7 +738,7 @@ impl Render for CreateView {
                     .flex_none()
                     .px_4()
                     .items_center()
-                    .child(div().font_semibold().child("Create")),
+                    .child(page_title(IconName::Plus, "Create", cx.theme())),
             )
             .child(toolbar)
             .when_some(self.notice.as_ref(), |column, notice| {

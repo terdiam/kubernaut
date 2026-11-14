@@ -6,6 +6,7 @@
 use std::{ops::Range, sync::Arc};
 
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
     component::{
         ActiveTheme, h_flex,
@@ -23,7 +24,7 @@ use tokio::runtime::Handle;
 use crate::{
     diff::{self, DiffLine},
     drawer::Target,
-    ui::{Emphasis, button, chip, toast_success},
+    ui::{Emphasis, button_icon, chip, toast_success},
 };
 
 /// A dry run for one exact text and one setting of "take ownership".
@@ -350,7 +351,14 @@ impl YamlView {
             .items_center()
             .flex_wrap()
             .child({
-                let chip = button("preview", "Preview", ready, Emphasis::Plain, cx.theme());
+                let chip = button_icon(
+                    "preview",
+                    IconName::Eye,
+                    "Preview",
+                    ready,
+                    Emphasis::Plain,
+                    cx.theme(),
+                );
                 if ready {
                     chip.on_click(cx.listener(|this, _, _, cx| this.preview(cx)))
                 } else {
@@ -358,7 +366,14 @@ impl YamlView {
                 }
             })
             .child({
-                let chip = button("apply", "Apply", applicable, Emphasis::Primary, cx.theme());
+                let chip = button_icon(
+                    "apply",
+                    IconName::Check,
+                    "Apply",
+                    applicable,
+                    Emphasis::Primary,
+                    cx.theme(),
+                );
                 if applicable {
                     chip.on_click(cx.listener(|this, _, window, cx| this.apply(window, cx)))
                 } else {
@@ -366,8 +381,9 @@ impl YamlView {
                 }
             })
             .child({
-                let chip = button(
+                let chip = button_icon(
                     "revert",
+                    IconName::Undo2,
                     "Revert",
                     ready && modified,
                     Emphasis::Plain,

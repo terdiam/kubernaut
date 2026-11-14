@@ -36,6 +36,7 @@ use crate::{
     drawer::{DrawerEvent, DrawerView, Tab as DrawerTab, Target},
     gitops::{GitOpsEvent, GitOpsView},
     helm::HelmView,
+    icons::kind_icon,
     namespaces,
     overview::{OverviewEvent, OverviewView},
     palette::{Command, Item, PaletteEvent, PaletteView},
@@ -802,7 +803,7 @@ impl AppView {
                 items.extend(group.resources.into_iter().map(|resource| Item {
                     label: resource.kind.clone().into(),
                     hint: hint.clone(),
-                    icon: group.category.icon(),
+                    icon: kind_icon(&resource.kind).unwrap_or_else(|| group.category.icon()),
                     command: Command::Resource(resource.key.clone().into()),
                 }));
             }
@@ -1625,7 +1626,13 @@ impl AppView {
                         row.bg(primary).text_color(theme.primary_foreground)
                     })
                     .when(!is_selected, |row| row.hover(|row| row.bg(hover)))
-                    .child(kind.clone())
+                    .gap_2()
+                    .child(
+                        Icon::new(kind_icon(kind).unwrap_or(IconName::Puzzle))
+                            .size_3p5()
+                            .flex_none(),
+                    )
+                    .child(div().flex_1().min_w_0().truncate().child(kind.clone()))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_resource(&key, window, cx);
                     }))

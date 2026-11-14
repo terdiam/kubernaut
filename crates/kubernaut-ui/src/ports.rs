@@ -7,6 +7,7 @@
 use std::{sync::Arc, time::Duration};
 
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
     component::{
         ActiveTheme, h_flex,
@@ -22,7 +23,7 @@ use tokio::runtime::Handle;
 
 use crate::{
     drawer::Target,
-    ui::{Emphasis, Palette, button, chip, message, pill, toast_success},
+    ui::{Emphasis, Palette, button, button_icon, chip, message, page_title, pill, toast_success},
 };
 
 /// Traffic counters change constantly; a couple of seconds keeps them lively
@@ -356,8 +357,9 @@ impl PortsView {
                     .border_t_1()
                     .border_color(border)
                     .child(
-                        button(
+                        button_icon(
                             "ports-start",
+                            IconName::ArrowLeftRight,
                             "Start forwarding",
                             !draft.busy,
                             Emphasis::Primary,
@@ -481,7 +483,11 @@ impl Render for PortsView {
                             .px_4()
                             .gap_3()
                             .items_center()
-                            .child(div().font_semibold().child("Port forwards"))
+                            .child(page_title(
+                                IconName::ArrowLeftRight,
+                                "Port forwards",
+                                cx.theme(),
+                            ))
                             .when(!rows.is_empty(), |row| {
                                 row.child(pill(format!("{} active", rows.len()), palette.muted))
                             }),

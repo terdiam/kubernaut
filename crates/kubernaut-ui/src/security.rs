@@ -8,6 +8,7 @@
 use std::{ops::Range, sync::Arc};
 
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
     component::{
         ActiveTheme, h_flex,
@@ -29,7 +30,10 @@ use crate::{
     drawer::Target,
     namespaces,
     rows::contains_ignore_case,
-    ui::{Emphasis, Palette, button, chip, message, pill, segment, segmented_bar, tone_color},
+    ui::{
+        Emphasis, Palette, button, button_icon, chip, message, page_title, pill, segment,
+        segmented_bar, tone_color,
+    },
 };
 
 const ROW_HEIGHT: Pixels = px(32.);
@@ -598,8 +602,9 @@ impl SecurityView {
                         .border_t_1()
                         .border_color(border)
                         .child(
-                            button(
+                            button_icon(
                                 "security-open",
+                                IconName::FileCode,
                                 "Open YAML",
                                 true,
                                 Emphasis::Plain,
@@ -714,8 +719,9 @@ impl SecurityView {
                     this.apply_filter(cx);
                 });
                 row.child(
-                    button(
+                    button_icon(
                         "security-rescan",
+                        IconName::RefreshCw,
                         "Rescan",
                         true,
                         Emphasis::Plain,
@@ -786,8 +792,15 @@ impl SecurityView {
                 );
                 row.when_some(action, |row, (label, _)| {
                     row.child(
-                        button("security-scan", label, idle, Emphasis::Primary, cx.theme())
-                            .when(idle, |b| b.on_click(scan)),
+                        button_icon(
+                            "security-scan",
+                            IconName::ScanSearch,
+                            label,
+                            idle,
+                            Emphasis::Primary,
+                            cx.theme(),
+                        )
+                        .when(idle, |b| b.on_click(scan)),
                     )
                 })
                 .when(binary_ready && self.scanned, |row| {
@@ -804,8 +817,9 @@ impl SecurityView {
                 })
                 .when(needs_database, |row| {
                     row.child(
-                        button(
+                        button_icon(
                             "security-database",
+                            IconName::Download,
                             "Download database",
                             idle,
                             Emphasis::Primary,
@@ -882,7 +896,7 @@ impl Render for SecurityView {
                             .px_4()
                             .gap_3()
                             .items_center()
-                            .child(div().font_semibold().child("Security"))
+                            .child(page_title(IconName::ShieldCheck, "Security", cx.theme()))
                             .child(tabs)
                             .when(critical > 0, |row| {
                                 row.child(pill(format!("{critical} critical"), danger))

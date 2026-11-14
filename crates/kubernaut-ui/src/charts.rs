@@ -26,7 +26,7 @@ use tokio::runtime::Handle;
 
 use crate::{
     rows::contains_ignore_case,
-    ui::{Emphasis, Palette, button, chip, message, toast_success},
+    ui::{Emphasis, Palette, button, button_icon, chip, message, toast_success},
     upgrade::{Mode, Subject, UpgradeEvent, UpgradeView},
 };
 
@@ -440,8 +440,15 @@ impl ChartsView {
                     .child(div().w(px(170.)).child(Input::new(&self.name)))
                     .child(div().flex_1().min_w_0().child(Input::new(&self.url)))
                     .child(
-                        button("add-repo", "Add", ready, Emphasis::Primary, cx.theme())
-                            .when(ready, |b| b.on_click(add)),
+                        button_icon(
+                            "add-repo",
+                            IconName::Plus,
+                            "Add",
+                            ready,
+                            Emphasis::Primary,
+                            cx.theme(),
+                        )
+                        .when(ready, |b| b.on_click(add)),
                     ),
             )
             .when(self.repos.is_empty(), |form| {

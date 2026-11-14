@@ -4,22 +4,49 @@
 
 use std::borrow::Cow;
 
-use gpui_kit::{AssetSource, Result, SharedString, assets};
+use gpui_kit::{AssetSource, Result, SharedString, assets, assets::IconName};
 
 assets::icon_assets!(
     ExtraIcons,
     [
+        Activity,
         ArrowLeftRight,
+        BellOff,
         Box,
+        Cable,
+        Clock,
+        Cog,
+        Container,
+        Database,
+        Download,
+        FileCode,
+        FolderTree,
+        Gauge,
         GitBranch,
+        Hammer,
         HardDrive,
         KeyRound,
+        Layers,
+        Link,
+        ListChecks,
+        Lock,
         Network,
         Puzzle,
+        Route,
+        Ruler,
+        ScanSearch,
+        ScrollText,
         Server,
+        Shield,
+        ShieldAlert,
         ShieldCheck,
         ShipWheel,
         SlidersHorizontal,
+        Tag,
+        Timer,
+        Upload,
+        UserCog,
+        Waypoints,
     ]
 );
 
@@ -39,5 +66,103 @@ impl AssetSource for AppAssets {
         paths.sort();
         paths.dedup();
         Ok(paths)
+    }
+}
+
+/// The icon for a kind of resource, so a long sidebar can be scanned by shape
+/// as well as by name. `None` for a kind with no icon of its own, which the
+/// caller draws as a custom resource.
+pub fn kind_icon(kind: &str) -> Option<IconName> {
+    Some(match kind {
+        "Pod" => IconName::Box,
+        "Deployment" => IconName::Layers,
+        "StatefulSet" | "PersistentVolume" => IconName::Database,
+        "DaemonSet" => IconName::Cpu,
+        "ReplicaSet" | "ReplicationController" => IconName::Copy,
+        "Job" => IconName::Timer,
+        "CronJob" | "Lease" => IconName::Clock,
+        "HorizontalPodAutoscaler" | "ResourceQuota" => IconName::Gauge,
+        "PodDisruptionBudget" => IconName::ShieldAlert,
+        "PodTemplate" | "ControllerRevision" => IconName::FileCode,
+        "Service" => IconName::Waypoints,
+        "Ingress" | "IngressClass" => IconName::Route,
+        "Endpoints" | "EndpointSlice" => IconName::Cable,
+        "NetworkPolicy" => IconName::Shield,
+        "ConfigMap" => IconName::FileText,
+        "Secret" => IconName::Lock,
+        "LimitRange" => IconName::Ruler,
+        "PersistentVolumeClaim" => IconName::HardDrive,
+        "StorageClass" | "RuntimeClass" => IconName::Container,
+        "ServiceAccount" => IconName::UserCog,
+        "Role" | "ClusterRole" => IconName::ShieldCheck,
+        "RoleBinding" | "ClusterRoleBinding" => IconName::Link,
+        "Node" => IconName::Server,
+        "Namespace" => IconName::FolderTree,
+        "Event" => IconName::Bell,
+        "PriorityClass" => IconName::ListChecks,
+        "CustomResourceDefinition" => IconName::Puzzle,
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::kind_icon;
+    use gpui_kit::assets::IconName;
+
+    #[test]
+    fn well_known_kinds_have_their_own_icon_and_others_have_none() {
+        assert!(matches!(kind_icon("Deployment"), Some(IconName::Layers)));
+        assert!(matches!(kind_icon("Secret"), Some(IconName::Lock)));
+        assert!(
+            kind_icon("Widget").is_none(),
+            "a custom kind is left to the caller"
+        );
+    }
+
+    #[test]
+    fn the_icons_a_kind_can_show_are_all_embedded() {
+        // An icon that is not embedded draws nothing, silently. Loading every
+        // one through the app's own source catches a name left out of the list.
+        use gpui_kit::AssetSource;
+        let kinds = [
+            "Pod",
+            "Deployment",
+            "StatefulSet",
+            "DaemonSet",
+            "ReplicaSet",
+            "Job",
+            "CronJob",
+            "HorizontalPodAutoscaler",
+            "PodDisruptionBudget",
+            "PodTemplate",
+            "Service",
+            "Ingress",
+            "Endpoints",
+            "NetworkPolicy",
+            "ConfigMap",
+            "Secret",
+            "LimitRange",
+            "PersistentVolumeClaim",
+            "StorageClass",
+            "ServiceAccount",
+            "Role",
+            "RoleBinding",
+            "Node",
+            "Namespace",
+            "Event",
+            "PriorityClass",
+            "CustomResourceDefinition",
+        ];
+        for kind in kinds {
+            let Some(icon) = kind_icon(kind) else {
+                continue;
+            };
+            let path = IconName::path(icon);
+            assert!(
+                matches!(super::AppAssets.load(&path), Ok(Some(_))),
+                "{kind}: {path}"
+            );
+        }
     }
 }

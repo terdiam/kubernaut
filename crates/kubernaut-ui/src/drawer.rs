@@ -31,7 +31,7 @@ use crate::{
     logs::LogView,
     row_actions::{self, RowAction},
     terminal::TerminalView,
-    ui::{segment, segmented_bar},
+    ui::{segment_icon, segmented_bar},
     yaml::YamlView,
 };
 
@@ -162,10 +162,11 @@ impl DrawerView {
     fn render_tab(
         &self,
         tab: Tab,
+        icon: IconName,
         label: &'static str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        segment(label, label, self.tab == tab, cx.theme())
+        segment_icon(label, icon, label, self.tab == tab, cx.theme())
             .on_click(cx.listener(move |this, _, window, cx| this.show(tab, window, cx)))
     }
 
@@ -380,13 +381,18 @@ impl Render for DrawerView {
             .child(
                 div().flex_none().px_3().py_2().child(
                     segmented_bar(cx.theme())
-                        .child(self.render_tab(Tab::Yaml, "YAML", cx))
-                        .child(self.render_tab(Tab::Events, "Events", cx))
+                        .child(self.render_tab(Tab::Yaml, IconName::FileCode, "YAML", cx))
+                        .child(self.render_tab(Tab::Events, IconName::Activity, "Events", cx))
                         .when(self.log_target.is_some(), |tabs| {
-                            tabs.child(self.render_tab(Tab::Logs, "Logs", cx))
+                            tabs.child(self.render_tab(Tab::Logs, IconName::ScrollText, "Logs", cx))
                         })
                         .when(self.has_shell(), |tabs| {
-                            tabs.child(self.render_tab(Tab::Terminal, "Terminal", cx))
+                            tabs.child(self.render_tab(
+                                Tab::Terminal,
+                                IconName::SquareTerminal,
+                                "Terminal",
+                                cx,
+                            ))
                         }),
                 ),
             )
