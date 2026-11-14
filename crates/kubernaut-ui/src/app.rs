@@ -32,6 +32,7 @@ use tokio::{runtime::Handle, sync::broadcast::error::RecvError, task::JoinHandle
 use crate::{
     categories::{self, Category},
     drawer::{DrawerEvent, DrawerView, Tab as DrawerTab, Target},
+    gitops::{GitOpsEvent, GitOpsView},
     helm::HelmView,
     namespaces,
     overview::{OverviewEvent, OverviewView},
@@ -202,6 +203,12 @@ struct OpenPalette {
     _events: Subscription,
 }
 
+/// The GitOps page and the subscription that opens objects from it.
+struct OpenGitOps {
+    view: Entity<GitOpsView>,
+    _events: Subscription,
+}
+
 /// The overview page and the subscription that opens objects from it.
 struct OpenOverview {
     view: Entity<OverviewView>,
@@ -238,6 +245,8 @@ pub struct AppView {
     drawer: Option<OpenDrawer>,
     /// The Helm releases view, shown instead of a resource table.
     helm: Option<Entity<HelmView>>,
+    /// What the GitOps controllers are syncing.
+    gitops: Option<OpenGitOps>,
     /// The cluster overview, the page a cluster opens on.
     overview: Option<OpenOverview>,
     palette: Option<OpenPalette>,
@@ -347,6 +356,7 @@ impl AppView {
             table: None,
             drawer: None,
             helm: None,
+            gitops: None,
             overview: None,
             palette: None,
             focus,
@@ -373,6 +383,7 @@ impl AppView {
         self.table = None;
         self.drawer = None;
         self.helm = None;
+        self.gitops = None;
         self.overview = None;
     }
 
@@ -512,7 +523,10 @@ impl AppView {
             .active
             .and_then(|index| self.tiles.get(index))
             .is_some_and(|tile| tile.name == *name);
-        let idle = self.table.is_none() && self.helm.is_none() && self.overview.is_none();
+        let idle = self.table.is_none()
+            && self.helm.is_none()
+            && self.gitops.is_none()
+            && self.overview.is_none();
         let connected = self
             .clusters
             .get(name)
@@ -698,6 +712,12 @@ impl AppView {
                 command: Command::Overview,
             });
             items.push(Item {
+                label: "GitOps".into(),
+                hint: "Page".into(),
+                icon: IconName::GitBranch,
+                command: Command::GitOps,
+            });
+            items.push(Item {
                 label: "Helm releases".into(),
                 hint: "Page".into(),
                 icon: IconName::ShipWheel,
@@ -728,6 +748,7 @@ impl AppView {
         match command {
             Command::Overview => self.open_overview(window, cx),
             Command::Helm => self.open_helm(window, cx),
+            Command::GitOps => self.open_gitops(window, cx),
             Command::Cluster(index) => self.select_cluster(*index, window, cx),
             Command::Resource(key) => self.open_resource(key, window, cx),
             Command::ToggleNamespace(namespace) => {
@@ -784,6 +805,8 @@ impl AppView {
             self.open_resource(&resource, window, cx);
         } else if self.helm.is_some() {
             self.open_helm(window, cx);
+        } else if self.gitops.is_some() {
+            self.open_gitops(window, cx);
         }
         cx.notify();
     }
@@ -808,6 +831,37 @@ impl AppView {
             },
         );
         self.overview = Some(OpenOverview {
+            view,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    /// Show what the GitOps controllers of the active cluster are syncing.
+    fn open_gitops(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cluster) = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone())
+        else {
+            return;
+        };
+        let scope = self
+            .active_state()
+            .map(|state| state.scope.clone())
+            .unwrap_or_default();
+        self.clear_pages();
+        let (core, runtime) = (&self.core, &self.runtime);
+        let view = cx.new(|cx| GitOpsView::new(core, runtime, cluster, scope, window, cx));
+        let events =
+            cx.subscribe_in(
+                &view,
+                window,
+                |this, _, event: &GitOpsEvent, window, cx| match event {
+                    GitOpsEvent::Open(target) => this.show_drawer(target.clone(), window, cx),
+                },
+            );
+        self.gitops = Some(OpenGitOps {
             view,
             _events: events,
         });
@@ -1439,6 +1493,7 @@ impl AppView {
         };
         let open_overview = cx.listener(|this, _, window, cx| this.open_overview(window, cx));
         let open_helm = cx.listener(|this, _, window, cx| this.open_helm(window, cx));
+        let open_gitops = cx.listener(|this, _, window, cx| this.open_gitops(window, cx));
         let pinned_rows = v_flex()
             .px_2()
             .pt_3()
@@ -1451,6 +1506,15 @@ impl AppView {
                     self.overview.is_some(),
                 )
                 .on_click(open_overview),
+            )
+            .child(
+                pinned(
+                    "gitops",
+                    IconName::GitBranch,
+                    "GitOps",
+                    self.gitops.is_some(),
+                )
+                .on_click(open_gitops),
             )
             .child(
                 pinned(
@@ -1693,6 +1757,20 @@ impl AppView {
         }
         if let Some(helm) = &self.helm {
             return main.child(helm.clone());
+        }
+        if let Some(gitops) = &self.gitops {
+            // The drawer opens beside the list, as it does for a table.
+            return main.child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(gitops.view.clone())
+                    .when_some(self.drawer.as_ref(), |row, drawer| {
+                        row.child(drawer.view.clone())
+                    }),
+            );
         }
         if let Some(overview) = &self.overview {
             // The overview reads the whole cluster. Say so when a filter is

@@ -4,6 +4,7 @@ mod charts;
 mod diff;
 mod drawer;
 mod emulator;
+mod gitops;
 mod helm;
 mod icons;
 mod keys;

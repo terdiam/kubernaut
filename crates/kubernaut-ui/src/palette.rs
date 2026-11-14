@@ -28,6 +28,7 @@ const MAX_RESULTS: usize = 100;
 pub enum Command {
     Overview,
     Helm,
+    GitOps,
     Cluster(usize),
     Resource(SharedString),
     /// Add a namespace to the selection, or take it out.

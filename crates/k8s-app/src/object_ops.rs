@@ -54,3 +54,60 @@ pub async fn set_cordoned(
     core.record_audit(cluster, action, &format!("nodes/{node}"), &result);
     result.map_err(|e| e.to_string())
 }
+
+/// Ask a GitOps controller to reconcile an object now. Writes an annotation.
+pub async fn gitops_reconcile(
+    core: &AppCore,
+    cluster: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+) -> Result<(), String> {
+    core.ensure_writable(cluster)?;
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let result = k8s_ops::gitops::reconcile(&handle, resource, namespace, name).await;
+    let target = match namespace {
+        Some(namespace) => format!("{resource}/{namespace}/{name}"),
+        None => format!("{resource}/{name}"),
+    };
+    core.record_audit(cluster, "gitopsReconcile", &target, &result);
+    result.map_err(|e| e.to_string())
+}
+
+/// Pause or resume a Flux object's reconciliation.
+pub async fn gitops_set_suspended(
+    core: &AppCore,
+    cluster: &str,
+    resource: &str,
+    namespace: Option<&str>,
+    name: &str,
+    suspended: bool,
+) -> Result<(), String> {
+    core.ensure_writable(cluster)?;
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let result =
+        k8s_ops::gitops::set_suspended(&handle, resource, namespace, name, suspended).await;
+    let action = if suspended {
+        "gitopsSuspend"
+    } else {
+        "gitopsResume"
+    };
+    let target = match namespace {
+        Some(namespace) => format!("{resource}/{namespace}/{name}"),
+        None => format!("{resource}/{name}"),
+    };
+    core.record_audit(cluster, action, &target, &result);
+    result.map_err(|e| e.to_string())
+}
+
+/// What the installed GitOps controllers manage, optionally in one namespace.
+pub async fn gitops_survey(
+    core: &AppCore,
+    cluster: &str,
+    namespace: Option<&str>,
+) -> Result<k8s_ops::gitops::GitOpsSummary, String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    k8s_ops::gitops::survey(&handle, namespace)
+        .await
+        .map_err(|e| e.to_string())
+}

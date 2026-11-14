@@ -10,6 +10,7 @@ assets::icon_assets!(
     ExtraIcons,
     [
         Box,
+        GitBranch,
         HardDrive,
         KeyRound,
         Network,
