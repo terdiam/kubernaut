@@ -9,6 +9,7 @@ use gpui_kit::{AssetSource, Result, SharedString, assets};
 assets::icon_assets!(
     ExtraIcons,
     [
+        ArrowLeftRight,
         Box,
         GitBranch,
         HardDrive,

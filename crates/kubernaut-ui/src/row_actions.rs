@@ -16,6 +16,7 @@ pub enum RowAction {
     Open,
     Logs,
     Shell,
+    Forward,
     CopyName,
     CopyYaml,
     Restart,
@@ -30,6 +31,7 @@ impl RowAction {
             Self::Open => "Open details",
             Self::Logs => "View logs",
             Self::Shell => "Open shell",
+            Self::Forward => "Forward port…",
             Self::CopyName => "Copy name",
             Self::CopyYaml => "Copy YAML",
             Self::Restart => "Restart",
@@ -44,6 +46,7 @@ impl RowAction {
             Self::Open => IconName::Inspector,
             Self::Logs => IconName::FileText,
             Self::Shell => IconName::SquareTerminal,
+            Self::Forward => IconName::ArrowLeftRight,
             Self::CopyName | Self::CopyYaml => IconName::Copy,
             Self::Restart => IconName::RotateCw,
             Self::Cordon => IconName::Pause,
@@ -72,6 +75,9 @@ pub fn groups(resource: &str) -> Vec<Vec<RowAction>> {
     }
     if is_pod {
         view.push(RowAction::Shell);
+    }
+    if is_pod || is_workload || resource == "core/v1/services" {
+        view.push(RowAction::Forward);
     }
 
     let mut change = Vec::new();
@@ -151,6 +157,16 @@ mod tests {
         let pod = flat("core/v1/pods");
         assert!(pod.contains(&RowAction::Logs) && pod.contains(&RowAction::Shell));
         assert!(!pod.contains(&RowAction::Restart));
+    }
+
+    #[test]
+    fn only_kinds_with_pods_behind_them_can_be_forwarded() {
+        for resource in ["core/v1/pods", "core/v1/services", "apps/v1/deployments"] {
+            assert!(flat(resource).contains(&RowAction::Forward), "{resource}");
+        }
+        for resource in ["core/v1/configmaps", "core/v1/nodes", "apps/v1/replicasets"] {
+            assert!(!flat(resource).contains(&RowAction::Forward), "{resource}");
+        }
     }
 
     #[test]

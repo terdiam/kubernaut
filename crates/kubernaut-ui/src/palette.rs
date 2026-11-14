@@ -31,6 +31,7 @@ pub enum Command {
     GitOps,
     Security,
     Alerts,
+    Ports,
     Settings,
     Cluster(usize),
     Resource(SharedString),

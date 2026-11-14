@@ -38,6 +38,7 @@ use crate::{
     namespaces,
     overview::{OverviewEvent, OverviewView},
     palette::{Command, Item, PaletteEvent, PaletteView},
+    ports::PortsView,
     row_actions::RowAction,
     security::{SecurityEvent, SecurityView},
     settings::SettingsView,
@@ -266,6 +267,8 @@ pub struct AppView {
     security: Option<OpenSecurity>,
     /// What Alertmanager is firing.
     alerts: Option<OpenAlerts>,
+    /// The port forwards of the open cluster.
+    ports: Option<Entity<PortsView>>,
     /// The settings page, which belongs to no cluster.
     settings: Option<Entity<SettingsView>>,
     /// The cluster overview, the page a cluster opens on.
@@ -380,6 +383,7 @@ impl AppView {
             gitops: None,
             security: None,
             alerts: None,
+            ports: None,
             settings: None,
             overview: None,
             palette: None,
@@ -410,6 +414,7 @@ impl AppView {
         self.gitops = None;
         self.security = None;
         self.alerts = None;
+        self.ports = None;
         self.settings = None;
         self.overview = None;
     }
@@ -555,6 +560,7 @@ impl AppView {
             && self.gitops.is_none()
             && self.security.is_none()
             && self.alerts.is_none()
+            && self.ports.is_none()
             && self.settings.is_none()
             && self.overview.is_none();
         let connected = self
@@ -760,6 +766,12 @@ impl AppView {
                 command: Command::Alerts,
             });
             items.push(Item {
+                label: "Port forwards".into(),
+                hint: "Page".into(),
+                icon: IconName::ArrowLeftRight,
+                command: Command::Ports,
+            });
+            items.push(Item {
                 label: "Helm releases".into(),
                 hint: "Page".into(),
                 icon: IconName::ShipWheel,
@@ -800,6 +812,7 @@ impl AppView {
             Command::Security => self.open_security(window, cx),
             Command::Alerts => self.open_alerts(window, cx),
             Command::Settings => self.open_settings(window, cx),
+            Command::Ports => self.open_ports(None, window, cx),
             Command::Cluster(index) => self.select_cluster(*index, window, cx),
             Command::Resource(key) => self.open_resource(key, window, cx),
             Command::ToggleNamespace(namespace) => {
@@ -920,6 +933,22 @@ impl AppView {
             view,
             _events: events,
         });
+        cx.notify();
+    }
+
+    /// Show the port forwards of the active cluster, optionally with the form
+    /// open for a target.
+    fn open_ports(&mut self, target: Option<Target>, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cluster) = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone())
+        else {
+            return;
+        };
+        self.clear_pages();
+        let (core, runtime) = (&self.core, &self.runtime);
+        self.ports = Some(cx.new(|cx| PortsView::new(core, runtime, cluster, target, window, cx)));
         cx.notify();
     }
 
@@ -1070,6 +1099,7 @@ impl AppView {
             RowAction::Open => self.show_drawer(target, window, cx),
             RowAction::Logs => self.open_drawer_tab(target, DrawerTab::Logs, window, cx),
             RowAction::Shell => self.open_drawer_tab(target, DrawerTab::Terminal, window, cx),
+            RowAction::Forward => self.open_ports(Some(target), window, cx),
             RowAction::CopyName => {
                 cx.write_to_clipboard(ClipboardItem::new_string(target.name.to_string()));
                 toast_success(window, cx, format!("Copied {}", target.name));
@@ -1635,6 +1665,7 @@ impl AppView {
         let open_overview = cx.listener(|this, _, window, cx| this.open_overview(window, cx));
         let open_helm = cx.listener(|this, _, window, cx| this.open_helm(window, cx));
         let open_gitops = cx.listener(|this, _, window, cx| this.open_gitops(window, cx));
+        let open_ports = cx.listener(|this, _, window, cx| this.open_ports(None, window, cx));
         let open_alerts = cx.listener(|this, _, window, cx| this.open_alerts(window, cx));
         let open_security = cx.listener(|this, _, window, cx| this.open_security(window, cx));
         let pinned_rows = v_flex()
@@ -1671,6 +1702,15 @@ impl AppView {
             .child(
                 pinned("alerts", IconName::Bell, "Alerts", self.alerts.is_some())
                     .on_click(open_alerts),
+            )
+            .child(
+                pinned(
+                    "ports",
+                    IconName::ArrowLeftRight,
+                    "Port forwards",
+                    self.ports.is_some(),
+                )
+                .on_click(open_ports),
             )
             .child(
                 pinned(
@@ -1931,6 +1971,9 @@ impl AppView {
                         row.child(drawer.view.clone())
                     }),
             );
+        }
+        if let Some(ports) = &self.ports {
+            return main.child(ports.clone());
         }
         if let Some(alerts) = &self.alerts {
             return main.child(

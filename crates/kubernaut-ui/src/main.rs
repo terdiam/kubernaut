@@ -14,6 +14,7 @@ mod logs;
 mod namespaces;
 mod overview;
 mod palette;
+mod ports;
 mod release;
 mod row_actions;
 mod rows;
