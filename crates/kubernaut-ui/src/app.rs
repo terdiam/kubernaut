@@ -22,7 +22,7 @@ use gpui_kit::{
     *,
 };
 use k8s_app::{
-    AppCore, object_ops,
+    AppCore, metrics_ops, object_ops,
     preferences::{PinnedObject, Preferences, set_pinned},
 };
 use k8s_core::{
@@ -60,6 +60,10 @@ const ROW_HEIGHT: Pixels = px(28.);
 
 /// Namespace pills shown in the toolbar before the rest fold into a count.
 const MAX_PILLS: usize = 3;
+
+/// How often the node list reads node usage. The sampler measures every fifteen
+/// seconds, so asking sooner only repeats the last answer.
+const NODE_USAGE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
 actions!(kubernaut, [TogglePalette]);
 
@@ -154,6 +158,8 @@ struct OpenTable {
     title: SharedString,
     state: Entity<TableState<ResourceDelegate>>,
     task: JoinHandle<()>,
+    /// Reads node usage for the node list; dropped with the table.
+    _usage: Option<Task<()>>,
     /// Rebuilt when rows change, not formatted every frame.
     count_label: SharedString,
     status: Option<SharedString>,
@@ -736,12 +742,33 @@ impl AppView {
 
         let task = self.runtime.spawn(forward_watch(
             Arc::clone(&self.core),
-            cluster,
+            cluster.clone(),
             request,
             generation,
             self.watch_tx.clone(),
         ));
+        // The node list also shows what each node uses, which comes from the
+        // sampler rather than the watch.
+        let usage = (&**key == "core/v1/nodes").then(|| {
+            let (core, cluster, state) =
+                (Arc::clone(&self.core), cluster.clone(), state.downgrade());
+            cx.spawn(async move |_, cx| {
+                loop {
+                    if let Ok(summaries) = metrics_ops::node_summaries(&core, &cluster) {
+                        let alive = state.update(cx, |table, cx| {
+                            table.delegate_mut().set_node_usage(summaries);
+                            cx.notify();
+                        });
+                        if alive.is_err() {
+                            break;
+                        }
+                    }
+                    cx.background_executor().timer(NODE_USAGE_POLL).await;
+                }
+            })
+        });
         self.table = Some(OpenTable {
+            _usage: usage,
             generation,
             resource: key.clone(),
             empty_label: format!("No {title} found.").into(),

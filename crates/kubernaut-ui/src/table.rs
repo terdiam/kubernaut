@@ -16,15 +16,17 @@ use gpui_kit::{
 };
 use k8s_app::present::{self, Tone};
 use k8s_core::{ColumnSpec, RowHealth, TableSpec, WatchBatch, WatchState};
+use k8s_metrics::NodeSummary;
 
 use crate::{
     app::AppView,
     drawer::Target,
+    metrics::{bytes, cores},
     row_actions,
     rows::{RowStore, Sort, SortKey, StoredRow},
 };
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// What a displayed column shows.
 #[derive(Clone, Copy)]
@@ -32,6 +34,8 @@ enum Field {
     /// The selection checkbox.
     Check,
     Name,
+    /// What a node uses, from the metrics sampler. Only on the node list.
+    NodeUsage(NodeMetric),
     Namespace,
     /// Index into the watch's columns.
     Cell(usize),
@@ -41,12 +45,64 @@ enum Field {
 impl Field {
     fn sort_key(self) -> Option<SortKey> {
         Some(match self {
-            Self::Check => return None,
+            Self::Check | Self::NodeUsage(_) => return None,
             Self::Name => SortKey::Name,
             Self::Namespace => SortKey::Namespace,
             Self::Cell(column) => SortKey::Cell(column),
             Self::Age => SortKey::Age,
         })
+    }
+}
+
+/// The figures a node row shows beside its object columns.
+#[derive(Clone, Copy)]
+enum NodeMetric {
+    Cpu,
+    Memory,
+    Pods,
+    Disk,
+}
+
+/// What a node cell says, and how full it is, for colouring. Figures are
+/// against what the node can allocate, which is what pods can actually get.
+/// `None` for the ratio when there is nothing honest to compare.
+fn node_cell(summary: &NodeSummary, metric: NodeMetric) -> (String, Option<f64>) {
+    let ratio = |used: f64, total: f64| (total > 0.0).then(|| used / total);
+    let with_percent = |text: String, ratio: Option<f64>| match ratio {
+        Some(ratio) => (format!("{text} · {:.0}%", ratio * 100.0), Some(ratio)),
+        None => (text, None),
+    };
+    match metric {
+        NodeMetric::Cpu if summary.usage_available => with_percent(
+            format!(
+                "{} / {}",
+                cores(summary.cpu_usage),
+                cores(summary.cpu_allocatable)
+            ),
+            ratio(summary.cpu_usage, summary.cpu_allocatable),
+        ),
+        NodeMetric::Memory if summary.usage_available => with_percent(
+            format!(
+                "{} / {}",
+                bytes(summary.memory_usage),
+                bytes(summary.memory_allocatable)
+            ),
+            ratio(summary.memory_usage, summary.memory_allocatable),
+        ),
+        NodeMetric::Pods => with_percent(
+            format!("{:.0} / {:.0}", summary.pods_used, summary.pods_allocatable),
+            ratio(summary.pods_used, summary.pods_allocatable),
+        ),
+        NodeMetric::Disk if summary.disk_available => with_percent(
+            format!(
+                "{} / {}",
+                bytes(summary.disk_used),
+                bytes(summary.disk_capacity)
+            ),
+            ratio(summary.disk_used, summary.disk_capacity),
+        ),
+        // Not measured, which is not the same as zero.
+        _ => ("—".to_string(), None),
     }
 }
 
@@ -78,6 +134,8 @@ pub struct ResourceDelegate {
     /// Rows ticked for a bulk action, by uid so a sort or a new batch does not
     /// lose them. Only the ones still in view are acted on.
     checked: HashSet<SharedString>,
+    /// Live figures per node, by name, when this is the node list.
+    node_usage: HashMap<SharedString, NodeSummary>,
     watch_state: WatchState,
 }
 
@@ -93,6 +151,7 @@ impl ResourceDelegate {
             needle: String::new(),
             selected: None,
             checked: HashSet::new(),
+            node_usage: HashMap::new(),
             watch_state: WatchState::Initializing,
         }
     }
@@ -115,8 +174,28 @@ impl ResourceDelegate {
         if spec.namespaced {
             self.fields.push(Field::Namespace);
         }
-        self.fields
-            .extend(self.shown_cells.iter().map(|&at| Field::Cell(at)));
+        let is_nodes = &*self.context.resource == "core/v1/nodes";
+        for &at in &self.shown_cells {
+            self.fields.push(Field::Cell(at));
+            // Right after the status, so what a node uses is on screen with
+            // whether it is ready rather than past the version and the OS.
+            if is_nodes
+                && spec
+                    .columns
+                    .get(at)
+                    .is_some_and(|column| column.name == "Status")
+            {
+                self.fields.extend(
+                    [
+                        NodeMetric::Cpu,
+                        NodeMetric::Memory,
+                        NodeMetric::Pods,
+                        NodeMetric::Disk,
+                    ]
+                    .map(Field::NodeUsage),
+                );
+            }
+        }
         self.fields.push(Field::Age);
     }
 
@@ -205,6 +284,14 @@ impl ResourceDelegate {
                 (row.name.clone(), namespace)
             })
             .collect()
+    }
+
+    /// Replace the live figures the node list shows.
+    pub fn set_node_usage(&mut self, summaries: Vec<NodeSummary>) {
+        self.node_usage = summaries
+            .into_iter()
+            .map(|summary| (summary.name.clone().into(), summary))
+            .collect();
     }
 
     pub fn watch_state(&self) -> &WatchState {
@@ -340,6 +427,12 @@ impl TableDelegate for ResourceDelegate {
         match self.fields.get(col_ix) {
             Some(Field::Check) => Column::new("check", "").width(px(40.)),
             Some(Field::Name) => Column::new("name", "Name").width(px(280.)).sortable(),
+            Some(Field::NodeUsage(metric)) => match metric {
+                NodeMetric::Cpu => Column::new("node-cpu", "CPU").width(px(170.)),
+                NodeMetric::Memory => Column::new("node-memory", "Memory").width(px(190.)),
+                NodeMetric::Pods => Column::new("node-pods", "Pods").width(px(110.)),
+                NodeMetric::Disk => Column::new("node-disk", "Disk").width(px(180.)),
+            },
             Some(Field::Namespace) => Column::new("namespace", "Namespace")
                 .width(px(160.))
                 .sortable(),
@@ -450,6 +543,25 @@ impl TableDelegate for ResourceDelegate {
                     )
                 })
                 .into_any_element(),
+            Field::NodeUsage(metric) => {
+                let (text, ratio) = self.node_usage.get(&row.name).map_or_else(
+                    || ("…".to_string(), None),
+                    |summary| node_cell(summary, *metric),
+                );
+                // Past nine tenths a node is about to refuse work, and past three
+                // quarters it is worth a look; below that the colour stays quiet.
+                let color = match ratio {
+                    Some(ratio) if ratio >= 0.9 => Some(theme.danger),
+                    Some(ratio) if ratio >= 0.75 => Some(theme.warning),
+                    _ => None,
+                };
+                div()
+                    .w_full()
+                    .truncate()
+                    .when_some(color, |cell, color| cell.text_color(color))
+                    .child(text)
+                    .into_any_element()
+            }
             Field::Namespace => div()
                 .w_full()
                 .truncate()
@@ -477,11 +589,83 @@ impl TableDelegate for ResourceDelegate {
     fn cell_label(&self, row_ix: usize, col_ix: usize, _: &App) -> Option<SharedString> {
         let row = self.store.row(row_ix)?;
         match self.fields.get(col_ix)? {
-            Field::Check => None,
+            Field::Check | Field::NodeUsage(_) => None,
             Field::Name => Some(row.name.clone()),
             Field::Namespace => Some(row.namespace.clone()),
             Field::Cell(at) => row.cells.get(*at).cloned(),
             Field::Age => Some(row.age.clone()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{NodeMetric, node_cell};
+    use k8s_metrics::NodeSummary;
+
+    fn node() -> NodeSummary {
+        NodeSummary {
+            name: "n1".into(),
+            cpu_usage: 1.0,
+            cpu_requests: 2.0,
+            cpu_allocatable: 4.0,
+            cpu_capacity: 4.0,
+            memory_usage: 2.0 * 1024.0 * 1024.0 * 1024.0,
+            memory_requests: 0.0,
+            memory_allocatable: 8.0 * 1024.0 * 1024.0 * 1024.0,
+            memory_capacity: 8.0 * 1024.0 * 1024.0 * 1024.0,
+            pods_used: 55.0,
+            pods_allocatable: 110.0,
+            disk_used: 10.0 * 1024.0 * 1024.0 * 1024.0,
+            disk_capacity: 40.0 * 1024.0 * 1024.0 * 1024.0,
+            image_disk_used: 0.0,
+            image_disk_capacity: 0.0,
+            usage_available: true,
+            disk_available: true,
+            os_image: None,
+            kernel_version: None,
+            container_runtime: None,
+            kubelet_version: None,
+            architecture: None,
+            operating_system: None,
+        }
+    }
+
+    #[test]
+    fn a_node_cell_says_what_is_used_of_what_can_be_allocated() {
+        let node = node();
+        assert_eq!(
+            node_cell(&node, NodeMetric::Cpu),
+            ("1.00 / 4.00 · 25%".to_string(), Some(0.25))
+        );
+        assert_eq!(
+            node_cell(&node, NodeMetric::Memory),
+            ("2.0 Gi / 8.0 Gi · 25%".to_string(), Some(0.25))
+        );
+        assert_eq!(
+            node_cell(&node, NodeMetric::Pods),
+            ("55 / 110 · 50%".to_string(), Some(0.5))
+        );
+        assert_eq!(
+            node_cell(&node, NodeMetric::Disk),
+            ("10.0 Gi / 40.0 Gi · 25%".to_string(), Some(0.25))
+        );
+    }
+
+    #[test]
+    fn what_was_not_measured_is_a_dash_not_a_zero() {
+        let mut node = node();
+        node.usage_available = false;
+        node.disk_available = false;
+        assert_eq!(node_cell(&node, NodeMetric::Cpu), ("—".to_string(), None));
+        assert_eq!(
+            node_cell(&node, NodeMetric::Memory),
+            ("—".to_string(), None)
+        );
+        assert_eq!(node_cell(&node, NodeMetric::Disk), ("—".to_string(), None));
+        assert!(
+            node_cell(&node, NodeMetric::Pods).1.is_some(),
+            "pod slots need no metrics"
+        );
     }
 }

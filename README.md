@@ -89,6 +89,10 @@ version had that this one does not yet.
 - A command palette (⌘K) across clusters, pages, namespaces and resource kinds.
 - **Overview** of a cluster: CPU, memory and pod gauges and the issues worth
   looking at, read from `metrics.k8s.io`.
+- The **node list** shows what each node uses next to its status: CPU and
+  memory against what it can allocate, pod slots, and the kubelet's disk, with
+  the figure turning amber past 75% and red past 90%. What was not measured
+  shows a dash, not a zero.
 - A **Usage** page: a heatmap of every namespace, coloured by how much of its
   requested CPU or memory it uses (mostly idle, comfortable, near the request,
   over it, or no request to compare with), busiest first. A tile opens the
@@ -171,8 +175,7 @@ hours or a day, or end a silence early.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Metrics beyond those: node usage in the node list and the topology graph.
-  Network and disk series are not charted yet.
+- The topology graph, and network and disk series in the charts.
 - Field-based create and edit forms (YAML create and edit work), YAML
   validation against the cluster's OpenAPI schema, node label and taint
   editing, and pruning on apply.

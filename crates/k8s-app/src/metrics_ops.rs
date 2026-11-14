@@ -8,8 +8,8 @@
 use std::collections::BTreeMap;
 
 use k8s_metrics::{
-    MetricTarget, NamespaceQuotaInfo, NamespaceUsage, ObjectMetrics, Point, Recommendation,
-    quantity, quota, recommend, resolve,
+    MetricTarget, NamespaceQuotaInfo, NamespaceUsage, NodeSummary, ObjectMetrics, Point,
+    Recommendation, quantity, quota, recommend, resolve,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -94,6 +94,15 @@ fn sum_usage(usages: impl Iterator<Item = (bool, f64, f64)>) -> Option<Point> {
         memory,
         ..Default::default()
     })
+}
+
+/// Live CPU, memory, pod and disk figures per node, for the node list.
+///
+/// Asking is what makes the sampler collect disk, so the first answer can lack
+/// it until the next sample.
+pub fn node_summaries(core: &AppCore, cluster: &str) -> Result<Vec<NodeSummary>, String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    Ok(core.metrics.ensure(&handle).node_summaries())
 }
 
 /// What every namespace uses against what it declares, for the heatmap.
