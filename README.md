@@ -69,7 +69,13 @@ version had that this one does not yet.
   one shared vocabulary (`CrashLoopBackOff` reads red everywhere).
 - Shared, ref-counted watches batched into deltas, so many open views of the
   same resource cost one watch.
-- A detail drawer per object: YAML, events, logs and a terminal.
+- A detail drawer per object: YAML, events, logs and a terminal. For a pod, or
+  a workload's pods, a **Diagnose** tab reads the status the way a person would
+  and quotes the cluster rather than guessing: `ImagePullBackOff` (DNS, tag or
+  credential told apart), a container that exited and with what code,
+  `Unschedulable` (against what the pod actually requests), and more. Each
+  finding shows the exact evidence and next steps that open the logs, a shell,
+  the editor or the node at fault, or give a `kubectl` line to copy.
 - **Row selection**: a checkbox column with select-all, and a bar over the
   ticked rows to restart (workloads), export as a zip, or delete. Only rows in
   view are acted on, so a filter cannot hide a row that is about to go; the
@@ -151,7 +157,6 @@ hours or a day, or end a silence early.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Diagnose tab (a pod's status explained from the cluster's own evidence).
 - Metrics beyond the overview: namespace heatmap, per-object charts, node
   usage, the topology graph, sizing recommendations, and the Quota tab.
 - Pinning objects.

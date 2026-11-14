@@ -5,6 +5,7 @@ mod app;
 mod categories;
 mod charts;
 mod create;
+mod diagnose;
 mod diff;
 mod drawer;
 mod emulator;

@@ -1259,6 +1259,7 @@ impl AppView {
                     cx.notify();
                 }
                 DrawerEvent::Row(action) => this.row_action(*action, subject.clone(), window, cx),
+                DrawerEvent::Open(target) => this.show_drawer(target.clone(), window, cx),
             },
         );
         self.drawer = Some(OpenDrawer {

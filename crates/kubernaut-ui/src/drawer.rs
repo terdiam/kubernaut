@@ -21,12 +21,14 @@ use gpui_kit::{
 };
 use k8s_app::{AppCore, present};
 use k8s_ops::{
+    diagnose::StepAction,
     logs::LogTarget,
     related::{self, EventRow},
 };
 use tokio::runtime::Handle;
 
 use crate::{
+    diagnose::{DiagnoseEvent, DiagnoseView, kind_of},
     log_buffer::log_target,
     logs::LogView,
     row_actions::{self, RowAction},
@@ -52,6 +54,8 @@ pub enum DrawerEvent {
     Close,
     /// An entry of the actions menu, for the app to carry out.
     Row(RowAction),
+    /// Another object a diagnosis points at, to open in its place.
+    Open(Target),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -60,6 +64,8 @@ pub enum Tab {
     Events,
     Logs,
     Terminal,
+    /// Why a pod, or a workload's pods, are not running.
+    Diagnose,
 }
 
 /// A value that arrives from the cluster.
@@ -88,6 +94,8 @@ pub struct DrawerView {
     logs: Option<Entity<LogView>>,
     /// A shell, only for pods, opened when its tab is first shown.
     terminal: Option<Entity<TerminalView>>,
+    /// Created when the tab is first opened, so a closed tab reads nothing.
+    diagnose: Option<(Entity<DiagnoseView>, Subscription)>,
     tab: Tab,
     yaml: Entity<YamlView>,
     events: Load<Vec<EventLine>>,
@@ -126,6 +134,7 @@ impl DrawerView {
             log_target: log_target(&target.resource, target.namespace.as_deref(), &target.name),
             logs: None,
             terminal: None,
+            diagnose: None,
             target,
             tab: Tab::Yaml,
             yaml,
@@ -140,12 +149,14 @@ impl DrawerView {
         match tab {
             Tab::Logs if self.log_target.is_none() => return,
             Tab::Terminal if !self.has_shell() => return,
+            Tab::Diagnose if !self.can_diagnose() => return,
             _ => {}
         }
         self.tab = tab;
         match tab {
             Tab::Logs => self.ensure_logs(cx),
             Tab::Terminal => self.ensure_terminal(window, cx),
+            Tab::Diagnose => self.ensure_diagnose(window, cx),
             Tab::Yaml | Tab::Events => {}
         }
         cx.notify();
@@ -179,6 +190,49 @@ impl DrawerView {
         };
         let (core, runtime, target) = (&self.core, &self.runtime, &self.target);
         self.logs = Some(cx.new(|cx| LogView::new(core, runtime, target, log_target, cx)));
+    }
+
+    /// A pod, or a workload whose pods can be looked at, can be diagnosed.
+    fn can_diagnose(&self) -> bool {
+        self.target.namespace.is_some()
+            && (self.target.resource == "core/v1/pods"
+                || row_actions::is_workload(&self.target.resource))
+    }
+
+    fn ensure_diagnose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.diagnose.is_some() {
+            return;
+        }
+        let (core, runtime, target) = (&self.core, &self.runtime, &self.target);
+        let view = cx.new(|cx| DiagnoseView::new(core, runtime, target, cx));
+        let events = cx.subscribe_in(
+            &view,
+            window,
+            |this, _, event: &DiagnoseEvent, window, cx| match event {
+                DiagnoseEvent::Action(action) => this.follow(action, window, cx),
+            },
+        );
+        self.diagnose = Some((view, events));
+    }
+
+    /// Carry out what a diagnosis step asks: go to a tab, or to another object.
+    fn follow(&mut self, action: &StepAction, window: &mut Window, cx: &mut Context<Self>) {
+        match action {
+            StepAction::Logs { .. } => self.show(Tab::Logs, window, cx),
+            StepAction::Terminal => self.show(Tab::Terminal, window, cx),
+            StepAction::Edit => self.show(Tab::Yaml, window, cx),
+            StepAction::Open {
+                resource,
+                namespace,
+                name,
+            } => cx.emit(DrawerEvent::Open(Target {
+                cluster: self.target.cluster.clone(),
+                resource: resource.clone().into(),
+                kind: kind_of(resource).into(),
+                namespace: namespace.clone().map(Into::into),
+                name: name.clone().into(),
+            })),
+        }
     }
 
     /// Only a pod has a shell to open.
@@ -383,6 +437,14 @@ impl Render for DrawerView {
                     segmented_bar(cx.theme())
                         .child(self.render_tab(Tab::Yaml, IconName::FileCode, "YAML", cx))
                         .child(self.render_tab(Tab::Events, IconName::Activity, "Events", cx))
+                        .when(self.can_diagnose(), |tabs| {
+                            tabs.child(self.render_tab(
+                                Tab::Diagnose,
+                                IconName::ShieldAlert,
+                                "Diagnose",
+                                cx,
+                            ))
+                        })
                         .when(self.log_target.is_some(), |tabs| {
                             tabs.child(self.render_tab(Tab::Logs, IconName::ScrollText, "Logs", cx))
                         })
@@ -407,6 +469,10 @@ impl Render for DrawerView {
                         Tab::Events => self.render_events(cx),
                         Tab::Logs => match &self.logs {
                             Some(logs) => logs.clone().into_any_element(),
+                            None => div().into_any_element(),
+                        },
+                        Tab::Diagnose => match &self.diagnose {
+                            Some((diagnose, _)) => diagnose.clone().into_any_element(),
                             None => div().into_any_element(),
                         },
                         Tab::Terminal => match &self.terminal {
