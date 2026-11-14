@@ -285,6 +285,22 @@ back from GitHub: if it is lost, create a new pair with
 `update_tool keygen`, replace both halves, and every installed copy has to be
 reinstalled by hand once, because it only trusts the key it was built with.
 
+#### Offering a release to old installs
+
+Installs of the old Tauri app (0.1.x) look for `releases/latest/download/latest.json`,
+which a native release does not have, so they report "Could not fetch a valid
+release JSON". For a release that should be offered to them, run once:
+
+```bash
+gh workflow run legacy-updater.yml -f tag=v1.0.0
+```
+
+It repacks the macOS zip as `Kubernaut.app.tar.gz`, signs it with the old Tauri
+updater key (the `TAURI_SIGNING_PRIVATE_KEY` secret) and publishes `latest.json`
+for Apple silicon only: the old Intel build was universal, and Windows and Linux
+installs need installers a native release does not ship. An old install that
+takes the update keeps its settings, since the data folder is the same.
+
 ### Safety and privacy
 
 - Deleting, restarting, Helm changes, reconcile, suspend and silencing each ask
