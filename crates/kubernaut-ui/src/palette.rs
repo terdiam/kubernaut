@@ -32,6 +32,7 @@ pub enum Command {
     Security,
     Alerts,
     Ports,
+    Create,
     Settings,
     Cluster(usize),
     Resource(SharedString),

@@ -10,12 +10,14 @@ pub mod clusters;
 pub mod forward_ops;
 pub mod helm_ops;
 pub mod logging;
+pub mod manifest_ops;
 pub mod object_ops;
 pub mod preferences;
 pub mod present;
 pub mod scan_cache;
 pub mod security_ops;
 mod state;
+pub mod templates;
 
 pub use boot::{Booted, boot};
 pub use k8s_security as security;

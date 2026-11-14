@@ -32,6 +32,7 @@ use tokio::{runtime::Handle, sync::broadcast::error::RecvError, task::JoinHandle
 use crate::{
     alerts::{AlertsEvent, AlertsView},
     categories::{self, Category},
+    create::CreateView,
     drawer::{DrawerEvent, DrawerView, Tab as DrawerTab, Target},
     gitops::{GitOpsEvent, GitOpsView},
     helm::HelmView,
@@ -267,6 +268,8 @@ pub struct AppView {
     security: Option<OpenSecurity>,
     /// What Alertmanager is firing.
     alerts: Option<OpenAlerts>,
+    /// The page for creating resources from a manifest.
+    create: Option<Entity<CreateView>>,
     /// The port forwards of the open cluster.
     ports: Option<Entity<PortsView>>,
     /// The settings page, which belongs to no cluster.
@@ -383,6 +386,7 @@ impl AppView {
             gitops: None,
             security: None,
             alerts: None,
+            create: None,
             ports: None,
             settings: None,
             overview: None,
@@ -414,6 +418,7 @@ impl AppView {
         self.gitops = None;
         self.security = None;
         self.alerts = None;
+        self.create = None;
         self.ports = None;
         self.settings = None;
         self.overview = None;
@@ -560,6 +565,7 @@ impl AppView {
             && self.gitops.is_none()
             && self.security.is_none()
             && self.alerts.is_none()
+            && self.create.is_none()
             && self.ports.is_none()
             && self.settings.is_none()
             && self.overview.is_none();
@@ -766,6 +772,12 @@ impl AppView {
                 command: Command::Alerts,
             });
             items.push(Item {
+                label: "Create resource".into(),
+                hint: "Page".into(),
+                icon: IconName::Plus,
+                command: Command::Create,
+            });
+            items.push(Item {
                 label: "Port forwards".into(),
                 hint: "Page".into(),
                 icon: IconName::ArrowLeftRight,
@@ -813,6 +825,7 @@ impl AppView {
             Command::Alerts => self.open_alerts(window, cx),
             Command::Settings => self.open_settings(window, cx),
             Command::Ports => self.open_ports(None, window, cx),
+            Command::Create => self.open_create(window, cx),
             Command::Cluster(index) => self.select_cluster(*index, window, cx),
             Command::Resource(key) => self.open_resource(key, window, cx),
             Command::ToggleNamespace(namespace) => {
@@ -933,6 +946,41 @@ impl AppView {
             view,
             _events: events,
         });
+        cx.notify();
+    }
+
+    /// Show the page for creating resources in the active cluster.
+    fn open_create(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cluster) = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone())
+        else {
+            return;
+        };
+        // Start in the namespace the user is looking at, else the cluster's
+        // configured default.
+        let namespace = self
+            .active_state()
+            .and_then(|state| match state.scope.as_slice() {
+                [one] => Some(one.clone()),
+                _ => None,
+            })
+            .or_else(|| {
+                self.core
+                    .preferences()
+                    .profile(&cluster)
+                    .default_namespace
+                    .map(Into::into)
+            })
+            // Kubernetes' own default, so a namespaced manifest with no
+            // namespace of its own still has somewhere to go.
+            .or_else(|| Some("default".into()));
+        self.clear_pages();
+        let (core, runtime) = (&self.core, &self.runtime);
+        self.create = Some(
+            cx.new(|cx| CreateView::new(core, runtime, cluster, namespace.as_ref(), window, cx)),
+        );
         cx.notify();
     }
 
@@ -1665,6 +1713,7 @@ impl AppView {
         let open_overview = cx.listener(|this, _, window, cx| this.open_overview(window, cx));
         let open_helm = cx.listener(|this, _, window, cx| this.open_helm(window, cx));
         let open_gitops = cx.listener(|this, _, window, cx| this.open_gitops(window, cx));
+        let open_create = cx.listener(|this, _, window, cx| this.open_create(window, cx));
         let open_ports = cx.listener(|this, _, window, cx| this.open_ports(None, window, cx));
         let open_alerts = cx.listener(|this, _, window, cx| this.open_alerts(window, cx));
         let open_security = cx.listener(|this, _, window, cx| this.open_security(window, cx));
@@ -1702,6 +1751,10 @@ impl AppView {
             .child(
                 pinned("alerts", IconName::Bell, "Alerts", self.alerts.is_some())
                     .on_click(open_alerts),
+            )
+            .child(
+                pinned("create", IconName::Plus, "Create", self.create.is_some())
+                    .on_click(open_create),
             )
             .child(
                 pinned(
@@ -1971,6 +2024,9 @@ impl AppView {
                         row.child(drawer.view.clone())
                     }),
             );
+        }
+        if let Some(create) = &self.create {
+            return main.child(create.clone());
         }
         if let Some(ports) = &self.ports {
             return main.child(ports.clone());

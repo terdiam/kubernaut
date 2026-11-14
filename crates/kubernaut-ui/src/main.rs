@@ -2,6 +2,7 @@ mod alerts;
 mod app;
 mod categories;
 mod charts;
+mod create;
 mod diff;
 mod drawer;
 mod emulator;
