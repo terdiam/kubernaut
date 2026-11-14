@@ -31,6 +31,8 @@ use crate::{
     diagnose::{DiagnoseEvent, DiagnoseView, kind_of},
     log_buffer::log_target,
     logs::LogView,
+    metrics::{MetricsView, metric_target},
+    quota::QuotaView,
     row_actions::{self, RowAction},
     terminal::TerminalView,
     ui::{segment_icon, segmented_bar},
@@ -80,6 +82,10 @@ pub enum Tab {
     Terminal,
     /// Why a pod, or a workload's pods, are not running.
     Diagnose,
+    /// CPU and memory over time, against what is declared.
+    Metrics,
+    /// A namespace's resource quota and limit ranges.
+    Quota,
 }
 
 /// A value that arrives from the cluster.
@@ -110,6 +116,8 @@ pub struct DrawerView {
     terminal: Option<Entity<TerminalView>>,
     /// Created when the tab is first opened, so a closed tab reads nothing.
     diagnose: Option<(Entity<DiagnoseView>, Subscription)>,
+    metrics: Option<Entity<MetricsView>>,
+    quota: Option<Entity<QuotaView>>,
     tab: Tab,
     yaml: Entity<YamlView>,
     events: Load<Vec<EventLine>>,
@@ -149,6 +157,8 @@ impl DrawerView {
             logs: None,
             terminal: None,
             diagnose: None,
+            metrics: None,
+            quota: None,
             target,
             tab: Tab::Yaml,
             yaml,
@@ -164,6 +174,8 @@ impl DrawerView {
             Tab::Logs if self.log_target.is_none() => return,
             Tab::Terminal if !self.has_shell() => return,
             Tab::Diagnose if !self.can_diagnose() => return,
+            Tab::Metrics if metric_target(&self.target).is_none() => return,
+            Tab::Quota if !self.has_quota() => return,
             _ => {}
         }
         self.tab = tab;
@@ -171,6 +183,8 @@ impl DrawerView {
             Tab::Logs => self.ensure_logs(cx),
             Tab::Terminal => self.ensure_terminal(window, cx),
             Tab::Diagnose => self.ensure_diagnose(window, cx),
+            Tab::Metrics => self.ensure_metrics(cx),
+            Tab::Quota => self.ensure_quota(cx),
             Tab::Yaml | Tab::Events => {}
         }
         cx.notify();
@@ -211,6 +225,37 @@ impl DrawerView {
         self.target.namespace.is_some()
             && (self.target.resource == "core/v1/pods"
                 || row_actions::is_workload(&self.target.resource))
+    }
+
+    fn has_quota(&self) -> bool {
+        self.target.resource == "core/v1/namespaces"
+    }
+
+    fn ensure_metrics(&mut self, cx: &mut Context<Self>) {
+        if self.metrics.is_some() {
+            return;
+        }
+        let Some(metric) = metric_target(&self.target) else {
+            return;
+        };
+        let (core, runtime, target) = (&self.core, &self.runtime, &self.target);
+        self.metrics = Some(cx.new(|cx| MetricsView::new(core, runtime, target, metric, cx)));
+    }
+
+    fn ensure_quota(&mut self, cx: &mut Context<Self>) {
+        if self.quota.is_some() {
+            return;
+        }
+        let (core, runtime, target) = (&self.core, &self.runtime, &self.target);
+        self.quota = Some(cx.new(|cx| {
+            QuotaView::new(
+                core,
+                runtime,
+                target.cluster.clone(),
+                target.name.clone(),
+                cx,
+            )
+        }));
     }
 
     fn ensure_diagnose(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -453,6 +498,17 @@ impl Render for DrawerView {
                     segmented_bar(cx.theme())
                         .child(self.render_tab(Tab::Yaml, IconName::FileCode, "YAML", cx))
                         .child(self.render_tab(Tab::Events, IconName::Activity, "Events", cx))
+                        .when(metric_target(&self.target).is_some(), |tabs| {
+                            tabs.child(self.render_tab(
+                                Tab::Metrics,
+                                IconName::Gauge,
+                                "Metrics",
+                                cx,
+                            ))
+                        })
+                        .when(self.has_quota(), |tabs| {
+                            tabs.child(self.render_tab(Tab::Quota, IconName::Ruler, "Quota", cx))
+                        })
                         .when(self.can_diagnose(), |tabs| {
                             tabs.child(self.render_tab(
                                 Tab::Diagnose,
@@ -485,6 +541,14 @@ impl Render for DrawerView {
                         Tab::Events => self.render_events(cx),
                         Tab::Logs => match &self.logs {
                             Some(logs) => logs.clone().into_any_element(),
+                            None => div().into_any_element(),
+                        },
+                        Tab::Metrics => match &self.metrics {
+                            Some(metrics) => metrics.clone().into_any_element(),
+                            None => div().into_any_element(),
+                        },
+                        Tab::Quota => match &self.quota {
+                            Some(quota) => quota.clone().into_any_element(),
                             None => div().into_any_element(),
                         },
                         Tab::Diagnose => match &self.diagnose {

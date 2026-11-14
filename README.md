@@ -87,9 +87,16 @@ version had that this one does not yet.
   in the sidebar, whatever list or page is open; unpin with the × on the row.
   Pins are kept per cluster.
 - A command palette (⌘K) across clusters, pages, namespaces and resource kinds.
-- **Overview** of a cluster: CPU, memory and pod gauges, an hour of history and
-  the issues worth looking at, read from `metrics.k8s.io` and a discovered
-  Prometheus-compatible endpoint through the apiserver proxy.
+- **Overview** of a cluster: CPU, memory and pod gauges and the issues worth
+  looking at, read from `metrics.k8s.io`.
+- A **Metrics** tab for a pod, node, namespace or workload: CPU and memory over
+  the last hour against what is declared. A Prometheus-compatible endpoint,
+  found through the apiserver proxy, gives history at once; with only
+  metrics-server the chart fills while the tab is open, and says so. For a
+  workload it also suggests requests and limits per container from observed
+  usage, with the sample count and confidence attached, and no CPU limit on
+  purpose. A namespace has a **Quota** tab: usage against each hard limit, and
+  the defaults new pods get.
 
 ### Create and edit
 
@@ -160,8 +167,8 @@ hours or a day, or end a silence early.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Metrics beyond the overview: namespace heatmap, per-object charts, node
-  usage, the topology graph, sizing recommendations, and the Quota tab.
+- Metrics beyond those: the namespace heatmap, node usage in the node list, and
+  the topology graph. Network and disk series are not charted yet.
 - Field-based create and edit forms (YAML create and edit work), YAML
   validation against the cluster's OpenAPI schema, node label and taint
   editing, and pruning on apply.
@@ -188,13 +195,17 @@ For the smallest binary, `cargo build --profile release-small -p kubernaut-ui`.
 ## Develop
 
 ```bash
+scripts/run-dev.sh      # build and open as a bundle, so the Dock shows the icon
 cargo run -p kubernaut-ui
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 ```
 
-Log level is controlled by `KUBERNAUT_LOG` (e.g. `KUBERNAUT_LOG=debug,kube=info`).
+A bare `cargo run` starts the executable without a bundle, and macOS draws a
+generic icon for a process that has none; `scripts/run-dev.sh` wraps the build
+in a small `Kubernaut Dev.app` so the icon shows. Log level is controlled by
+`KUBERNAUT_LOG` (e.g. `KUBERNAUT_LOG=debug,kube=info`).
 
 ## Layout
 

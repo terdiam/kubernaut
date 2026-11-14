@@ -12,6 +12,7 @@ pub mod forward_ops;
 pub mod helm_ops;
 pub mod logging;
 pub mod manifest_ops;
+pub mod metrics_ops;
 pub mod object_ops;
 pub mod preferences;
 pub mod present;
