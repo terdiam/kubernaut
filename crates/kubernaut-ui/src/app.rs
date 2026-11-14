@@ -30,6 +30,7 @@ use k8s_ops::actions::TargetRef;
 use tokio::{runtime::Handle, sync::broadcast::error::RecvError, task::JoinHandle};
 
 use crate::{
+    add_cluster::{AddClusterEvent, AddClusterView},
     alerts::{AlertsEvent, AlertsView},
     categories::{self, Category},
     create::CreateView,
@@ -46,7 +47,7 @@ use crate::{
     settings::SettingsView,
     table::{ResourceDelegate, RowContext},
     theme,
-    ui::{chip, pill, toast_error, toast_success},
+    ui::{Emphasis, button_icon, chip, pill, toast_error, toast_success},
     yaml::fetch_yaml,
 };
 
@@ -215,6 +216,12 @@ struct OpenGitOps {
     _events: Subscription,
 }
 
+/// The add-cluster page and the subscription that rebuilds the rail.
+struct OpenAddCluster {
+    view: Entity<AddClusterView>,
+    _events: Subscription,
+}
+
 /// The Alerts page and the subscription that opens objects from it.
 struct OpenAlerts {
     view: Entity<AlertsView>,
@@ -273,6 +280,8 @@ pub struct AppView {
     create: Option<Entity<CreateView>>,
     /// The port forwards of the open cluster.
     ports: Option<Entity<PortsView>>,
+    /// The page for adding and removing clusters, which belongs to none.
+    add_cluster: Option<OpenAddCluster>,
     /// The settings page, which belongs to no cluster.
     settings: Option<Entity<SettingsView>>,
     /// The cluster overview, the page a cluster opens on.
@@ -389,6 +398,7 @@ impl AppView {
             alerts: None,
             create: None,
             ports: None,
+            add_cluster: None,
             settings: None,
             overview: None,
             palette: None,
@@ -421,6 +431,7 @@ impl AppView {
         self.alerts = None;
         self.create = None;
         self.ports = None;
+        self.add_cluster = None;
         self.settings = None;
         self.overview = None;
     }
@@ -568,6 +579,7 @@ impl AppView {
             && self.alerts.is_none()
             && self.create.is_none()
             && self.ports.is_none()
+            && self.add_cluster.is_none()
             && self.settings.is_none()
             && self.overview.is_none();
         let connected = self
@@ -809,6 +821,12 @@ impl AppView {
             }
         }
         items.push(Item {
+            label: "Add cluster".into(),
+            hint: "Page".into(),
+            icon: IconName::Plus,
+            command: Command::AddCluster,
+        });
+        items.push(Item {
             label: "Settings".into(),
             hint: "Page".into(),
             icon: IconName::Settings,
@@ -825,6 +843,7 @@ impl AppView {
             Command::Security => self.open_security(window, cx),
             Command::Alerts => self.open_alerts(window, cx),
             Command::Settings => self.open_settings(window, cx),
+            Command::AddCluster => self.open_add_cluster(window, cx),
             Command::Ports => self.open_ports(None, window, cx),
             Command::Create => self.open_create(window, cx),
             Command::Cluster(index) => self.select_cluster(*index, window, cx),
@@ -998,6 +1017,50 @@ impl AppView {
         self.clear_pages();
         let (core, runtime) = (&self.core, &self.runtime);
         self.ports = Some(cx.new(|cx| PortsView::new(core, runtime, cluster, target, window, cx)));
+        cx.notify();
+    }
+
+    /// Show the page for adding and removing clusters.
+    fn open_add_cluster(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_pages();
+        let (core, runtime) = (&self.core, &self.runtime);
+        let view = cx.new(|cx| AddClusterView::new(core, runtime, window, cx));
+        let events =
+            cx.subscribe_in(
+                &view,
+                window,
+                |this, _, event: &AddClusterEvent, _, cx| match event {
+                    AddClusterEvent::Changed => this.refresh_clusters(cx),
+                },
+            );
+        self.add_cluster = Some(OpenAddCluster {
+            view,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    /// Rebuild the rail after clusters were added or removed. The cluster being
+    /// viewed stays selected when it still exists; one that is gone takes its
+    /// state with it.
+    fn refresh_clusters(&mut self, cx: &mut Context<Self>) {
+        let active = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone());
+        let (tiles, rail) = build_tiles(&self.core.clusters.contexts(), &self.core.preferences());
+        self.clusters
+            .retain(|name, _| tiles.iter().any(|tile| tile.name == *name));
+        self.tiles = tiles;
+        self.rail = rail;
+        self.active = active.and_then(|name| self.tiles.iter().position(|tile| tile.name == name));
+        if self.active.is_none() {
+            // Keep the page that is open; only the cluster pages belong to it.
+            let keep = self.add_cluster.take();
+            self.clear_pages();
+            self.add_cluster = keep;
+            self.refresh_rows(cx);
+        }
         cx.notify();
     }
 
@@ -1467,22 +1530,40 @@ impl AppView {
         }
         let hover = cx.theme().secondary;
         let open = cx.listener(|this, _, window, cx| this.open_settings(window, cx));
-        rail.child(div().flex_1()).child(
-            div()
-                .id("rail-settings")
-                .size(px(36.))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_lg()
-                .cursor_pointer()
-                .text_color(muted)
-                .when(self.settings.is_some(), |button| button.bg(hover))
-                .hover(|button| button.bg(hover))
-                .child(Icon::new(IconName::Settings).size_4())
-                .on_click(open),
-        )
+        let add = cx.listener(|this, _, window, cx| this.open_add_cluster(window, cx));
+        rail.child(div().flex_1())
+            .child(
+                div()
+                    .id("rail-add")
+                    .size(px(36.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .text_color(muted)
+                    .when(self.add_cluster.is_some(), |button| button.bg(hover))
+                    .hover(|button| button.bg(hover))
+                    .child(Icon::new(IconName::Plus).size_4())
+                    .on_click(add),
+            )
+            .child(
+                div()
+                    .id("rail-settings")
+                    .size(px(36.))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_lg()
+                    .cursor_pointer()
+                    .text_color(muted)
+                    .when(self.settings.is_some(), |button| button.bg(hover))
+                    .hover(|button| button.bg(hover))
+                    .child(Icon::new(IconName::Settings).size_4())
+                    .on_click(open),
+            )
     }
 
     fn render_tile(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1999,16 +2080,42 @@ impl AppView {
         if let Some(settings) = &self.settings {
             return main.child(settings.clone());
         }
+        if let Some(add) = &self.add_cluster {
+            return main.child(add.view.clone());
+        }
 
         let (Some(_), Some(state)) = (self.active, self.active_state()) else {
+            let muted = theme.muted_foreground;
+            let none_yet = self.tiles.is_empty();
+            let add = cx.listener(|this, _, window, cx| this.open_add_cluster(window, cx));
+            let colours = cx.theme();
             return main.child(
                 div()
                     .size_full()
                     .flex()
+                    .flex_col()
+                    .gap_3()
                     .items_center()
                     .justify_center()
-                    .text_color(theme.muted_foreground)
-                    .child("Connect a cluster to see its overview."),
+                    .text_color(muted)
+                    .child(if none_yet {
+                        "No clusters yet."
+                    } else {
+                        "Connect a cluster to see its overview."
+                    })
+                    .when(none_yet, |column| {
+                        column.child(
+                            button_icon(
+                                "empty-add",
+                                IconName::Plus,
+                                "Add a cluster",
+                                true,
+                                Emphasis::Primary,
+                                colours,
+                            )
+                            .on_click(add),
+                        )
+                    }),
             );
         };
 

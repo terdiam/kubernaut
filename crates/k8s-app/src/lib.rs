@@ -6,6 +6,7 @@
 pub mod alert_ops;
 pub mod audit;
 mod boot;
+pub mod cluster_ops;
 pub mod clusters;
 pub mod forward_ops;
 pub mod helm_ops;

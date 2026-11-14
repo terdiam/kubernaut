@@ -44,8 +44,11 @@ version had that this one does not yet.
 ### Clusters
 
 - The app reads kubeconfigs only from its own folder (`clusters/` in its
-  application-support directory), never `~/.kube/config`, so a cluster is
-  there because you put it there. Nothing connects until you click its tile.
+  application-support directory), so a cluster is there because you added it:
+  from a file, a paste, or picked out of `~/.kube/config`, which is read only
+  then and never changed. Colliding names are renamed on the way in, and a
+  cluster can be removed again from the same page. Nothing connects until you
+  click its tile.
 - Connections are lazy and health-checked (connected / unreachable), with
   login-shell `PATH` recovery so `exec` credential plugins (`aws`, `gcloud`,
   `az`, `kubelogin`) resolve even when the app is launched from Finder.
@@ -139,8 +142,7 @@ hours or a day, or end a silence early.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Adding clusters from inside the app (import from a file or a paste, rename on
-  collision, display name and accent colour).
+- A display name, accent colour and workspace per cluster, set from the app.
 - Diagnose tab (a pod's status explained from the cluster's own evidence).
 - Metrics beyond the overview: namespace heatmap, per-object charts, node
   usage, the topology graph, sizing recommendations, and the Quota tab.

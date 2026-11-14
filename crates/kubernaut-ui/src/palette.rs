@@ -34,6 +34,7 @@ pub enum Command {
     Ports,
     Create,
     Settings,
+    AddCluster,
     Cluster(usize),
     Resource(SharedString),
     /// Add a namespace to the selection, or take it out.
