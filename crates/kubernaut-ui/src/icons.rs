@@ -16,6 +16,7 @@ assets::icon_assets!(
         Network,
         Puzzle,
         Server,
+        ShieldCheck,
         ShipWheel,
         SlidersHorizontal,
     ]

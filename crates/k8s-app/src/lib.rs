@@ -12,7 +12,9 @@ pub mod object_ops;
 pub mod preferences;
 pub mod present;
 pub mod scan_cache;
+pub mod security_ops;
 mod state;
 
 pub use boot::{Booted, boot};
+pub use k8s_security as security;
 pub use state::AppCore;

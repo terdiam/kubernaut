@@ -16,6 +16,7 @@ mod palette;
 mod release;
 mod row_actions;
 mod rows;
+mod security;
 mod table;
 mod terminal;
 mod theme;

@@ -38,6 +38,7 @@ use crate::{
     overview::{OverviewEvent, OverviewView},
     palette::{Command, Item, PaletteEvent, PaletteView},
     row_actions::RowAction,
+    security::{SecurityEvent, SecurityView},
     table::{ResourceDelegate, RowContext},
     theme,
     ui::{chip, pill, toast_error, toast_success},
@@ -209,6 +210,12 @@ struct OpenGitOps {
     _events: Subscription,
 }
 
+/// The Security Center and the subscription that opens objects from it.
+struct OpenSecurity {
+    view: Entity<SecurityView>,
+    _events: Subscription,
+}
+
 /// The overview page and the subscription that opens objects from it.
 struct OpenOverview {
     view: Entity<OverviewView>,
@@ -247,6 +254,8 @@ pub struct AppView {
     helm: Option<Entity<HelmView>>,
     /// What the GitOps controllers are syncing.
     gitops: Option<OpenGitOps>,
+    /// Misconfigurations and image vulnerabilities.
+    security: Option<OpenSecurity>,
     /// The cluster overview, the page a cluster opens on.
     overview: Option<OpenOverview>,
     palette: Option<OpenPalette>,
@@ -357,6 +366,7 @@ impl AppView {
             drawer: None,
             helm: None,
             gitops: None,
+            security: None,
             overview: None,
             palette: None,
             focus,
@@ -384,6 +394,7 @@ impl AppView {
         self.drawer = None;
         self.helm = None;
         self.gitops = None;
+        self.security = None;
         self.overview = None;
     }
 
@@ -526,6 +537,7 @@ impl AppView {
         let idle = self.table.is_none()
             && self.helm.is_none()
             && self.gitops.is_none()
+            && self.security.is_none()
             && self.overview.is_none();
         let connected = self
             .clusters
@@ -718,6 +730,12 @@ impl AppView {
                 command: Command::GitOps,
             });
             items.push(Item {
+                label: "Security".into(),
+                hint: "Page".into(),
+                icon: IconName::ShieldCheck,
+                command: Command::Security,
+            });
+            items.push(Item {
                 label: "Helm releases".into(),
                 hint: "Page".into(),
                 icon: IconName::ShipWheel,
@@ -749,6 +767,7 @@ impl AppView {
             Command::Overview => self.open_overview(window, cx),
             Command::Helm => self.open_helm(window, cx),
             Command::GitOps => self.open_gitops(window, cx),
+            Command::Security => self.open_security(window, cx),
             Command::Cluster(index) => self.select_cluster(*index, window, cx),
             Command::Resource(key) => self.open_resource(key, window, cx),
             Command::ToggleNamespace(namespace) => {
@@ -807,6 +826,8 @@ impl AppView {
             self.open_helm(window, cx);
         } else if self.gitops.is_some() {
             self.open_gitops(window, cx);
+        } else if self.security.is_some() {
+            self.open_security(window, cx);
         }
         cx.notify();
     }
@@ -862,6 +883,36 @@ impl AppView {
                 },
             );
         self.gitops = Some(OpenGitOps {
+            view,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    /// Show the Security Center of the active cluster.
+    fn open_security(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cluster) = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone())
+        else {
+            return;
+        };
+        let scope = self
+            .active_state()
+            .map(|state| state.scope.clone())
+            .unwrap_or_default();
+        self.clear_pages();
+        let (core, runtime) = (&self.core, &self.runtime);
+        let view = cx.new(|cx| SecurityView::new(core, runtime, cluster, scope, window, cx));
+        let events = cx.subscribe_in(
+            &view,
+            window,
+            |this, _, event: &SecurityEvent, window, cx| match event {
+                SecurityEvent::Open(target) => this.show_drawer(target.clone(), window, cx),
+            },
+        );
+        self.security = Some(OpenSecurity {
             view,
             _events: events,
         });
@@ -1494,6 +1545,7 @@ impl AppView {
         let open_overview = cx.listener(|this, _, window, cx| this.open_overview(window, cx));
         let open_helm = cx.listener(|this, _, window, cx| this.open_helm(window, cx));
         let open_gitops = cx.listener(|this, _, window, cx| this.open_gitops(window, cx));
+        let open_security = cx.listener(|this, _, window, cx| this.open_security(window, cx));
         let pinned_rows = v_flex()
             .px_2()
             .pt_3()
@@ -1515,6 +1567,15 @@ impl AppView {
                     self.gitops.is_some(),
                 )
                 .on_click(open_gitops),
+            )
+            .child(
+                pinned(
+                    "security",
+                    IconName::ShieldCheck,
+                    "Security",
+                    self.security.is_some(),
+                )
+                .on_click(open_security),
             )
             .child(
                 pinned(
@@ -1767,6 +1828,19 @@ impl AppView {
                     .min_h_0()
                     .min_w_0()
                     .child(gitops.view.clone())
+                    .when_some(self.drawer.as_ref(), |row, drawer| {
+                        row.child(drawer.view.clone())
+                    }),
+            );
+        }
+        if let Some(security) = &self.security {
+            return main.child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(security.view.clone())
                     .when_some(self.drawer.as_ref(), |row, drawer| {
                         row.child(drawer.view.clone())
                     }),

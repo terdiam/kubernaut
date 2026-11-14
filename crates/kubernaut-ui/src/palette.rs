@@ -29,6 +29,7 @@ pub enum Command {
     Overview,
     Helm,
     GitOps,
+    Security,
     Cluster(usize),
     Resource(SharedString),
     /// Add a namespace to the selection, or take it out.
