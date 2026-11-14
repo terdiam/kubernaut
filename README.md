@@ -9,9 +9,10 @@ did not explicitly add.
 
 > **Status.** The native interface is the only one now; the Tauri and React
 > version has been removed. It does not yet do everything the earlier version
-> did — see [Not yet in the native app](#not-yet-in-the-native-app). Only macOS
-> (Apple silicon) is built and checked; Linux and Windows builds are not
-> produced.
+> did — see [Not yet in the native app](#not-yet-in-the-native-app). macOS
+> (Apple silicon) is the platform it is developed and run on. Linux builds, is
+> tested and starts, checked in a container; Windows is built by CI but has not
+> been run by a person yet.
 
 ## Install
 
@@ -24,6 +25,17 @@ flag:
 ```bash
 xattr -dr com.apple.quarantine /Applications/Kubernaut.app
 ```
+
+**Linux.** Download `Kubernaut-<version>-linux-<x86_64|aarch64>.tar.gz`, unpack
+it and run `./install.sh`. It installs for the current user under `~/.local`
+(nothing needs root), adds `kubernaut-ui` to `~/.local/bin` and an entry to the
+applications menu. It needs a graphical session (X11 or Wayland) and a Vulkan
+driver.
+
+**Windows.** Download `Kubernaut-<version>-windows-x86_64.zip`, unzip it and run
+`kubernaut-ui.exe`. It is not code-signed, so SmartScreen warns on the first run:
+**More info**, then **Run anyway**. This build has not been run on a real
+Windows machine yet; please report what you find.
 
 Or build from source — see [Build](#build).
 
@@ -286,20 +298,39 @@ to be installed by hand.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Builds for Linux and Windows.
+- Windows has been compiled by CI but not run by a person, and its executable
+  carries no icon yet.
+- In-app install of updates on Linux and Windows. There the update check still
+  works and links the release page; installing is macOS only.
+- Code signing and notarisation on any platform.
 
 ## Build
 
 Needs Rust 1.93 or newer.
 
+On Linux the window system and fonts need their development packages first. On
+Debian or Ubuntu:
+
+```bash
+sudo apt-get install build-essential pkg-config clang cmake \
+  libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libx11-dev \
+  libx11-xcb-dev libxcb-xkb-dev libxcb-render0-dev libxcb-shape0-dev \
+  libxcb-xfixes0-dev libfontconfig-dev libfreetype-dev libasound2-dev \
+  libvulkan-dev libdbus-1-dev libgbm-dev libdrm-dev libegl1-mesa-dev libssl-dev
+```
+
+Windows needs the Visual Studio C++ build tools.
+
 ```bash
 cargo build --release -p kubernaut-ui     # target/release/kubernaut-ui
 scripts/bundle-macos.sh                   # dist/Kubernaut.app and a zip
+scripts/bundle-linux.sh                   # dist/Kubernaut-<version>-linux-<arch>.tar.gz
+scripts/bundle-windows.ps1                # dist\Kubernaut-<version>-windows-x86_64.zip
 ```
 
-`scripts/bundle-macos.sh --sidecars <dir>` also copies `helm`, `trivy` and
-`kustomize` into the app; `scripts/fetch-sidecars.sh` downloads and
-checksum-verifies them, and `.github/workflows/release.yml` shows how a release
+Each bundle script takes `--sidecars <dir>` (`-Sidecars` on Windows) to also copy
+`helm`, `trivy` and `kustomize` in; `scripts/fetch-sidecars.sh <platform> <dir>`
+downloads and checksum-verifies them for macOS, Linux or Windows, and `.github/workflows/release.yml` shows how a release
 uses both. Without them the app uses whichever of the three are on `PATH`.
 
 For the smallest binary, `cargo build --profile release-small -p kubernaut-ui`.

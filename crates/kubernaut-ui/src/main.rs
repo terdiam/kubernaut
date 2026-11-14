@@ -1,3 +1,10 @@
+// A release build on Windows is a window app, not a console one, so it does not
+// open a terminal behind itself. Debug builds keep the console for their logs.
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
+
 mod activity;
 mod add_cluster;
 mod alerts;

@@ -13,7 +13,24 @@ env:
   KUSTOMIZE_VERSION: v5.8.1
 
 jobs:
+  # Creates the draft once, so the platform jobs below do not race to create it.
+  draft:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      # Draft on purpose: a person checks the artefacts before anyone downloads them.
+      - name: Create the draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" --draft --title "Kubernaut ${GITHUB_REF_NAME}" --generate-notes
+
   macos:
+    needs: draft
     # GITHUB_TOKEN is read-only by default in this repository, so uploading to
     # the release needs this granted.
     permissions:
@@ -58,11 +75,101 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 \
-            || gh release create "${GITHUB_REF_NAME}" --draft --title "Kubernaut ${GITHUB_REF_NAME}" --generate-notes
           gh release upload "${GITHUB_REF_NAME}" dist/Kubernaut-*-macos-*.zip* --clobber
 
       - uses: actions/upload-artifact@v4
         with:
           name: Kubernaut-macos
           path: dist/Kubernaut-*-macos-*.zip*
+
+  linux:
+    needs: draft
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            sidecars: linux-amd64
+          - os: ubuntu-24.04-arm
+            sidecars: linux-arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the window system and font development packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang cmake \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libxcb1-dev libx11-dev \
+            libx11-xcb-dev libxcb-xkb-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libfontconfig-dev libfreetype-dev libasound2-dev libvulkan-dev libdbus-1-dev \
+            libgbm-dev libdrm-dev libegl1-mesa-dev libssl-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the tag matches the version being built
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
+          [ "v${version}" = "${GITHUB_REF_NAME}" ] || {
+            echo "tag ${GITHUB_REF_NAME} but Cargo.toml says ${version}"; exit 1; }
+
+      - name: Fetch and verify helm, trivy and kustomize
+        run: scripts/fetch-sidecars.sh ${{ matrix.sidecars }} sidecars
+
+      - name: Build the tarball
+        run: scripts/bundle-linux.sh --sidecars sidecars
+
+      - name: Attach to the draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/Kubernaut-*-linux-*.tar.gz --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kubernaut-${{ matrix.sidecars }}
+          path: dist/Kubernaut-*-linux-*.tar.gz
+
+  # Built on a Windows runner and never run by a person yet; see the README.
+  windows:
+    needs: draft
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check the tag matches the version being built
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          version=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
+          [ "v${version}" = "${GITHUB_REF_NAME}" ] || {
+            echo "tag ${GITHUB_REF_NAME} but Cargo.toml says ${version}"; exit 1; }
+
+      - name: Fetch and verify helm, trivy and kustomize
+        shell: bash
+        run: scripts/fetch-sidecars.sh windows-amd64 sidecars
+
+      - name: Build the zip
+        shell: pwsh
+        run: scripts/bundle-windows.ps1 -Sidecars sidecars
+
+      - name: Attach to the draft release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${GITHUB_REF_NAME}" dist/Kubernaut-*-windows-*.zip --clobber
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kubernaut-windows
+          path: dist/Kubernaut-*-windows-*.zip

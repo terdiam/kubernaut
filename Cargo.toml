@@ -115,3 +115,11 @@ panic = "abort"
 
 [profile.dev]
 opt-level = 1
+# Full debuginfo of a GPUI application is several gigabytes per build and was
+# filling the disk: every rebuild, test and clippy run kept its own copy. File
+# and line tables are all a backtrace or a log needs.
+debug = "line-tables-only"
+
+# Dependencies are never stepped into here, so they carry no debuginfo at all.
+[profile.dev.package."*"]
+debug = false

@@ -13,8 +13,10 @@
 //! Checking for a release asks GitHub one question and sends nothing about this
 //! machine. Installing is always an explicit click.
 //!
-//! macOS only: it leans on the `curl`, `ditto` and `plutil` that ship with it,
-//! which avoids an HTTP client and a zip reader for two calls.
+//! Looking for a release works wherever `curl` does. Installing is macOS only:
+//! it leans on the `curl`, `ditto`, `plutil` and `codesign` that ship with it,
+//! which avoids an HTTP client and a zip reader for two calls. Elsewhere the app
+//! tells the person a release exists and links its notes.
 
 use std::{
     fs::File,
@@ -58,7 +60,10 @@ impl Release {
     /// Whether this build can install it: a key is compiled in and the release
     /// is signed.
     pub fn installable(&self) -> bool {
-        public_key().is_some() && self.zip_url.is_some() && self.sig_url.is_some()
+        cfg!(target_os = "macos")
+            && public_key().is_some()
+            && self.zip_url.is_some()
+            && self.sig_url.is_some()
     }
 }
 
@@ -145,7 +150,14 @@ fn curl(url: &str, output: Option<&Path>) -> Result<Vec<u8>, String> {
     } else {
         "=https"
     };
-    let mut command = Command::new("/usr/bin/curl");
+    // macOS ships curl at a fixed path; elsewhere it is found on PATH
+    // (Windows 10 and later include curl.exe).
+    let curl = if cfg!(target_os = "macos") {
+        "/usr/bin/curl"
+    } else {
+        "curl"
+    };
+    let mut command = Command::new(curl);
     command
         .args(["--fail", "--silent", "--show-error", "--location"])
         .args(["--proto", protocols, "--proto-redir", "=https"])
@@ -363,8 +375,8 @@ pub fn install(staged: &Path, bundle: &Path) -> Result<(), String> {
         })?;
     let staging = staged.parent().ok_or("the staged app has no folder")?;
 
-    use std::os::unix::process::CommandExt;
-    Command::new("/bin/sh")
+    let mut command = Command::new("/bin/sh");
+    command
         .arg("-c")
         .arg(SWAP)
         .arg("sh")
@@ -374,13 +386,25 @@ pub fn install(staged: &Path, bundle: &Path) -> Result<(), String> {
         .arg(staging)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        // Its own process group, so it is not taken down with this app.
-        .process_group(0)
+        .stderr(Stdio::null());
+    detach(&mut command);
+    command
         .spawn()
         .map(|_| ())
         .map_err(|e| format!("could not start the installer: {e}"))
 }
+
+/// Give the installer its own process group, so it is not taken down with this
+/// app.
+#[cfg(unix)]
+fn detach(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+/// Installing is not offered off macOS, so there is nothing to detach.
+#[cfg(not(unix))]
+fn detach(_: &mut Command) {}
 
 /// A fresh folder to work in, which the swap helper removes.
 pub fn staging_directory() -> Result<PathBuf, String> {
@@ -490,6 +514,9 @@ mod tests {
     #[test]
     fn nothing_is_installable_while_no_key_is_compiled_in() {
         let release = parse_release(RELEASE, "arm64").unwrap();
-        assert_eq!(release.installable(), public_key().is_some());
+        assert_eq!(
+            release.installable(),
+            cfg!(target_os = "macos") && public_key().is_some()
+        );
     }
 }
