@@ -69,7 +69,19 @@ const MAX_PILLS: usize = 3;
 /// seconds, so asking sooner only repeats the last answer.
 const NODE_USAGE_POLL: std::time::Duration = std::time::Duration::from_secs(5);
 
-actions!(kubernaut, [TogglePalette]);
+actions!(
+    kubernaut,
+    [
+        TogglePalette,
+        About,
+        CheckForUpdates,
+        ShowSettings,
+        QuitApp,
+        HideApp,
+        HideOtherApps,
+        ShowAllApps,
+    ]
+);
 
 /// The key context the app's shortcuts are bound under.
 pub const KEY_CONTEXT: &str = "Kubernaut";
@@ -1351,7 +1363,7 @@ impl AppView {
     }
 
     /// Show the settings. They belong to the app, so no cluster is needed.
-    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_pages();
         let (core, runtime) = (&self.core, &self.runtime);
         let view = cx.new(|cx| SettingsView::new(core, runtime, window, cx));
@@ -1368,6 +1380,48 @@ impl AppView {
             _events: events,
         });
         cx.notify();
+    }
+
+    /// Open Settings and look for a newer version there, where the result and the
+    /// button that installs it are.
+    pub fn check_for_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_settings(window, cx);
+        if let Some(settings) = &self.settings {
+            settings
+                .view
+                .update(cx, |settings, cx| settings.check_for_update(cx));
+        }
+    }
+
+    /// Say what this is and which version.
+    pub fn show_about(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        window.open_alert_dialog(cx, |dialog, _, cx| {
+            let muted = cx.theme().muted_foreground;
+            dialog
+                .title(format!("Kubernaut {}", env!("CARGO_PKG_VERSION")))
+                .description(
+                    v_flex()
+                        .gap_1()
+                        .child("A multi-cluster Kubernetes desktop app, written in Rust with GPUI.")
+                        .child(div().text_color(muted).child(format!(
+                            "{} {} · Apache License 2.0",
+                            std::env::consts::OS,
+                            std::env::consts::ARCH
+                        )))
+                        .child(
+                            div()
+                                .text_color(muted)
+                                .child("No telemetry; the update check is the only request it makes on its own."),
+                        ),
+                )
+                .ok_text("Close")
+                .show_cancel(true)
+                .cancel_text("GitHub")
+                .on_cancel(|_, _, cx| {
+                    cx.open_url("https://github.com/terdiam/kubernaut");
+                    true
+                })
+        });
     }
 
     /// Show the alerts of the active cluster.

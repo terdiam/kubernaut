@@ -236,7 +236,7 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn check_for_update(&mut self, cx: &mut Context<Self>) {
+    pub fn check_for_update(&mut self, cx: &mut Context<Self>) {
         if matches!(self.update, UpdateState::Checking | UpdateState::Working(_)) {
             return;
         }

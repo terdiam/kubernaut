@@ -99,6 +99,10 @@ version had that this one does not yet.
   in the sidebar, whatever list or page is open; unpin with the × on the row.
   Pins are kept per cluster.
 - A command palette (⌘K) across clusters, pages, namespaces and resource kinds.
+- On macOS an application menu with **About**, **Check for Updates…** and
+  **Settings…** (⌘,), plus Hide and Quit. Check for Updates opens Settings and
+  looks for a newer version there. Linux and Windows have no native menu bar, so
+  Settings and the update check stay in the window.
 - **Overview** of a cluster: CPU, memory and pod gauges and the issues worth
   looking at, read from `metrics.k8s.io`.
 - The **node list** shows what each node uses next to its status: CPU and

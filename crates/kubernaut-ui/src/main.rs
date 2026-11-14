@@ -24,6 +24,7 @@ mod icons;
 mod keys;
 mod log_buffer;
 mod logs;
+mod menu;
 mod metrics;
 mod namespaces;
 mod node_edit;
@@ -49,6 +50,21 @@ mod yaml;
 use std::{cell::Cell, process::ExitCode, rc::Rc, sync::Arc};
 
 use gpui_kit::*;
+
+/// Run `act` on the app view in its window.
+fn with_app(
+    handle: AnyWindowHandle,
+    view: &Entity<app::AppView>,
+    cx: &mut App,
+    act: impl FnOnce(&mut app::AppView, &mut Window, &mut Context<app::AppView>),
+) {
+    let view = view.clone();
+    handle
+        .update(cx, |_, window, cx| {
+            view.update(cx, |view, cx| act(view, window, cx));
+        })
+        .ok();
+}
 
 fn main() -> ExitCode {
     // Must run before any thread exists: it repairs PATH for exec credential
@@ -84,11 +100,19 @@ fn main() -> ExitCode {
         .run(move |cx| {
             gpui_kit::init(cx);
             theme::apply(None, cx);
-            cx.bind_keys([KeyBinding::new(
-                "cmd-k",
-                app::TogglePalette,
-                Some(app::KEY_CONTEXT),
-            )]);
+            cx.bind_keys([
+                KeyBinding::new("cmd-k", app::TogglePalette, Some(app::KEY_CONTEXT)),
+                KeyBinding::new("cmd-,", app::ShowSettings, None),
+                // The system-wide ones work whatever has focus.
+                KeyBinding::new("cmd-q", app::QuitApp, None),
+                KeyBinding::new("cmd-h", app::HideApp, None),
+                KeyBinding::new("cmd-alt-h", app::HideOtherApps, None),
+            ]);
+            cx.on_action(|_: &app::QuitApp, cx| cx.quit());
+            cx.on_action(|_: &app::HideApp, cx| cx.hide());
+            cx.on_action(|_: &app::HideOtherApps, cx| cx.hide_other_apps());
+            cx.on_action(|_: &app::ShowAllApps, cx| cx.unhide_other_apps());
+            cx.set_menus(menu::menus());
 
             let options = WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
@@ -109,7 +133,36 @@ fn main() -> ExitCode {
             match gpui_kit::open_window(options, cx, |window, cx| {
                 cx.new(|cx| app::AppView::new(core, handle, window, cx))
             }) {
-                Ok(_) => {
+                Ok((handle, view)) => {
+                    // Handled here rather than by the focused view: a menu item is
+                    // greyed out when nothing in the focus path takes its action,
+                    // which is the case after a dialog closes. The window is busy
+                    // dispatching the action, so the work waits for it to finish.
+                    let (about, updates, settings) = (view.clone(), view.clone(), view);
+                    cx.on_action(move |_: &app::About, cx| {
+                        let view = about.clone();
+                        cx.defer(move |cx| {
+                            with_app(handle, &view, cx, |view, window, cx| {
+                                view.show_about(window, cx);
+                            });
+                        });
+                    });
+                    cx.on_action(move |_: &app::CheckForUpdates, cx| {
+                        let view = updates.clone();
+                        cx.defer(move |cx| {
+                            with_app(handle, &view, cx, |view, window, cx| {
+                                view.check_for_updates(window, cx);
+                            });
+                        });
+                    });
+                    cx.on_action(move |_: &app::ShowSettings, cx| {
+                        let view = settings.clone();
+                        cx.defer(move |cx| {
+                            with_app(handle, &view, cx, |view, window, cx| {
+                                view.open_settings(window, cx);
+                            });
+                        });
+                    });
                     opened_in_app.set(true);
                     cx.activate(true);
                 }
