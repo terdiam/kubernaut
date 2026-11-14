@@ -18,6 +18,32 @@ pub fn chip(
     active: bool,
     theme: &Theme,
 ) -> Stateful<Div> {
+    chip_base(id, enabled, active, theme).child(label.into())
+}
+
+/// A chip with an icon before its label.
+pub fn chip_icon(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    label: impl Into<SharedString>,
+    enabled: bool,
+    active: bool,
+    theme: &Theme,
+) -> Stateful<Div> {
+    chip_base(id, enabled, active, theme)
+        .flex()
+        .items_center()
+        .gap_1()
+        .child(Icon::new(icon).size_3())
+        .child(label.into())
+}
+
+fn chip_base(
+    id: impl Into<ElementId>,
+    enabled: bool,
+    active: bool,
+    theme: &Theme,
+) -> Stateful<Div> {
     div()
         .id(id)
         .px_2()
@@ -31,7 +57,6 @@ pub fn chip(
         .when(!enabled, |chip| {
             chip.opacity(0.4).text_color(theme.muted_foreground)
         })
-        .child(label.into())
 }
 
 pub fn tone_color(tone: Tone, theme: &Theme) -> Hsla {

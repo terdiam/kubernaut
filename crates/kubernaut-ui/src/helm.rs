@@ -6,6 +6,7 @@
 use std::{ops::Range, sync::Arc};
 
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
     component::{
         ActiveTheme, h_flex,
@@ -24,7 +25,7 @@ use crate::{
     namespaces,
     release::{ReleaseEvent, ReleaseView, status_tone},
     rows::contains_ignore_case,
-    ui::{Palette, chip, message, segment, segmented_bar, tone_color},
+    ui::{Palette, chip_icon, message, segment, segmented_bar, tone_color},
 };
 
 const ROW_HEIGHT: Pixels = px(28.);
@@ -280,7 +281,17 @@ impl HelmView {
                             .child(self.count_label.clone()),
                     )
                     .child(div().flex_1())
-                    .child(chip("refresh", "Refresh", true, false, cx.theme()).on_click(refresh))
+                    .child(
+                        chip_icon(
+                            "refresh",
+                            IconName::RefreshCw,
+                            "Refresh",
+                            true,
+                            false,
+                            cx.theme(),
+                        )
+                        .on_click(refresh),
+                    )
                     .child(div().w(px(220.)).child(Input::new(&self.filter))),
             )
             .child(

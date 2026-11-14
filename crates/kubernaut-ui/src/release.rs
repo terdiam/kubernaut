@@ -20,7 +20,8 @@ use k8s_helm::{ReleaseDetail, ReleaseRevision, store};
 use tokio::runtime::Handle;
 
 use crate::ui::{
-    Emphasis, Palette, button, chip, message, segment, segmented_bar, toast_success, tone_color,
+    Emphasis, Palette, button, button_icon, chip_icon, message, segment, segmented_bar,
+    toast_success, tone_color,
 };
 use crate::upgrade::{Mode, Subject, UpgradeEvent, UpgradeView};
 
@@ -445,8 +446,9 @@ impl ReleaseView {
                 .flex_wrap()
                 .child(div().text_xs().text_color(palette.danger).child(text))
                 .child(
-                    button(
+                    button_icon(
                         "confirm",
+                        IconName::Check,
                         "Confirm",
                         true,
                         if confirm == Confirm::Uninstall {
@@ -472,8 +474,15 @@ impl ReleaseView {
             .flex_wrap()
             .when(prompt.is_none(), |bar| {
                 bar.child(
-                    button("uninstall", "Uninstall", idle, Emphasis::Plain, cx.theme())
-                        .when(idle, |chip| chip.on_click(ask_uninstall)),
+                    button_icon(
+                        "uninstall",
+                        IconName::Delete,
+                        "Uninstall",
+                        idle,
+                        Emphasis::Plain,
+                        cx.theme(),
+                    )
+                    .when(idle, |chip| chip.on_click(ask_uninstall)),
                 )
             })
             .children(prompt)
@@ -548,9 +557,16 @@ impl ReleaseView {
                                     .child(line.age.clone()),
                             )
                             .child(
-                                chip(("rollback", index), "Roll back", enabled, false, cx.theme())
-                                    .flex_none()
-                                    .when(enabled, |chip| chip.on_click(rollback)),
+                                chip_icon(
+                                    ("rollback", index),
+                                    IconName::Undo2,
+                                    "Roll back",
+                                    enabled,
+                                    false,
+                                    cx.theme(),
+                                )
+                                .flex_none()
+                                .when(enabled, |chip| chip.on_click(rollback)),
                             )
                     })
                     .collect::<Vec<_>>()

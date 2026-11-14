@@ -23,7 +23,10 @@ use tokio::runtime::Handle;
 
 use crate::{
     drawer::Target,
-    ui::{Emphasis, Palette, button, button_icon, chip, message, page_title, pill, toast_success},
+    ui::{
+        Emphasis, Palette, button, button_icon, chip, chip_icon, message, page_title, pill,
+        toast_success,
+    },
 };
 
 /// Traffic counters change constantly; a couple of seconds keeps them lively
@@ -426,13 +429,37 @@ impl PortsView {
                         row.child(pill("On the network", cx.theme().warning))
                     })
                     .child(
-                        chip(("ports-open", index), "Open", true, false, cx.theme()).on_click(open),
+                        chip_icon(
+                            ("ports-open", index),
+                            IconName::ExternalLink,
+                            "Open",
+                            true,
+                            false,
+                            cx.theme(),
+                        )
+                        .on_click(open),
                     )
                     .child(
-                        chip(("ports-copy", index), "Copy", true, false, cx.theme()).on_click(copy),
+                        chip_icon(
+                            ("ports-copy", index),
+                            IconName::Copy,
+                            "Copy",
+                            true,
+                            false,
+                            cx.theme(),
+                        )
+                        .on_click(copy),
                     )
                     .child(
-                        chip(("ports-stop", index), "Stop", true, false, cx.theme()).on_click(stop),
+                        chip_icon(
+                            ("ports-stop", index),
+                            IconName::Square,
+                            "Stop",
+                            true,
+                            false,
+                            cx.theme(),
+                        )
+                        .on_click(stop),
                     ),
             )
             .child(div().text_sm().text_color(muted).child(format!(

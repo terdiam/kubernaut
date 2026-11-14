@@ -12,6 +12,7 @@
 use std::{ops::Range, sync::Arc};
 
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
     component::{
         ActiveTheme, h_flex,
@@ -32,7 +33,7 @@ use tokio::runtime::Handle;
 use crate::{
     charts::{self, ChartLine},
     diff::{self, DiffLine},
-    ui::{Emphasis, button, chip, toast_success, tone_color},
+    ui::{Emphasis, button_icon, chip, toast_success, tone_color},
 };
 
 /// Objects listed before the rest are summarised.
@@ -775,8 +776,9 @@ impl Render for UpgradeView {
                             .gap_2()
                             .items_center()
                             .child(
-                                button(
+                                button_icon(
                                     "preview",
+                                    IconName::Eye,
                                     "Preview",
                                     can_preview,
                                     Emphasis::Plain,
@@ -785,8 +787,15 @@ impl Render for UpgradeView {
                                 .when(can_preview, |b| b.on_click(preview)),
                             )
                             .child(
-                                button("upgrade", go_label, can_go, Emphasis::Primary, cx.theme())
-                                    .when(can_go, |b| b.on_click(upgrade)),
+                                button_icon(
+                                    "upgrade",
+                                    IconName::ArrowUp,
+                                    go_label,
+                                    can_go,
+                                    Emphasis::Primary,
+                                    cx.theme(),
+                                )
+                                .when(can_go, |b| b.on_click(upgrade)),
                             )
                             .when_some(self.busy, |row, text| {
                                 row.child(div().text_xs().text_color(muted).child(text))

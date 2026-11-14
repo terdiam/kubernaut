@@ -26,7 +26,7 @@ use tokio::runtime::Handle;
 
 use crate::{
     rows::contains_ignore_case,
-    ui::{Emphasis, Palette, button, button_icon, chip, message, toast_success},
+    ui::{Emphasis, Palette, button_icon, chip, message, toast_success},
     upgrade::{Mode, Subject, UpgradeEvent, UpgradeView},
 };
 
@@ -679,8 +679,9 @@ impl ChartsView {
                                         .on_click(copy),
                                 )
                                 .child(
-                                    button(
+                                    button_icon(
                                         ("install-chart", position),
+                                        IconName::Download,
                                         "Install",
                                         true,
                                         Emphasis::Primary,
@@ -758,8 +759,9 @@ impl Render for ChartsView {
                     ))
                     .child(div().flex_1())
                     .child(
-                        button(
+                        button_icon(
                             "update-repos",
+                            IconName::RefreshCw,
                             "Update all",
                             idle,
                             Emphasis::Plain,
