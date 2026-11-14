@@ -30,6 +30,7 @@ use k8s_ops::actions::TargetRef;
 use tokio::{runtime::Handle, sync::broadcast::error::RecvError, task::JoinHandle};
 
 use crate::{
+    alerts::{AlertsEvent, AlertsView},
     categories::{self, Category},
     drawer::{DrawerEvent, DrawerView, Tab as DrawerTab, Target},
     gitops::{GitOpsEvent, GitOpsView},
@@ -210,6 +211,12 @@ struct OpenGitOps {
     _events: Subscription,
 }
 
+/// The Alerts page and the subscription that opens objects from it.
+struct OpenAlerts {
+    view: Entity<AlertsView>,
+    _events: Subscription,
+}
+
 /// The Security Center and the subscription that opens objects from it.
 struct OpenSecurity {
     view: Entity<SecurityView>,
@@ -256,6 +263,8 @@ pub struct AppView {
     gitops: Option<OpenGitOps>,
     /// Misconfigurations and image vulnerabilities.
     security: Option<OpenSecurity>,
+    /// What Alertmanager is firing.
+    alerts: Option<OpenAlerts>,
     /// The cluster overview, the page a cluster opens on.
     overview: Option<OpenOverview>,
     palette: Option<OpenPalette>,
@@ -367,6 +376,7 @@ impl AppView {
             helm: None,
             gitops: None,
             security: None,
+            alerts: None,
             overview: None,
             palette: None,
             focus,
@@ -395,6 +405,7 @@ impl AppView {
         self.helm = None;
         self.gitops = None;
         self.security = None;
+        self.alerts = None;
         self.overview = None;
     }
 
@@ -538,6 +549,7 @@ impl AppView {
             && self.helm.is_none()
             && self.gitops.is_none()
             && self.security.is_none()
+            && self.alerts.is_none()
             && self.overview.is_none();
         let connected = self
             .clusters
@@ -736,6 +748,12 @@ impl AppView {
                 command: Command::Security,
             });
             items.push(Item {
+                label: "Alerts".into(),
+                hint: "Page".into(),
+                icon: IconName::Bell,
+                command: Command::Alerts,
+            });
+            items.push(Item {
                 label: "Helm releases".into(),
                 hint: "Page".into(),
                 icon: IconName::ShipWheel,
@@ -768,6 +786,7 @@ impl AppView {
             Command::Helm => self.open_helm(window, cx),
             Command::GitOps => self.open_gitops(window, cx),
             Command::Security => self.open_security(window, cx),
+            Command::Alerts => self.open_alerts(window, cx),
             Command::Cluster(index) => self.select_cluster(*index, window, cx),
             Command::Resource(key) => self.open_resource(key, window, cx),
             Command::ToggleNamespace(namespace) => {
@@ -828,6 +847,8 @@ impl AppView {
             self.open_gitops(window, cx);
         } else if self.security.is_some() {
             self.open_security(window, cx);
+        } else if self.alerts.is_some() {
+            self.open_alerts(window, cx);
         }
         cx.notify();
     }
@@ -883,6 +904,37 @@ impl AppView {
                 },
             );
         self.gitops = Some(OpenGitOps {
+            view,
+            _events: events,
+        });
+        cx.notify();
+    }
+
+    /// Show the alerts of the active cluster.
+    fn open_alerts(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(cluster) = self
+            .active
+            .and_then(|index| self.tiles.get(index))
+            .map(|tile| tile.name.clone())
+        else {
+            return;
+        };
+        let scope = self
+            .active_state()
+            .map(|state| state.scope.clone())
+            .unwrap_or_default();
+        self.clear_pages();
+        let (core, runtime) = (&self.core, &self.runtime);
+        let view = cx.new(|cx| AlertsView::new(core, runtime, cluster, scope, window, cx));
+        let events =
+            cx.subscribe_in(
+                &view,
+                window,
+                |this, _, event: &AlertsEvent, window, cx| match event {
+                    AlertsEvent::Open(target) => this.show_drawer(target.clone(), window, cx),
+                },
+            );
+        self.alerts = Some(OpenAlerts {
             view,
             _events: events,
         });
@@ -1545,6 +1597,7 @@ impl AppView {
         let open_overview = cx.listener(|this, _, window, cx| this.open_overview(window, cx));
         let open_helm = cx.listener(|this, _, window, cx| this.open_helm(window, cx));
         let open_gitops = cx.listener(|this, _, window, cx| this.open_gitops(window, cx));
+        let open_alerts = cx.listener(|this, _, window, cx| this.open_alerts(window, cx));
         let open_security = cx.listener(|this, _, window, cx| this.open_security(window, cx));
         let pinned_rows = v_flex()
             .px_2()
@@ -1576,6 +1629,10 @@ impl AppView {
                     self.security.is_some(),
                 )
                 .on_click(open_security),
+            )
+            .child(
+                pinned("alerts", IconName::Bell, "Alerts", self.alerts.is_some())
+                    .on_click(open_alerts),
             )
             .child(
                 pinned(
@@ -1828,6 +1885,19 @@ impl AppView {
                     .min_h_0()
                     .min_w_0()
                     .child(gitops.view.clone())
+                    .when_some(self.drawer.as_ref(), |row, drawer| {
+                        row.child(drawer.view.clone())
+                    }),
+            );
+        }
+        if let Some(alerts) = &self.alerts {
+            return main.child(
+                div()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .child(alerts.view.clone())
                     .when_some(self.drawer.as_ref(), |row, drawer| {
                         row.child(drawer.view.clone())
                     }),

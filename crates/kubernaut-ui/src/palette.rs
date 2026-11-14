@@ -30,6 +30,7 @@ pub enum Command {
     Helm,
     GitOps,
     Security,
+    Alerts,
     Cluster(usize),
     Resource(SharedString),
     /// Add a namespace to the selection, or take it out.

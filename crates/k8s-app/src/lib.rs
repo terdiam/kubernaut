@@ -3,6 +3,7 @@
 //! Nothing here knows about a window system or an IPC layer, so the same
 //! `AppCore` backs whichever UI is in front of it.
 
+pub mod alert_ops;
 pub mod audit;
 mod boot;
 pub mod clusters;
