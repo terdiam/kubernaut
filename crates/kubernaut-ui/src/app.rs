@@ -40,6 +40,7 @@ use crate::{
     palette::{Command, Item, PaletteEvent, PaletteView},
     row_actions::RowAction,
     security::{SecurityEvent, SecurityView},
+    settings::SettingsView,
     table::{ResourceDelegate, RowContext},
     theme,
     ui::{chip, pill, toast_error, toast_success},
@@ -265,6 +266,8 @@ pub struct AppView {
     security: Option<OpenSecurity>,
     /// What Alertmanager is firing.
     alerts: Option<OpenAlerts>,
+    /// The settings page, which belongs to no cluster.
+    settings: Option<Entity<SettingsView>>,
     /// The cluster overview, the page a cluster opens on.
     overview: Option<OpenOverview>,
     palette: Option<OpenPalette>,
@@ -377,6 +380,7 @@ impl AppView {
             gitops: None,
             security: None,
             alerts: None,
+            settings: None,
             overview: None,
             palette: None,
             focus,
@@ -406,6 +410,7 @@ impl AppView {
         self.gitops = None;
         self.security = None;
         self.alerts = None;
+        self.settings = None;
         self.overview = None;
     }
 
@@ -550,6 +555,7 @@ impl AppView {
             && self.gitops.is_none()
             && self.security.is_none()
             && self.alerts.is_none()
+            && self.settings.is_none()
             && self.overview.is_none();
         let connected = self
             .clusters
@@ -777,6 +783,12 @@ impl AppView {
                 }));
             }
         }
+        items.push(Item {
+            label: "Settings".into(),
+            hint: "Page".into(),
+            icon: IconName::Settings,
+            command: Command::Settings,
+        });
         items
     }
 
@@ -787,6 +799,7 @@ impl AppView {
             Command::GitOps => self.open_gitops(window, cx),
             Command::Security => self.open_security(window, cx),
             Command::Alerts => self.open_alerts(window, cx),
+            Command::Settings => self.open_settings(window, cx),
             Command::Cluster(index) => self.select_cluster(*index, window, cx),
             Command::Resource(key) => self.open_resource(key, window, cx),
             Command::ToggleNamespace(namespace) => {
@@ -907,6 +920,14 @@ impl AppView {
             view,
             _events: events,
         });
+        cx.notify();
+    }
+
+    /// Show the settings. They belong to the app, so no cluster is needed.
+    fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.clear_pages();
+        let (core, runtime) = (&self.core, &self.runtime);
+        self.settings = Some(cx.new(|cx| SettingsView::new(core, runtime, window, cx)));
         cx.notify();
     }
 
@@ -1365,7 +1386,24 @@ impl AppView {
             }
             rail = rail.child(column);
         }
-        rail
+        let hover = cx.theme().secondary;
+        let open = cx.listener(|this, _, window, cx| this.open_settings(window, cx));
+        rail.child(div().flex_1()).child(
+            div()
+                .id("rail-settings")
+                .size(px(36.))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_lg()
+                .cursor_pointer()
+                .text_color(muted)
+                .when(self.settings.is_some(), |button| button.bg(hover))
+                .hover(|button| button.bg(hover))
+                .child(Icon::new(IconName::Settings).size_4())
+                .on_click(open),
+        )
     }
 
     fn render_tile(&self, index: usize, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1857,6 +1895,10 @@ impl AppView {
     fn render_main(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
         let main = v_flex().flex_1().h_full().min_w_0();
+
+        if let Some(settings) = &self.settings {
+            return main.child(settings.clone());
+        }
 
         let (Some(_), Some(state)) = (self.active, self.active_state()) else {
             return main.child(

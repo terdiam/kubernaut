@@ -34,6 +34,8 @@ pub struct AppCore {
     kustomize: parking_lot::Mutex<Option<Arc<Kustomize>>>,
     /// Directory holding the bundled sidecars, when the app was packaged.
     helm_sidecar_dir: parking_lot::Mutex<Option<std::path::PathBuf>>,
+    /// Serialises read-modify-write of the preferences file.
+    preferences_write: parking_lot::Mutex<()>,
 
     /// Live streaming sessions. Sessions stop themselves on drop, so removing
     /// the handle is what ends the stream.
@@ -57,6 +59,7 @@ impl AppCore {
             helm: parking_lot::Mutex::new(None),
             kustomize: parking_lot::Mutex::new(None),
             helm_sidecar_dir: parking_lot::Mutex::new(None),
+            preferences_write: parking_lot::Mutex::new(()),
             log_sessions: Mutex::new(HashMap::new()),
             terminal_sessions: Mutex::new(HashMap::new()),
         }
@@ -87,22 +90,28 @@ impl AppCore {
         self.preferences.read().clone()
     }
 
-    /// Remember the namespaces a cluster is narrowed to.
+    /// Change one preference and save the file.
     ///
-    /// Reads, edits and writes back without holding the lock across the file
-    /// write, so calls must come from one place in order; the UI sends them
-    /// through a single queue. Doing it here, rather than in the UI, keeps a
-    /// concurrent edit to another preference from being overwritten with a
-    /// stale copy.
-    pub fn remember_namespaces(&self, context: &str, namespaces: &[String]) -> Result<(), String> {
+    /// Edits are applied to a fresh copy under a lock, so two settings changed
+    /// at nearly the same moment both survive instead of the later one writing
+    /// back a stale copy of the earlier. The lock is held across the file write
+    /// and never across an `.await`.
+    pub fn update_preferences(&self, edit: impl FnOnce(&mut Preferences)) -> Result<(), String> {
+        let _serial = self.preferences_write.lock();
         let mut next = self.preferences();
-        next.remember_namespaces(context, namespaces);
+        edit(&mut next);
         next.save()?;
         *self.preferences.write() = next;
         Ok(())
     }
 
+    /// Remember the namespaces a cluster is narrowed to.
+    pub fn remember_namespaces(&self, context: &str, namespaces: &[String]) -> Result<(), String> {
+        self.update_preferences(|preferences| preferences.remember_namespaces(context, namespaces))
+    }
+
     pub fn set_preferences(&self, preferences: Preferences) -> Result<(), String> {
+        let _serial = self.preferences_write.lock();
         preferences.save()?;
         *self.preferences.write() = preferences;
         Ok(())

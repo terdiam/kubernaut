@@ -18,6 +18,7 @@ mod release;
 mod row_actions;
 mod rows;
 mod security;
+mod settings;
 mod table;
 mod terminal;
 mod theme;

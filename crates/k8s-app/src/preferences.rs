@@ -228,6 +228,35 @@ impl Preferences {
             .any(|entry| entry.eq_ignore_ascii_case(context))
     }
 
+    /// Mark a context protected or not. Matching ignores case, as
+    /// [`Self::is_protected`] does, so un-protecting removes every spelling.
+    pub fn set_protected(&mut self, context: &str, protected: bool) {
+        self.protected_contexts
+            .retain(|entry| !entry.eq_ignore_ascii_case(context));
+        if protected {
+            self.protected_contexts.push(context.to_string());
+        }
+    }
+
+    /// The namespace a context starts in. `None` or blank clears it, so the
+    /// profile does not keep an empty entry for a cluster with no preference.
+    pub fn set_default_namespace(&mut self, context: &str, namespace: Option<&str>) {
+        let namespace = namespace.map(str::trim).filter(|value| !value.is_empty());
+        match namespace {
+            Some(namespace) => {
+                self.cluster_profiles
+                    .entry(context.to_string())
+                    .or_default()
+                    .default_namespace = Some(namespace.to_string());
+            }
+            None => {
+                if let Some(profile) = self.cluster_profiles.get_mut(context) {
+                    profile.default_namespace = None;
+                }
+            }
+        }
+    }
+
     pub fn path(&self) -> Option<String> {
         config_path().map(|path| path.display().to_string())
     }
@@ -277,6 +306,33 @@ mod tests {
             ["default"],
             "others stay"
         );
+    }
+
+    #[test]
+    fn protecting_a_context_is_idempotent_and_undone_in_any_case() {
+        let mut preferences = Preferences::default();
+        preferences.set_protected("Prod", true);
+        preferences.set_protected("prod", true);
+        assert_eq!(preferences.protected_contexts, ["prod"]);
+        assert!(preferences.is_protected("PROD"));
+
+        preferences.set_protected("Prod", false);
+        assert!(preferences.protected_contexts.is_empty());
+    }
+
+    #[test]
+    fn a_blank_default_namespace_clears_it_without_creating_a_profile() {
+        let mut preferences = Preferences::default();
+        preferences.set_default_namespace("dev", Some("  "));
+        assert!(preferences.cluster_profiles.is_empty());
+
+        preferences.set_default_namespace("dev", Some(" shop "));
+        assert_eq!(
+            preferences.profile("dev").default_namespace.as_deref(),
+            Some("shop")
+        );
+        preferences.set_default_namespace("dev", None);
+        assert_eq!(preferences.profile("dev").default_namespace, None);
     }
 
     #[test]
