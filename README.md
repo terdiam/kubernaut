@@ -57,7 +57,10 @@ version had that this one does not yet.
   in the UI. Reading still works.
 - A **namespace selector** takes one, several or all namespaces, remembers the
   choice per cluster, and each selected namespace is one click to remove.
-- Settings also hold the log length and a default namespace per cluster.
+- Settings give each cluster a display name, a group (a heading in the rail)
+  and one of eight colours, which tints its tile and marks its toolbar, so
+  production never looks like staging. They also hold the log length and a
+  default namespace per cluster.
 
 ### Resource browser
 
@@ -142,7 +145,6 @@ hours or a day, or end a silence early.
 
 The Tauri and React version had these; they are not ported yet.
 
-- A display name, accent colour and workspace per cluster, set from the app.
 - Diagnose tab (a pod's status explained from the cluster's own evidence).
 - Metrics beyond the overview: namespace heatmap, per-object charts, node
   usage, the topology graph, sizing recommendations, and the Quota tab.

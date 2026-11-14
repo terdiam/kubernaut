@@ -44,7 +44,7 @@ use crate::{
     ports::PortsView,
     row_actions::RowAction,
     security::{SecurityEvent, SecurityView},
-    settings::SettingsView,
+    settings::{SettingsEvent, SettingsView},
     table::{ResourceDelegate, RowContext},
     theme,
     ui::{Emphasis, button_icon, chip, pill, toast_error, toast_success},
@@ -216,6 +216,13 @@ struct OpenGitOps {
     _events: Subscription,
 }
 
+/// The settings page and the subscription that rebuilds the rail when a
+/// cluster's name, colour or group changes.
+struct OpenSettings {
+    view: Entity<SettingsView>,
+    _events: Subscription,
+}
+
 /// The add-cluster page and the subscription that rebuilds the rail.
 struct OpenAddCluster {
     view: Entity<AddClusterView>,
@@ -283,7 +290,7 @@ pub struct AppView {
     /// The page for adding and removing clusters, which belongs to none.
     add_cluster: Option<OpenAddCluster>,
     /// The settings page, which belongs to no cluster.
-    settings: Option<Entity<SettingsView>>,
+    settings: Option<OpenSettings>,
     /// The cluster overview, the page a cluster opens on.
     overview: Option<OpenOverview>,
     palette: Option<OpenPalette>,
@@ -1056,9 +1063,10 @@ impl AppView {
         self.active = active.and_then(|name| self.tiles.iter().position(|tile| tile.name == name));
         if self.active.is_none() {
             // Keep the page that is open; only the cluster pages belong to it.
-            let keep = self.add_cluster.take();
+            let (add, settings) = (self.add_cluster.take(), self.settings.take());
             self.clear_pages();
-            self.add_cluster = keep;
+            self.add_cluster = add;
+            self.settings = settings;
             self.refresh_rows(cx);
         }
         cx.notify();
@@ -1068,7 +1076,19 @@ impl AppView {
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.clear_pages();
         let (core, runtime) = (&self.core, &self.runtime);
-        self.settings = Some(cx.new(|cx| SettingsView::new(core, runtime, window, cx)));
+        let view = cx.new(|cx| SettingsView::new(core, runtime, window, cx));
+        let events =
+            cx.subscribe_in(
+                &view,
+                window,
+                |this, _, event: &SettingsEvent, _, cx| match event {
+                    SettingsEvent::ClustersChanged => this.refresh_clusters(cx),
+                },
+            );
+        self.settings = Some(OpenSettings {
+            view,
+            _events: events,
+        });
         cx.notify();
     }
 
@@ -1579,11 +1599,14 @@ impl AppView {
             Some(ClusterStatus::Unreachable { .. }) => (Some(theme.danger), "Unreachable"),
             _ => (None, "Not connected"),
         };
-        let outline = match (is_active, tile.accent) {
-            (true, _) => theme.primary,
-            (false, Some(accent)) => accent,
-            (false, None) => theme.transparent,
+        // A cluster's own colour shows whether or not it is selected, so a
+        // production tile is recognisable at a glance.
+        let outline = match (tile.accent, is_active) {
+            (Some(accent), _) => accent,
+            (None, true) => theme.primary,
+            (None, false) => theme.transparent,
         };
+        let tint = tile.accent;
         let (primary, idle, hover, ring) = (
             theme.primary,
             theme.secondary,
@@ -1622,12 +1645,14 @@ impl AppView {
                     .items_center()
                     .justify_center()
                     .rounded_xl()
-                    .border_1()
+                    .when(tint.is_some(), |tile| tile.border_2())
+                    .when(tint.is_none(), |tile| tile.border_1())
                     .border_color(outline)
-                    .bg(if is_active {
-                        primary.opacity(0.18)
-                    } else {
-                        idle
+                    .bg(match (tint, is_active) {
+                        (Some(accent), true) => accent.opacity(0.32),
+                        (Some(accent), false) => accent.opacity(0.14),
+                        (None, true) => primary.opacity(0.18),
+                        (None, false) => idle,
                     })
                     .hover(|tile| tile.bg(hover))
                     .text_sm()
@@ -2019,7 +2044,10 @@ impl AppView {
             );
         }
 
-        bar.child(
+        bar.when_some(tile.accent, |bar, accent| {
+            bar.child(div().size(px(10.)).flex_none().rounded_full().bg(accent))
+        })
+        .child(
             div()
                 .text_base()
                 .font_semibold()
@@ -2078,7 +2106,7 @@ impl AppView {
         let main = v_flex().flex_1().h_full().min_w_0();
 
         if let Some(settings) = &self.settings {
-            return main.child(settings.clone());
+            return main.child(settings.view.clone());
         }
         if let Some(add) = &self.add_cluster {
             return main.child(add.view.clone());

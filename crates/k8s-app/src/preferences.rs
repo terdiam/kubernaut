@@ -56,6 +56,20 @@ pub struct ClusterProfile {
     pub proxy_url: Option<String>,
 }
 
+impl ClusterProfile {
+    /// True when nothing is set, so the entry need not be kept.
+    pub fn is_empty(&self) -> bool {
+        self.display_name.is_none()
+            && self.colour.is_none()
+            && self.workspace.is_none()
+            && self.impersonate_user.is_none()
+            && self.impersonate_groups.is_empty()
+            && self.default_namespace.is_none()
+            && !self.accept_invalid_certs
+            && self.proxy_url.is_none()
+    }
+}
+
 /// A resource pinned for one-click access, independent of the live watch that
 /// lists it — identified by name rather than `uid` since a pin can outlive
 /// any particular watch session.
@@ -228,6 +242,16 @@ impl Preferences {
             .any(|entry| entry.eq_ignore_ascii_case(context))
     }
 
+    /// Change one context's profile. An entry left with nothing set is dropped,
+    /// so the file does not fill up with clusters that have no preferences.
+    pub fn update_profile(&mut self, context: &str, edit: impl FnOnce(&mut ClusterProfile)) {
+        let mut profile = self.cluster_profiles.remove(context).unwrap_or_default();
+        edit(&mut profile);
+        if !profile.is_empty() {
+            self.cluster_profiles.insert(context.to_string(), profile);
+        }
+    }
+
     /// Mark a context protected or not. Matching ignores case, as
     /// [`Self::is_protected`] does, so un-protecting removes every spelling.
     pub fn set_protected(&mut self, context: &str, protected: bool) {
@@ -318,6 +342,24 @@ mod tests {
 
         preferences.set_protected("Prod", false);
         assert!(preferences.protected_contexts.is_empty());
+    }
+
+    #[test]
+    fn a_profile_with_nothing_set_is_not_kept() {
+        let mut preferences = Preferences::default();
+        preferences.update_profile("dev", |profile| profile.colour = Some("#ef4444".into()));
+        preferences.update_profile("dev", |profile| profile.display_name = Some("Dev".into()));
+        let profile = preferences.profile("dev");
+        assert_eq!(profile.colour.as_deref(), Some("#ef4444"));
+        assert_eq!(profile.display_name.as_deref(), Some("Dev"));
+
+        preferences.update_profile("dev", |profile| profile.colour = None);
+        assert!(
+            preferences.cluster_profiles.contains_key("dev"),
+            "a name is still set"
+        );
+        preferences.update_profile("dev", |profile| profile.display_name = None);
+        assert!(preferences.cluster_profiles.is_empty());
     }
 
     #[test]
