@@ -19,10 +19,14 @@ use gpui_kit::{
     prelude::FluentBuilder,
     *,
 };
-use k8s_app::{AppCore, helm_ops, preferences::Preferences};
+use k8s_app::{
+    AppCore, helm_ops,
+    preferences::Preferences,
+    updates::{self, Release},
+};
 use tokio::runtime::Handle;
 
-use crate::ui::{chip, segment, segmented_bar, toast_error};
+use crate::ui::{Emphasis, button, chip, segment, segmented_bar, toast_error};
 
 /// How many lines a log view asks for when it opens.
 const TAIL_CHOICES: [i64; 4] = [200, 500, 1000, 5000];
@@ -96,10 +100,24 @@ pub enum SettingsEvent {
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
 
+/// Where the update check stands.
+enum UpdateState {
+    Idle,
+    Checking,
+    /// Checked, and the running version is the latest.
+    Current,
+    Available(Release),
+    /// Downloading, verifying or handing over to the installer.
+    Working(&'static str),
+    Failed(SharedString),
+}
+
 pub struct SettingsView {
     core: Arc<AppCore>,
     runtime: Handle,
     tail: i64,
+    check_on_startup: bool,
+    update: UpdateState,
     rows: Vec<ClusterRow>,
     path: Option<SharedString>,
 }
@@ -162,6 +180,8 @@ impl SettingsView {
             core: Arc::clone(core),
             runtime: runtime.clone(),
             tail: preferences.log_tail_lines,
+            check_on_startup: preferences.check_updates_on_startup,
+            update: UpdateState::Idle,
             rows,
             path: preferences.path().map(Into::into),
         }
@@ -202,6 +222,76 @@ impl SettingsView {
             cx,
         );
         cx.notify();
+    }
+
+    fn set_check_on_startup(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.check_on_startup = on;
+        self.persist(
+            "the update setting",
+            move |p| p.check_updates_on_startup = on,
+            false,
+            window,
+            cx,
+        );
+        cx.notify();
+    }
+
+    fn check_for_update(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.update, UpdateState::Checking | UpdateState::Working(_)) {
+            return;
+        }
+        self.update = UpdateState::Checking;
+        cx.notify();
+        let task = self
+            .runtime
+            .spawn_blocking(|| updates::check(env!("CARGO_PKG_VERSION")));
+        cx.spawn(async move |this, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update(cx, |this, cx| {
+                this.update = match result {
+                    Ok(Some(release)) => UpdateState::Available(release),
+                    Ok(None) => UpdateState::Current,
+                    Err(reason) => UpdateState::Failed(reason.into()),
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Download, verify and stage the release, then hand the swap to a helper
+    /// and quit so it can run.
+    fn install_update(&mut self, release: Release, cx: &mut Context<Self>) {
+        self.update = UpdateState::Working("Downloading and checking the signature…");
+        cx.notify();
+        let task = self.runtime.spawn_blocking(move || -> Result<(), String> {
+            let bundle = updates::current_bundle().ok_or(
+                "this copy is not running from an app bundle, so it cannot replace itself",
+            )?;
+            let directory = updates::staging_directory()?;
+            let outcome = (|| {
+                let zip = updates::download(&release, &directory)?;
+                let staged = updates::stage(&zip, &directory, &release.version)?;
+                updates::install(&staged, &bundle)
+            })();
+            if outcome.is_err() {
+                let _ = std::fs::remove_dir_all(&directory);
+            }
+            outcome
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update(cx, |this, cx| match result {
+                Ok(()) => cx.quit(),
+                Err(reason) => {
+                    this.update = UpdateState::Failed(reason.into());
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn set_protected(
@@ -368,6 +458,95 @@ impl Render for SettingsView {
             },
         );
 
+        let startup = segmented_bar(cx.theme())
+            .child(
+                segment(
+                    "settings-updates-on",
+                    "On",
+                    self.check_on_startup,
+                    cx.theme(),
+                )
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.set_check_on_startup(true, window, cx)),
+                ),
+            )
+            .child(
+                segment(
+                    "settings-updates-off",
+                    "Off",
+                    !self.check_on_startup,
+                    cx.theme(),
+                )
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.set_check_on_startup(false, window, cx)),
+                ),
+            );
+        let busy = matches!(self.update, UpdateState::Checking | UpdateState::Working(_));
+        let (status, status_color): (SharedString, Hsla) = match &self.update {
+            UpdateState::Idle => (
+                format!("Version {}", env!("CARGO_PKG_VERSION")).into(),
+                muted,
+            ),
+            UpdateState::Checking => ("Looking for a newer version…".into(), muted),
+            UpdateState::Current => (
+                format!("Version {} is the latest.", env!("CARGO_PKG_VERSION")).into(),
+                muted,
+            ),
+            UpdateState::Available(release) => (
+                format!("Version {} is available.", release.version).into(),
+                cx.theme().success,
+            ),
+            UpdateState::Working(what) => ((*what).into(), muted),
+            UpdateState::Failed(reason) => (reason.clone(), danger),
+        };
+        let mut update_actions = h_flex().gap_2().items_center().child(
+            button(
+                "settings-update-check",
+                "Check now",
+                !busy,
+                Emphasis::Plain,
+                cx.theme(),
+            )
+            .when(!busy, |b| {
+                b.on_click(cx.listener(|this, _, _, cx| this.check_for_update(cx)))
+            }),
+        );
+        if let UpdateState::Available(release) = &self.update {
+            let page = release.page_url.clone();
+            update_actions = update_actions.child(
+                button(
+                    "settings-update-notes",
+                    "Release notes",
+                    true,
+                    Emphasis::Plain,
+                    cx.theme(),
+                )
+                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&page))),
+            );
+            if release.installable() {
+                let release = release.clone();
+                update_actions = update_actions.child(
+                    button(
+                        "settings-update-install",
+                        "Install and restart",
+                        true,
+                        Emphasis::Primary,
+                        cx.theme(),
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.install_update(release.clone(), cx)),
+                    ),
+                );
+            }
+        }
+        let signed_note = match &self.update {
+            UpdateState::Available(release) if !release.installable() => Some(
+                "This build cannot install updates itself: download the new version from the \
+                 release notes page.",
+            ),
+            _ => None,
+        };
+
         let mut clusters = card();
         let count = self.rows.len();
         for index in 0..count {
@@ -498,6 +677,45 @@ impl Render for SettingsView {
                     .p_6()
                     .gap_6()
                     .child(div().text_xl().font_semibold().child("Settings"))
+                    .child(
+                        v_flex().gap_2().child(heading("UPDATES")).child(
+                            card()
+                                .bg(secondary.opacity(0.4))
+                                .child(line(
+                                    "Check on startup",
+                                    "Asks GitHub for the latest release and sends nothing about \
+                                         this machine. It never installs by itself.",
+                                    startup.into_any_element(),
+                                ))
+                                .child(
+                                    v_flex()
+                                        .px_4()
+                                        .py_3()
+                                        .gap_1()
+                                        .border_t_1()
+                                        .border_color(border)
+                                        .child(
+                                            h_flex()
+                                                .gap_4()
+                                                .items_center()
+                                                .child(
+                                                    div()
+                                                        .flex_1()
+                                                        .min_w_0()
+                                                        .text_sm()
+                                                        .text_color(status_color)
+                                                        .child(status),
+                                                )
+                                                .child(update_actions),
+                                        )
+                                        .when_some(signed_note, |column, note| {
+                                            column.child(
+                                                div().text_xs().text_color(muted).child(note),
+                                            )
+                                        }),
+                                ),
+                        ),
+                    )
                     .child(v_flex().gap_2().child(heading("LOGS")).child(
                         card().bg(secondary.opacity(0.4)).child(line(
                             "Lines to load",

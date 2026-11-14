@@ -37,6 +37,8 @@ kube = { version = "4.2", default-features = false, features = [
 ] }
 k8s-openapi = { version = "0.28", features = ["latest"] }
 http = "1"
+# Already compiled for rustls; here it verifies the signature on an update.
+ring = "0.17"
 
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"

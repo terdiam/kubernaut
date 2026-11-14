@@ -238,6 +238,33 @@ not catch, such as a segfault or a kill for an invalid code signature. Copy puts
 the selected entry on the clipboard for a bug report you have read first, and
 Show folder opens where it came from. Nothing is sent anywhere.
 
+### Updates
+
+Settings → Updates shows the running version, checks for a newer release, and
+installs it with **Install and restart**. Because the app is not signed with a
+Developer ID, the system cannot vouch for an update, so the app does: a release
+is installed only if its zip carries an Ed25519 signature that verifies against
+the public key compiled into the app, and the unpacked app is the right bundle
+at the announced version. A download that fails any check is deleted and the
+running app is left as it was. Until a key is set up (below), or for a release
+that is not signed, the app only tells you a version exists and links its notes.
+macOS only.
+
+#### Releasing signed updates
+
+Once, to create the key pair:
+
+```bash
+cargo run -p k8s-app --example update_tool -- keygen
+```
+
+Put the public key in `PUBLIC_KEY_HEX` in `crates/k8s-app/src/updates.rs` and
+the private key in the repository secret `UPDATE_SIGNING_KEY`; keep it nowhere
+else. After that the release workflow signs each zip and uploads
+`Kubernaut-<version>-macos-<arch>.zip.sig` beside it. Only builds made after the
+public key is compiled in can install updates, so the first signed release has
+to be installed by hand.
+
 ### Safety and privacy
 
 - Deleting, restarting, Helm changes, reconcile, suspend and silencing each ask
@@ -245,14 +272,16 @@ Show folder opens where it came from. Nothing is sent anywhere.
   protected cluster and written to a local audit log: timestamp, cluster,
   target, outcome. The Activity page reads it back, newest first, with the
   failures marked, and it is kept for a week. Nothing leaves the machine.
-- **No telemetry.** The app talks only to clusters you added, and to nothing
-  else on its own.
+- **No telemetry.** The app talks only to clusters you added. The one exception
+  is the update check: at startup, unless you turn it off in Settings → Updates,
+  it asks GitHub for the latest release version. That request carries nothing
+  about you or this machine, and it never installs anything by itself.
 
 ### Not yet in the native app
 
 The Tauri and React version had these; they are not ported yet.
 
-- Automatic updates, and builds for Linux and Windows.
+- Builds for Linux and Windows.
 
 ## Build
 

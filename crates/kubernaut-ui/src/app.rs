@@ -24,6 +24,7 @@ use gpui_kit::{
 use k8s_app::{
     AppCore, metrics_ops, object_ops,
     preferences::{PinnedObject, Preferences, set_pinned},
+    updates,
 };
 use k8s_core::{
     ClusterStatus, ContextEntry, DiscoveryCache, ResourceDescriptor, TableSpec, WatchBatch,
@@ -443,6 +444,28 @@ impl AppView {
                 }
             }
         });
+
+        // The one thing the app asks the network for unprompted, and only when
+        // the person has left it on. A failure is silent: being offline is normal.
+        if core.preferences().check_updates_on_startup {
+            let task = runtime.spawn_blocking(|| updates::check(env!("CARGO_PKG_VERSION")));
+            cx.spawn_in(window, async move |_, cx| {
+                if let Ok(Ok(Some(release))) = task.await {
+                    cx.update(|window, cx| {
+                        toast_success(
+                            window,
+                            cx,
+                            format!(
+                                "Kubernaut {} is available. See Settings → Updates.",
+                                release.version
+                            ),
+                        );
+                    })
+                    .ok();
+                }
+            })
+            .detach();
+        }
 
         let focus = cx.focus_handle();
         window.focus(&focus, cx);

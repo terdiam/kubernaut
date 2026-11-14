@@ -37,6 +37,21 @@ jobs:
       - name: Build Kubernaut.app
         run: scripts/bundle-macos.sh --sidecars sidecars
 
+      # The in-app updater installs a release only if it carries a signature that
+      # verifies against the public key compiled into the app, so an unsigned
+      # release is still a release but cannot be installed from inside the app.
+      # Key setup: scripts in README, "Releasing signed updates".
+      - name: Sign the zip
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "${UPDATE_SIGNING_KEY}" ]; then
+            echo "::warning::UPDATE_SIGNING_KEY is not set; the release will not be installable by the in-app updater"
+          else
+            cargo run -q -p k8s-app --example update_tool -- sign dist/Kubernaut-*-macos-*.zip
+          fi
+
       # Draft on purpose: a person checks the artefact before anyone downloads it.
       - name: Attach to a draft release
         if: startsWith(github.ref, 'refs/tags/v')
@@ -45,9 +60,9 @@ jobs:
         run: |
           gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 \
             || gh release create "${GITHUB_REF_NAME}" --draft --title "Kubernaut ${GITHUB_REF_NAME}" --generate-notes
-          gh release upload "${GITHUB_REF_NAME}" dist/Kubernaut-*-macos-*.zip --clobber
+          gh release upload "${GITHUB_REF_NAME}" dist/Kubernaut-*-macos-*.zip* --clobber
 
       - uses: actions/upload-artifact@v4
         with:
           name: Kubernaut-macos
-          path: dist/Kubernaut-*-macos-*.zip
+          path: dist/Kubernaut-*-macos-*.zip*
