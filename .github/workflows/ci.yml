@@ -12,14 +12,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
           - os: ubuntu-22.04
-          # Compiled and checked here but never run by a person yet, so a failure
-          # is reported without blocking the others until it has been seen green.
           - os: windows-latest
-            experimental: true
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.experimental == true }}
     steps:
       - uses: actions/checkout@v4
 

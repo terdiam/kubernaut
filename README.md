@@ -11,8 +11,8 @@ did not explicitly add.
 > version has been removed. It does not yet do everything the earlier version
 > did — see [Not yet in the native app](#not-yet-in-the-native-app). macOS
 > (Apple silicon) is the platform it is developed and run on. Linux builds, is
-> tested and starts, checked in a container; Windows is built by CI but has not
-> been run by a person yet.
+> tested and starts, checked in a container; Windows is compiled, linted and
+> tested by CI but has not been run by a person yet.
 
 ## Install
 
@@ -33,9 +33,9 @@ applications menu. It needs a graphical session (X11 or Wayland) and a Vulkan
 driver.
 
 **Windows.** Download `Kubernaut-<version>-windows-x86_64.zip`, unzip it and run
-`kubernaut-ui.exe`. It is not code-signed, so SmartScreen warns on the first run:
-**More info**, then **Run anyway**. This build has not been run on a real
-Windows machine yet; please report what you find.
+`kubernaut-ui.exe`, which carries the app icon. It is not code-signed, so
+SmartScreen warns on the first run: **More info**, then **Run anyway**. This
+build has not been run on a real Windows machine yet; please report what you find.
 
 Or build from source — see [Build](#build).
 
@@ -298,8 +298,7 @@ to be installed by hand.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Windows has been compiled by CI but not run by a person, and its executable
-  carries no icon yet.
+- Windows is compiled, linted and tested by CI but has not been run by a person.
 - In-app install of updates on Linux and Windows. There the update check still
   works and links the release page; installing is macOS only.
 - Code signing and notarisation on any platform.
