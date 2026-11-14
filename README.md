@@ -191,6 +191,16 @@ Firing and silenced alerts from the cluster's Alertmanager, found through the
 apiserver proxy with no port-forward. Silence an alert by name for an hour, four
 hours or a day, or end a silence early.
 
+### Node labels and taints
+
+The **Labels & taints** tab of a node edits both as lists instead of YAML. Added
+and changed entries are tinted, Save names every change in a confirmation (and
+warns when a `NoExecute` taint would evict running pods), and the save is a
+merge patch carrying the `resourceVersion` the lists were read at, so a node that
+changed meanwhile is refused instead of overwritten. Keys, values, effects and
+duplicate taints are checked before anything is sent. Refused on a protected
+cluster and audited.
+
 ### Debug and node shells
 
 - **Debug** tab on a pod adds an ephemeral container (busybox) that shares the
@@ -225,7 +235,7 @@ audited like the other shells.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Node label and taint editing, and pruning on apply.
+- Pruning on apply.
 - Local crash-log viewing.
 - Automatic updates, and builds for Linux and Windows.
 

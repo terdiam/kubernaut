@@ -18,6 +18,7 @@ mod log_buffer;
 mod logs;
 mod metrics;
 mod namespaces;
+mod node_edit;
 mod overview;
 mod palette;
 mod ports;

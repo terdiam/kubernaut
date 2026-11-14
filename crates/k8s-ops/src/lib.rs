@@ -11,6 +11,7 @@ pub mod kustomize;
 pub mod logs;
 pub mod lookup;
 pub mod manifest;
+pub mod node_edit;
 pub mod related;
 mod ring;
 

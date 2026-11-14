@@ -32,6 +32,7 @@ use crate::{
     log_buffer::log_target,
     logs::LogView,
     metrics::{MetricsView, metric_target},
+    node_edit::NodeEditView,
     quota::QuotaView,
     row_actions::{self, RowAction},
     terminal::{Request, TerminalView},
@@ -90,6 +91,8 @@ pub enum Tab {
     Debug,
     /// A root shell on the node.
     NodeShell,
+    /// A node's labels and taints.
+    Labels,
 }
 
 /// A value that arrives from the cluster.
@@ -126,6 +129,8 @@ pub struct DrawerView {
     diagnose: Option<(Entity<DiagnoseView>, Subscription)>,
     metrics: Option<Entity<MetricsView>>,
     quota: Option<Entity<QuotaView>>,
+    /// Created when the tab is first opened.
+    node_edit: Option<Entity<NodeEditView>>,
     tab: Tab,
     yaml: Entity<YamlView>,
     events: Load<Vec<EventLine>>,
@@ -169,6 +174,7 @@ impl DrawerView {
             diagnose: None,
             metrics: None,
             quota: None,
+            node_edit: None,
             target,
             tab: Tab::Yaml,
             yaml,
@@ -187,7 +193,7 @@ impl DrawerView {
             Tab::Metrics if metric_target(&self.target).is_none() => return,
             Tab::Quota if !self.has_quota() => return,
             Tab::Debug if !self.has_shell() => return,
-            Tab::NodeShell if !self.has_node_shell() => return,
+            Tab::NodeShell | Tab::Labels if !self.has_node_shell() => return,
             _ => {}
         }
         self.tab = tab;
@@ -197,6 +203,7 @@ impl DrawerView {
             Tab::Diagnose => self.ensure_diagnose(window, cx),
             Tab::Metrics => self.ensure_metrics(cx),
             Tab::Quota => self.ensure_quota(cx),
+            Tab::Labels => self.ensure_node_edit(window, cx),
             // These change the cluster, so they wait for the person to say yes.
             Tab::Yaml | Tab::Events | Tab::Debug | Tab::NodeShell => {}
         }
@@ -332,6 +339,16 @@ impl DrawerView {
     fn open_terminal(&self, request: Request, cx: &mut Context<Self>) -> Entity<TerminalView> {
         let (core, runtime, cluster) = (&self.core, &self.runtime, self.target.cluster.clone());
         cx.new(|cx| TerminalView::new(core, runtime, cluster, request, cx))
+    }
+
+    fn ensure_node_edit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.node_edit.is_some() {
+            return;
+        }
+        let (core, runtime) = (&self.core, &self.runtime);
+        let (cluster, node) = (self.target.cluster.clone(), self.target.name.clone());
+        self.node_edit =
+            Some(cx.new(|cx| NodeEditView::new(core, runtime, cluster, node, window, cx)));
     }
 
     fn has_node_shell(&self) -> bool {
@@ -664,6 +681,12 @@ impl Render for DrawerView {
                         })
                         .when(self.has_node_shell(), |tabs| {
                             tabs.child(self.render_tab(
+                                Tab::Labels,
+                                IconName::Settings2,
+                                "Labels & taints",
+                                cx,
+                            ))
+                            .child(self.render_tab(
                                 Tab::NodeShell,
                                 IconName::SquareTerminal,
                                 "Node shell",
@@ -704,6 +727,10 @@ impl Render for DrawerView {
                         Tab::Debug => match &self.debug {
                             Some(terminal) => terminal.clone().into_any_element(),
                             None => self.render_start(Tab::Debug, cx),
+                        },
+                        Tab::Labels => match &self.node_edit {
+                            Some(edit) => edit.clone().into_any_element(),
+                            None => div().into_any_element(),
                         },
                         Tab::NodeShell => match &self.node_shell {
                             Some(terminal) => terminal.clone().into_any_element(),

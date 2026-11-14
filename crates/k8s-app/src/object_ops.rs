@@ -4,7 +4,12 @@
 //! an audit entry whatever the outcome. Confirming with the user is the front
 //! end's job: by the time these run, they have said yes.
 
-use k8s_ops::actions::{self, BulkOutcome, DeleteRequest, ExportResult, TargetRef};
+use std::collections::BTreeMap;
+
+use k8s_ops::{
+    actions::{self, BulkOutcome, DeleteRequest, ExportResult, TargetRef},
+    node_edit::{self, NodeTags, Taint},
+};
 
 use crate::state::AppCore;
 
@@ -52,6 +57,31 @@ pub async fn set_cordoned(
     let result = actions::set_cordoned(&handle, node, cordoned).await;
     let action = if cordoned { "cordon" } else { "uncordon" };
     core.record_audit(cluster, action, &format!("nodes/{node}"), &result);
+    result.map_err(|e| e.to_string())
+}
+
+/// A node's labels and taints, to edit.
+pub async fn read_node_tags(core: &AppCore, cluster: &str, node: &str) -> Result<NodeTags, String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    node_edit::read(&handle, node)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Save a node's labels and taints, refusing if the node changed since `before`
+/// was read.
+pub async fn save_node_tags(
+    core: &AppCore,
+    cluster: &str,
+    node: &str,
+    before: &NodeTags,
+    labels: &BTreeMap<String, String>,
+    taints: &[Taint],
+) -> Result<(), String> {
+    core.ensure_writable(cluster)?;
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let result = node_edit::apply(&handle, node, before, labels, taints).await;
+    core.record_audit(cluster, "editNodeTags", &format!("nodes/{node}"), &result);
     result.map_err(|e| e.to_string())
 }
 
