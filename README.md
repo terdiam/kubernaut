@@ -129,6 +129,14 @@ version had that this one does not yet.
   line. It advises and never blocks: the server's dry run in Preview still
   decides. Quantities such as `cpu: 1` and int-or-string fields are accepted as
   the apiserver accepts them.
+- **Prune** on Create: with Prune on and a label selector (`app=web`), Preview
+  also lists objects to delete, and Apply asks once more naming each of them. A
+  candidate must be of a kind the manifest contains, in a namespace it uses,
+  match the selector, and have been applied by this app (its server-side-apply
+  field manager is ours), so objects made by hand or by another tool are never
+  touched. Pruning waits until every document has applied, deletes only what the
+  preview listed, and is refused on a protected cluster. A kind that has left the
+  manifest entirely is not searched, so remove its last objects yourself.
 - **Edit** an object's YAML with a server-side dry-run diff before anything is
   applied, explicit field-manager conflicts, and an option to take ownership.
   Apply is enabled only for the exact text that was previewed.
@@ -235,7 +243,6 @@ audited like the other shells.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Pruning on apply.
 - Local crash-log viewing.
 - Automatic updates, and builds for Linux and Windows.
 

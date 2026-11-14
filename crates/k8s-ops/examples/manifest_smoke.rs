@@ -60,7 +60,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cluster = manager.connect(&context, ConnectOptions::default()).await?;
     println!("connected to `{context}`\n");
 
-    let plan = manifest::plan(&cluster, &yaml, namespace.as_deref(), false).await?;
+    let plan = manifest::plan(&cluster, &yaml, namespace.as_deref(), false, None).await?;
 
     // `KUBERNAUT_JSON=1` prints the plan as the UI receives it, so the render
     // can be checked against real cluster output.

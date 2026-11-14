@@ -10,7 +10,9 @@ use std::{ops::Range, path::PathBuf, sync::Arc};
 use gpui_kit::{
     assets::IconName,
     component::{
-        ActiveTheme, Theme, h_flex,
+        ActiveTheme, Theme, WindowExt,
+        button::ButtonVariant,
+        h_flex,
         input::{Editor, EditorState, Input, InputEvent, InputState},
         v_flex,
     },
@@ -18,7 +20,7 @@ use gpui_kit::{
     *,
 };
 use k8s_app::{AppCore, manifest_ops, templates};
-use k8s_ops::manifest::{DocResult, ManifestPlan};
+use k8s_ops::manifest::{DocResult, ManifestPlan, PruneRequest};
 use tokio::runtime::Handle;
 
 use crate::{
@@ -37,13 +39,15 @@ struct Previewed {
     yaml: SharedString,
     namespace: String,
     force: bool,
+    /// The label selector the plan was made to prune with, empty for no prune.
+    prune: String,
     plan: ManifestPlan,
     /// One parsed diff per document, built once.
     diffs: Vec<Vec<DiffLine>>,
 }
 
 /// Whether a plan can be applied as it stands: nothing is an error or a
-/// contested field, and something would actually change.
+/// contested field, and something would actually change or be pruned.
 fn applicable(plan: &ManifestPlan) -> bool {
     !plan.docs.is_empty()
         && plan
@@ -54,11 +58,22 @@ fn applicable(plan: &ManifestPlan) -> bool {
             .docs
             .iter()
             .any(|doc| doc.action == "create" || doc.action == "update")
+        || !plan.prune.is_empty()
 }
 
-fn can_apply(yaml: &str, namespace: &str, force: bool, previewed: Option<&Previewed>) -> bool {
+fn can_apply(
+    yaml: &str,
+    namespace: &str,
+    force: bool,
+    prune: &str,
+    previewed: Option<&Previewed>,
+) -> bool {
     previewed.is_some_and(|p| {
-        *p.yaml == *yaml && p.namespace == namespace && p.force == force && applicable(&p.plan)
+        *p.yaml == *yaml
+            && p.namespace == namespace
+            && p.force == force
+            && p.prune == prune
+            && applicable(&p.plan)
     })
 }
 
@@ -69,6 +84,7 @@ fn summary(results: &[DocResult]) -> String {
         ("created", count("created")),
         ("configured", count("configured")),
         ("unchanged", count("unchanged")),
+        ("pruned", count("pruned")),
         ("failed", count("error") + count("conflict")),
     ]
     .into_iter()
@@ -82,10 +98,19 @@ fn summary(results: &[DocResult]) -> String {
     }
 }
 
+/// One line for the confirmation: `ConfigMap app/old`.
+fn describe_target(target: &k8s_ops::manifest::PruneTarget) -> String {
+    match &target.namespace {
+        Some(namespace) => format!("{} {namespace}/{}", target.kind, target.name),
+        None => format!("{} {}", target.kind, target.name),
+    }
+}
+
 fn status_color(status: &str, theme: &Theme) -> Hsla {
     match status {
         "create" | "created" => theme.success,
         "update" | "configured" => theme.info,
+        "delete" | "pruned" => theme.danger,
         "conflict" => theme.warning,
         "error" => theme.danger,
         _ => theme.muted_foreground,
@@ -105,6 +130,10 @@ pub struct CreateView {
     /// Namespace for documents that name none.
     namespace: Entity<InputState>,
     force: bool,
+    /// Delete what an earlier apply of this manifest made and it no longer lists.
+    prune: bool,
+    /// Which objects a prune may consider, as a label selector.
+    prune_selector: Entity<InputState>,
     previewed: Option<Previewed>,
     results: Option<Vec<DocResult>>,
     selected: usize,
@@ -122,6 +151,7 @@ pub struct CreateView {
     detached: bool,
     _edit: Subscription,
     _namespace: Subscription,
+    _prune_selector: Subscription,
 }
 
 impl CreateView {
@@ -168,6 +198,16 @@ impl CreateView {
                 }
             },
         );
+        let prune_selector = cx.new(|cx| InputState::new(window, cx).placeholder("app=web"));
+        let selector_edit = cx.subscribe_in(
+            &prune_selector,
+            window,
+            |this, _, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.on_edit(cx);
+                }
+            },
+        );
         Self {
             core: Arc::clone(core),
             runtime: runtime.clone(),
@@ -175,6 +215,8 @@ impl CreateView {
             editor,
             namespace: namespace_input,
             force: false,
+            prune: false,
+            prune_selector,
             previewed: None,
             results: None,
             selected: 0,
@@ -187,6 +229,7 @@ impl CreateView {
             detached: false,
             _edit: edit,
             _namespace: namespace_edit,
+            _prune_selector: selector_edit,
         }
     }
 
@@ -198,6 +241,15 @@ impl CreateView {
     fn revalidate(&self, cx: &mut Context<Self>) {
         self.validation
             .update(cx, |validation, cx| validation.check(cx));
+    }
+
+    /// The selector a prune would use; empty when pruning is off.
+    fn prune_text(&self, cx: &App) -> String {
+        if self.prune {
+            self.prune_selector.read(cx).value().trim().to_string()
+        } else {
+            String::new()
+        }
     }
 
     fn namespace_text(&self, cx: &App) -> String {
@@ -212,11 +264,9 @@ impl CreateView {
         if self.form.is_some() && !self.detached && *text != *self.last_form_yaml {
             self.detached = true;
         }
-        if self
-            .previewed
-            .as_ref()
-            .is_some_and(|p| *p.yaml != *text || p.namespace != namespace)
-        {
+        if self.previewed.as_ref().is_some_and(|p| {
+            *p.yaml != *text || p.namespace != namespace || p.prune != self.prune_text(cx)
+        }) {
             self.previewed = None;
         }
         cx.notify();
@@ -380,21 +430,39 @@ impl CreateView {
             return;
         }
         let (yaml, namespace, force) = (self.text(cx), self.namespace_text(cx), self.force);
+        let prune = self.prune_text(cx);
+        if self.prune && prune.is_empty() {
+            self.notice = Some(Notice::Error(
+                "Type a label selector, such as app=web, to say which objects a prune may delete."
+                    .into(),
+            ));
+            cx.notify();
+            return;
+        }
         self.busy = Some("Previewing…");
         self.notice = None;
         self.results = None;
         cx.notify();
 
         let (core, cluster) = (Arc::clone(&self.core), self.cluster.clone());
-        let (text, scope) = (yaml.to_string(), namespace.clone());
+        let (text, scope, selector) = (yaml.to_string(), namespace.clone(), prune.clone());
         let task = self.runtime.spawn(async move {
             let scope = (!scope.is_empty()).then_some(scope);
-            manifest_ops::plan(&core, &cluster, &text, scope.as_deref(), force).await
+            let selector = (!selector.is_empty()).then_some(selector);
+            manifest_ops::plan(
+                &core,
+                &cluster,
+                &text,
+                scope.as_deref(),
+                force,
+                selector.as_deref(),
+            )
+            .await
         });
         cx.spawn(async move |this, cx| {
             let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
             this.update(cx, |this, cx| {
-                this.finish_preview(yaml, namespace, force, result, cx);
+                this.finish_preview(yaml, namespace, force, prune, result, cx);
             })
             .ok();
         })
@@ -406,11 +474,15 @@ impl CreateView {
         yaml: SharedString,
         namespace: String,
         force: bool,
+        prune: String,
         result: Result<ManifestPlan, String>,
         cx: &mut Context<Self>,
     ) {
         self.busy = None;
-        if *self.text(cx) != *yaml || self.namespace_text(cx) != namespace {
+        if *self.text(cx) != *yaml
+            || self.namespace_text(cx) != namespace
+            || self.prune_text(cx) != prune
+        {
             self.notice = Some(Notice::Info("Edited since the preview started.".into()));
             cx.notify();
             return;
@@ -441,6 +513,7 @@ impl CreateView {
                     yaml,
                     namespace,
                     force,
+                    prune,
                     plan,
                     diffs,
                 });
@@ -454,8 +527,16 @@ impl CreateView {
     }
 
     fn apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (yaml, namespace) = (self.text(cx), self.namespace_text(cx));
-        if self.busy.is_some() || !can_apply(&yaml, &namespace, self.force, self.previewed.as_ref())
+        let (yaml, namespace, prune) =
+            (self.text(cx), self.namespace_text(cx), self.prune_text(cx));
+        if self.busy.is_some()
+            || !can_apply(
+                &yaml,
+                &namespace,
+                self.force,
+                &prune,
+                self.previewed.as_ref(),
+            )
         {
             return;
         }
@@ -464,6 +545,46 @@ impl CreateView {
             cx.notify();
             return;
         }
+        let Some(doomed) = self
+            .previewed
+            .as_ref()
+            .map(|p| p.plan.prune.iter().map(describe_target).collect::<Vec<_>>())
+            .filter(|list| !list.is_empty())
+        else {
+            self.run_apply(window, cx);
+            return;
+        };
+        // Deleting cannot be undone, so say exactly what goes.
+        let count = doomed.len();
+        let owner = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let owner = owner.clone();
+            dialog
+                .title(format!("Apply and delete {count} object(s)?"))
+                .description(
+                    v_flex()
+                        .gap_0p5()
+                        .child(
+                            "These were applied from this manifest before and are no longer in it:",
+                        )
+                        .children(doomed.iter().map(|line| div().child(line.clone()))),
+                )
+                .ok_text(format!("Apply and delete {count}"))
+                .ok_variant(ButtonVariant::Danger)
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    owner.update(cx, |this, cx| this.run_apply(window, cx)).ok();
+                    true
+                })
+        });
+    }
+
+    fn run_apply(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (yaml, namespace, prune) =
+            (self.text(cx), self.namespace_text(cx), self.prune_text(cx));
+        let Some(allowed) = self.previewed.as_ref().map(|p| p.plan.prune.clone()) else {
+            return;
+        };
         let force = self.force;
         self.busy = Some("Applying…");
         self.notice = None;
@@ -472,7 +593,19 @@ impl CreateView {
         let (core, cluster) = (Arc::clone(&self.core), self.cluster.clone());
         let task = self.runtime.spawn(async move {
             let scope = (!namespace.is_empty()).then_some(namespace);
-            manifest_ops::apply(&core, &cluster, &yaml, scope.as_deref(), force).await
+            let request = (!prune.is_empty()).then_some(PruneRequest {
+                selector: &prune,
+                allowed: &allowed,
+            });
+            manifest_ops::apply(
+                &core,
+                &cluster,
+                &yaml,
+                scope.as_deref(),
+                force,
+                request.as_ref(),
+            )
+            .await
         });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
@@ -501,6 +634,13 @@ impl CreateView {
         .detach();
     }
 
+    fn toggle_prune(&mut self, cx: &mut Context<Self>) {
+        self.prune = !self.prune;
+        // A preview was made without, or with, the deletions.
+        self.previewed = None;
+        cx.notify();
+    }
+
     fn toggle_force(&mut self, cx: &mut Context<Self>) {
         self.force = !self.force;
         // A preview was made under the other setting.
@@ -514,8 +654,16 @@ impl CreateView {
             (theme.muted_foreground, theme.border)
         };
         let idle = self.busy.is_none();
-        let (yaml, namespace) = (self.text(cx), self.namespace_text(cx));
-        let applicable = idle && can_apply(&yaml, &namespace, self.force, self.previewed.as_ref());
+        let (yaml, namespace, prune) =
+            (self.text(cx), self.namespace_text(cx), self.prune_text(cx));
+        let applicable = idle
+            && can_apply(
+                &yaml,
+                &namespace,
+                self.force,
+                &prune,
+                self.previewed.as_ref(),
+            );
         let contested = self
             .previewed
             .as_ref()
@@ -640,6 +788,13 @@ impl CreateView {
                             b.on_click(cx.listener(|this, _, window, cx| this.apply(window, cx)))
                         }),
                     )
+                    .child(
+                        chip("create-prune", "Prune", idle, self.prune, cx.theme())
+                            .on_click(cx.listener(|this, _, _, cx| this.toggle_prune(cx))),
+                    )
+                    .when(self.prune, |bar| {
+                        bar.child(div().w(px(160.)).child(Input::new(&self.prune_selector)))
+                    })
                     .when(contested || self.force, |bar| {
                         bar.child(
                             chip(
@@ -703,6 +858,35 @@ impl CreateView {
                     cx.notify();
                 }))
         });
+
+        let prune_rows = previewed
+            .plan
+            .prune
+            .iter()
+            .enumerate()
+            .map(|(index, target)| {
+                h_flex()
+                    .id(("create-prune-row", index))
+                    .px_3()
+                    .py_1()
+                    .gap_2()
+                    .items_center()
+                    .text_sm()
+                    .child(pill("delete", status_color("delete", cx.theme())))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(format!("{} {}", target.kind, target.name)),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(target.namespace.clone().unwrap_or_default()),
+                    )
+            });
 
         let detail = match previewed.plan.docs.get(selected) {
             Some(doc) if doc.error.is_some() => div()
@@ -771,7 +955,8 @@ impl CreateView {
                     .overflow_y_scroll()
                     .border_r_1()
                     .border_color(border)
-                    .children(rows),
+                    .children(rows)
+                    .children(prune_rows),
             )
             .child(
                 div()
@@ -914,7 +1099,7 @@ impl Render for CreateView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Previewed, applicable, can_apply, summary};
+    use super::{Previewed, applicable, can_apply, describe_target, summary};
     use k8s_ops::manifest::{DocPlan, DocResult, ManifestPlan};
 
     fn doc(action: &str) -> DocPlan {
@@ -938,8 +1123,10 @@ mod tests {
             yaml: yaml.into(),
             namespace: namespace.into(),
             force,
+            prune: String::new(),
             plan: ManifestPlan {
                 docs: actions.iter().map(|a| doc(a)).collect(),
+                prune: Vec::new(),
             },
             diffs: Vec::new(),
         }
@@ -949,6 +1136,7 @@ mod tests {
     fn a_plan_applies_only_if_something_changes_and_nothing_is_wrong() {
         let plan = |actions: &[&str]| ManifestPlan {
             docs: actions.iter().map(|a| doc(a)).collect(),
+            prune: Vec::new(),
         };
         assert!(applicable(&plan(&["create", "unchanged"])));
         assert!(applicable(&plan(&["update"])));
@@ -964,17 +1152,47 @@ mod tests {
     #[test]
     fn apply_needs_a_preview_of_exactly_this_text_namespace_and_setting() {
         let p = previewed("a: 1", "shop", false, &["create"]);
-        assert!(can_apply("a: 1", "shop", false, Some(&p)));
-        assert!(!can_apply("a: 1", "shop", false, None), "never previewed");
-        assert!(!can_apply("a: 2", "shop", false, Some(&p)), "text edited");
+        assert!(can_apply("a: 1", "shop", false, "", Some(&p)));
         assert!(
-            !can_apply("a: 1", "other", false, Some(&p)),
+            !can_apply("a: 1", "shop", false, "", None),
+            "never previewed"
+        );
+        assert!(
+            !can_apply("a: 2", "shop", false, "", Some(&p)),
+            "text edited"
+        );
+        assert!(
+            !can_apply("a: 1", "other", false, "", Some(&p)),
             "namespace edited"
         );
         assert!(
-            !can_apply("a: 1", "shop", true, Some(&p)),
+            !can_apply("a: 1", "shop", true, "", Some(&p)),
             "ownership changed"
         );
+    }
+
+    #[test]
+    fn a_plan_that_only_prunes_can_apply_and_a_changed_selector_needs_a_new_preview() {
+        let target = k8s_ops::manifest::PruneTarget {
+            api_version: "v1".into(),
+            kind: "ConfigMap".into(),
+            name: "old".into(),
+            namespace: Some("shop".into()),
+            resource: "core/v1/configmaps".into(),
+        };
+        let only_prune = ManifestPlan {
+            docs: vec![doc("unchanged")],
+            prune: vec![target.clone()],
+        };
+        assert!(applicable(&only_prune));
+        assert_eq!(describe_target(&target), "ConfigMap shop/old");
+
+        let mut p = previewed("a: 1", "shop", false, &["unchanged"]);
+        p.plan = only_prune;
+        p.prune = "app=web".into();
+        assert!(can_apply("a: 1", "shop", false, "app=web", Some(&p)));
+        assert!(!can_apply("a: 1", "shop", false, "app=api", Some(&p)));
+        assert!(!can_apply("a: 1", "shop", false, "", Some(&p)));
     }
 
     #[test]
@@ -993,8 +1211,9 @@ mod tests {
             result("created"),
             result("error"),
             result("conflict"),
+            result("pruned"),
         ];
-        assert_eq!(summary(&all), "2 created, 2 failed");
+        assert_eq!(summary(&all), "2 created, 1 pruned, 2 failed");
         assert_eq!(summary(&[result("unchanged")]), "1 unchanged");
         assert_eq!(summary(&[]), "Nothing applied");
     }

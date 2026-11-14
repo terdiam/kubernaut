@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use k8s_ops::manifest::{self, DocResult, ManifestPlan};
+use k8s_ops::manifest::{self, DocResult, ManifestPlan, PruneRequest};
 
 use crate::state::AppCore;
 
@@ -17,9 +17,10 @@ pub async fn plan(
     yaml: &str,
     namespace: Option<&str>,
     force: bool,
+    prune_selector: Option<&str>,
 ) -> Result<ManifestPlan, String> {
     let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
-    manifest::plan(&handle, yaml, namespace, force)
+    manifest::plan(&handle, yaml, namespace, force, prune_selector)
         .await
         .map_err(|e| e.to_string())
 }
@@ -32,10 +33,11 @@ pub async fn apply(
     yaml: &str,
     namespace: Option<&str>,
     force: bool,
+    prune: Option<&PruneRequest<'_>>,
 ) -> Result<Vec<DocResult>, String> {
     core.ensure_writable(cluster)?;
     let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
-    let result = manifest::apply(&handle, yaml, namespace, force)
+    let result = manifest::apply(&handle, yaml, namespace, force, prune)
         .await
         .map_err(|e| e.to_string());
 
@@ -57,7 +59,14 @@ pub async fn apply(
         Err(err) => Err(err.clone()),
     };
     let target = match &result {
-        Ok(results) => format!("{} documents", results.len()),
+        Ok(results) => {
+            let pruned = results.iter().filter(|r| r.status == "pruned").count();
+            if pruned == 0 {
+                format!("{} documents", results.len())
+            } else {
+                format!("{} documents, {pruned} pruned", results.len() - pruned)
+            }
+        }
         Err(_) => "manifest".to_string(),
     };
     core.record_audit(cluster, "applyManifest", &target, &outcome);
