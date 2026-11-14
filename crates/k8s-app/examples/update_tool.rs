@@ -7,6 +7,10 @@
 //!
 //!   UPDATE_SIGNING_KEY=<hex> cargo run -p k8s-app --example update_tool -- sign <zip>...
 //!       Writes `<zip>.sig` beside each zip.
+//!
+//!   cargo run -p k8s-app --example update_tool -- verify <zip>...
+//!       Checks each zip against its `<zip>.sig` and the public key compiled into
+//!       the app, as an installed copy would before accepting it.
 
 use std::path::Path;
 
@@ -35,6 +39,21 @@ fn main() -> Result<(), String> {
             }
             Ok(())
         }
-        _ => Err("usage: update_tool keygen | sign <zip>...".into()),
+        Some("verify") => {
+            let key = updates::compiled_public_key()
+                .ok_or_else(|| "no public key is compiled into this build".to_string())?;
+            let zips: Vec<String> = args.collect();
+            if zips.is_empty() {
+                return Err("name at least one zip to verify".into());
+            }
+            for zip in zips {
+                let signature = std::fs::read_to_string(format!("{zip}.sig"))
+                    .map_err(|e| format!("{zip}.sig: {e}"))?;
+                updates::verify(&key, Path::new(&zip), &signature)?;
+                println!("ok {zip}");
+            }
+            Ok(())
+        }
+        _ => Err("usage: update_tool keygen | sign <zip>... | verify <zip>...".into()),
     }
 }

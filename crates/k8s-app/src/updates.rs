@@ -7,8 +7,8 @@
 //! with a key only the release workflow holds; the matching public key is
 //! compiled in. An update that does not verify is deleted, never installed.
 //!
-//! Until a public key is set ([`PUBLIC_KEY_HEX`]) nothing can be installed, and
-//! the app only tells the person a release exists and where to get it.
+//! If no public key is set ([`PUBLIC_KEY_HEX`] empty) nothing can be installed,
+//! and the app only tells the person a release exists and where to get it.
 //!
 //! Checking for a release asks GitHub one question and sends nothing about this
 //! machine. Installing is always an explicit click.
@@ -35,9 +35,11 @@ use serde_json::Value;
 /// Where releases are published.
 pub const REPO: &str = "terdiam/kubernaut";
 
-/// Hex of the Ed25519 public key releases are signed with. Empty until the
-/// project sets one up; see `examples/update_tool.rs`.
-pub const PUBLIC_KEY_HEX: &str = "";
+/// Hex of the Ed25519 public key releases are signed with. The matching private
+/// key is the repository secret `UPDATE_SIGNING_KEY`; see
+/// `examples/update_tool.rs`. Replacing this key stops every installed copy from
+/// accepting updates until it is reinstalled by hand.
+pub const PUBLIC_KEY_HEX: &str = "0def8acb94b255bf40ec475d5f38a96b257c41eb64cdda8c1d9b7571cf9b15c3";
 
 /// Bundle identifier of a genuine release, checked before one replaces this.
 const BUNDLE_ID: &str = "dev.kubernaut.app";
@@ -68,6 +70,10 @@ impl Release {
 }
 
 /// The compiled-in public key, if one is set and well formed.
+pub fn compiled_public_key() -> Option<Vec<u8>> {
+    public_key()
+}
+
 fn public_key() -> Option<Vec<u8>> {
     let bytes = hex_decode(PUBLIC_KEY_HEX)?;
     (bytes.len() == 32).then_some(bytes)

@@ -269,18 +269,21 @@ macOS only.
 
 #### Releasing signed updates
 
-Once, to create the key pair:
+The release workflow signs each macOS zip with the private key in the repository
+secret `UPDATE_SIGNING_KEY` and uploads `Kubernaut-<version>-macos-<arch>.zip.sig`
+beside it; the matching public key is `PUBLIC_KEY_HEX` in
+`crates/k8s-app/src/updates.rs`. Check a downloaded release the way an installed
+copy would:
 
 ```bash
-cargo run -p k8s-app --example update_tool -- keygen
+cargo run -p k8s-app --example update_tool -- verify Kubernaut-<version>-macos-arm64.zip
 ```
 
-Put the public key in `PUBLIC_KEY_HEX` in `crates/k8s-app/src/updates.rs` and
-the private key in the repository secret `UPDATE_SIGNING_KEY`; keep it nowhere
-else. After that the release workflow signs each zip and uploads
-`Kubernaut-<version>-macos-<arch>.zip.sig` beside it. Only builds made after the
-public key is compiled in can install updates, so the first signed release has
-to be installed by hand.
+Version 1.0.0 is the first release to carry the key, so it has to be installed by
+hand; from then on installed copies update themselves. The secret cannot be read
+back from GitHub: if it is lost, create a new pair with
+`update_tool keygen`, replace both halves, and every installed copy has to be
+reinstalled by hand once, because it only trusts the key it was built with.
 
 ### Safety and privacy
 
