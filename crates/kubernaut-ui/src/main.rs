@@ -29,6 +29,7 @@ mod settings;
 mod table;
 mod terminal;
 mod theme;
+mod topology;
 mod ui;
 mod upgrade;
 mod usage;

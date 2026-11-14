@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 
 use k8s_metrics::{
     MetricTarget, NamespaceQuotaInfo, NamespaceUsage, NodeSummary, ObjectMetrics, Point,
-    Recommendation, quantity, quota, recommend, resolve,
+    Recommendation, Topology, quantity, quota, recommend, resolve, topology,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -94,6 +94,19 @@ fn sum_usage(usages: impl Iterator<Item = (bool, f64, f64)>) -> Option<Point> {
         memory,
         ..Default::default()
     })
+}
+
+/// How traffic and ownership connect in some namespaces: ingresses to services
+/// to workloads to pods to nodes. Built per namespace, because a graph of the
+/// whole cluster is a hairball nobody can read.
+pub async fn topology(
+    core: &AppCore,
+    cluster: &str,
+    namespaces: &[String],
+) -> Result<Topology, String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let pods = core.metrics.ensure(&handle).pods();
+    topology::build(&handle, namespaces, &pods).await
 }
 
 /// Live CPU, memory, pod and disk figures per node, for the node list.
