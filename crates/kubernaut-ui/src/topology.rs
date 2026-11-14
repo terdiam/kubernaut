@@ -238,6 +238,11 @@ pub struct TopologyView {
 
 impl EventEmitter<TopologyEvent> for TopologyView {}
 
+/// The first namespace of the selection that this cluster has.
+fn followed(known: &[SharedString], scope: &[SharedString]) -> Option<SharedString> {
+    scope.iter().find(|ns| known.contains(ns)).cloned()
+}
+
 impl TopologyView {
     pub fn new(
         core: &Arc<AppCore>,
@@ -291,6 +296,15 @@ impl TopologyView {
         })
         .detach();
         cx.notify();
+    }
+
+    /// The toolbar's namespace selection changed: draw the first selected
+    /// namespace. Clearing the selection keeps what is drawn, since this page
+    /// shows one namespace at a time and "all" has no picture.
+    pub fn follow(&mut self, scope: &[SharedString], cx: &mut Context<Self>) {
+        if let Some(namespace) = followed(&self.known, scope) {
+            self.choose(namespace, cx);
+        }
     }
 
     fn choose(&mut self, namespace: SharedString, cx: &mut Context<Self>) {
@@ -520,7 +534,7 @@ impl Render for TopologyView {
 
 #[cfg(test)]
 mod tests {
-    use super::{CARD_H, CARD_W, COLUMN_GAP, PAD, ROW_GAP, layout};
+    use super::{CARD_H, CARD_W, COLUMN_GAP, PAD, ROW_GAP, followed, layout};
     use k8s_metrics::{TopologyEdge, TopologyNode};
 
     fn node(id: &str, kind: &str, name: &str) -> TopologyNode {
@@ -597,5 +611,23 @@ mod tests {
         ];
         let laid = layout(&nodes, &[]);
         assert!(laid.height >= PAD * 2. + 3. * (CARD_H + ROW_GAP));
+    }
+
+    #[test]
+    fn the_toolbar_selection_picks_the_namespace_drawn() {
+        let names = |list: &[&str]| -> Vec<gpui_kit::SharedString> {
+            list.iter().map(|n| (*n).to_string().into()).collect()
+        };
+        let known = names(&["default", "shop", "kube-system"]);
+        assert_eq!(followed(&known, &names(&["shop"])).as_deref(), Some("shop"));
+        assert_eq!(
+            followed(&known, &names(&["gone", "kube-system"])).as_deref(),
+            Some("kube-system"),
+            "a namespace the cluster no longer has is skipped"
+        );
+        assert!(
+            followed(&known, &[]).is_none(),
+            "all namespaces keeps the picture"
+        );
     }
 }

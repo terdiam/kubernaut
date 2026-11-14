@@ -1052,6 +1052,7 @@ impl AppView {
             return;
         }
         let saved: Vec<String> = state.scope.iter().map(ToString::to_string).collect();
+        let scope_now = state.scope.clone();
         let items = self
             .palette
             .is_some()
@@ -1075,6 +1076,11 @@ impl AppView {
             self.open_alerts(window, cx);
         } else if self.usage.is_some() {
             self.open_usage(window, cx);
+        } else if let Some(topology) = &self.topology {
+            // Redraw in place: it keeps its scroll and has one namespace to show.
+            topology
+                .view
+                .update(cx, |view, cx| view.follow(&scope_now, cx));
         }
         cx.notify();
     }
