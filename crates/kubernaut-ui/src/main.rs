@@ -4,6 +4,7 @@ mod alerts;
 mod app;
 mod categories;
 mod charts;
+mod crashes;
 mod create;
 mod diagnose;
 mod diff;

@@ -274,6 +274,7 @@ impl NodeEditView {
 
     fn render_labels(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let mono = theme.mono_font_family.clone();
         let (muted, border, success, warning) = (
             theme.muted_foreground,
             theme.border,
@@ -299,7 +300,7 @@ impl NodeEditView {
                         .flex_1()
                         .min_w_0()
                         .text_xs()
-                        .font_family("monospace")
+                        .font_family(mono.clone())
                         .child(format!("{key} = {value}")),
                 )
                 .child(
@@ -340,6 +341,7 @@ impl NodeEditView {
 
     fn render_taints(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
+        let mono = theme.mono_font_family.clone();
         let (muted, border, success, warning) = (
             theme.muted_foreground,
             theme.border,
@@ -360,7 +362,7 @@ impl NodeEditView {
                         .flex_1()
                         .min_w_0()
                         .text_xs()
-                        .font_family("monospace")
+                        .font_family(mono.clone())
                         .child(taint.render()),
                 )
                 .when(taint.effect == "NoExecute", |row| {

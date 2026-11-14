@@ -36,6 +36,7 @@ pub enum Command {
     Settings,
     AddCluster,
     Activity,
+    Crashes,
     Usage,
     Shell,
     Topology,

@@ -229,6 +229,15 @@ The file is private to you and deleted when you leave the page. Because
 `kubectl` can change the cluster, it is refused on a protected cluster and
 audited like the other shells.
 
+### Crash log
+
+The **Crash log** page lists what went wrong in earlier runs, newest first, from
+files already on this machine: panics the app wrote into its own log (with the
+backtrace), and on macOS the reports the system writes for a crash the app could
+not catch, such as a segfault or a kill for an invalid code signature. Copy puts
+the selected entry on the clipboard for a bug report you have read first, and
+Show folder opens where it came from. Nothing is sent anywhere.
+
 ### Safety and privacy
 
 - Deleting, restarting, Helm changes, reconcile, suspend and silencing each ask
@@ -243,7 +252,6 @@ audited like the other shells.
 
 The Tauri and React version had these; they are not ported yet.
 
-- Local crash-log viewing.
 - Automatic updates, and builds for Linux and Windows.
 
 ## Build

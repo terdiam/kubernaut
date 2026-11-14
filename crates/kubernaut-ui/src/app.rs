@@ -37,6 +37,7 @@ use crate::{
     add_cluster::{AddClusterEvent, AddClusterView},
     alerts::{AlertsEvent, AlertsView},
     categories::{self, Category},
+    crashes::CrashView,
     create::CreateView,
     drawer::{DrawerEvent, DrawerView, Tab as DrawerTab, Target},
     gitops::{GitOpsEvent, GitOpsView},
@@ -340,6 +341,8 @@ pub struct AppView {
     usage: Option<OpenUsage>,
     /// A shell on this machine pinned to the open cluster.
     shell: Option<Entity<TerminalView>>,
+    /// What went wrong in earlier runs, from files on this machine.
+    crashes: Option<Entity<CrashView>>,
     /// What the app changed, across every cluster.
     activity: Option<Entity<ActivityView>>,
     /// The page for adding and removing clusters, which belongs to none.
@@ -468,6 +471,7 @@ impl AppView {
             usage: None,
             shell: None,
             activity: None,
+            crashes: None,
             add_cluster: None,
             settings: None,
             overview: None,
@@ -506,6 +510,7 @@ impl AppView {
         self.usage = None;
         self.shell = None;
         self.activity = None;
+        self.crashes = None;
         self.add_cluster = None;
         self.settings = None;
         self.overview = None;
@@ -658,6 +663,7 @@ impl AppView {
             && self.usage.is_none()
             && self.shell.is_none()
             && self.activity.is_none()
+            && self.crashes.is_none()
             && self.add_cluster.is_none()
             && self.settings.is_none()
             && self.overview.is_none();
@@ -946,6 +952,12 @@ impl AppView {
             command: Command::Activity,
         });
         items.push(Item {
+            label: "Crash log".into(),
+            hint: "Page".into(),
+            icon: IconName::TriangleAlert,
+            command: Command::Crashes,
+        });
+        items.push(Item {
             label: "Add cluster".into(),
             hint: "Page".into(),
             icon: IconName::Plus,
@@ -970,6 +982,7 @@ impl AppView {
             Command::Settings => self.open_settings(window, cx),
             Command::AddCluster => self.open_add_cluster(window, cx),
             Command::Activity => self.open_activity(window, cx),
+            Command::Crashes => self.open_crashes(cx),
             Command::Usage => self.open_usage(window, cx),
             Command::Shell => self.open_shell(window, cx),
             Command::Topology => self.open_topology(window, cx),
@@ -1238,6 +1251,15 @@ impl AppView {
         cx.notify();
     }
 
+    /// Show what went wrong in earlier runs. It reads local files, so no cluster
+    /// is needed.
+    fn open_crashes(&mut self, cx: &mut Context<Self>) {
+        self.clear_pages();
+        let runtime = &self.runtime;
+        self.crashes = Some(cx.new(|cx| CrashView::new(runtime, cx)));
+        cx.notify();
+    }
+
     /// Show what the app has changed. It reads a local log, so no cluster is
     /// needed.
     fn open_activity(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1283,15 +1305,17 @@ impl AppView {
         self.active = active.and_then(|name| self.tiles.iter().position(|tile| tile.name == name));
         if self.active.is_none() {
             // Keep the page that is open; only the cluster pages belong to it.
-            let (add, settings, activity) = (
+            let (add, settings, activity, crashes) = (
                 self.add_cluster.take(),
                 self.settings.take(),
                 self.activity.take(),
+                self.crashes.take(),
             );
             self.clear_pages();
             self.add_cluster = add;
             self.settings = settings;
             self.activity = activity;
+            self.crashes = crashes;
             self.refresh_rows(cx);
         }
         cx.notify();
@@ -1538,6 +1562,7 @@ impl AppView {
             || self.create.is_some()
             || self.ports.is_some()
             || self.activity.is_some()
+            || self.crashes.is_some()
             || self.add_cluster.is_some()
             || self.settings.is_some();
         if without_drawer {
@@ -2500,6 +2525,7 @@ impl AppView {
         let open_usage = cx.listener(|this, _, window, cx| this.open_usage(window, cx));
         let open_shell = cx.listener(|this, _, window, cx| this.open_shell(window, cx));
         let open_activity = cx.listener(|this, _, window, cx| this.open_activity(window, cx));
+        let open_crashes = cx.listener(|this, _, _, cx| this.open_crashes(cx));
         let open_create = cx.listener(|this, _, window, cx| this.open_create(window, cx));
         let open_ports = cx.listener(|this, _, window, cx| this.open_ports(None, window, cx));
         let open_alerts = cx.listener(|this, _, window, cx| this.open_alerts(window, cx));
@@ -2591,6 +2617,15 @@ impl AppView {
                     self.activity.is_some(),
                 )
                 .on_click(open_activity),
+            )
+            .child(
+                pinned(
+                    "crashes",
+                    IconName::TriangleAlert,
+                    "Crash log",
+                    self.crashes.is_some(),
+                )
+                .on_click(open_crashes),
             );
 
         let pins = self.render_pins(cx);
@@ -2848,6 +2883,9 @@ impl AppView {
         }
         if let Some(activity) = &self.activity {
             return main.child(activity.clone());
+        }
+        if let Some(crashes) = &self.crashes {
+            return main.child(crashes.clone());
         }
         if let Some(add) = &self.add_cluster {
             return main.child(add.view.clone());

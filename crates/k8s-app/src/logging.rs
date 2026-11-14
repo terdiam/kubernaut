@@ -80,11 +80,9 @@ fn install_panic_hook() {
         // `Backtrace::force_capture` rather than `capture`, because the useful
         // case is a user's machine where `RUST_BACKTRACE` is not set.
         let backtrace = std::backtrace::Backtrace::force_capture();
-        tracing::error!(
-            location = %location,
-            message = %message,
-            "panic\n{backtrace}"
-        );
+        // One header line that says what and where, so a reader of the log, and
+        // `crashes::parse_panics`, need not hunt for the fields.
+        tracing::error!("panic at {location}: {message}\n{backtrace}");
 
         previous(info);
     }));
