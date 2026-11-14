@@ -142,7 +142,7 @@ impl FormView {
                         .or_else(|| options.first().copied())
                         .unwrap_or(""),
                 ),
-                Kind::Pairs { .. } => {
+                Kind::Pairs { .. } | Kind::Secret => {
                     let existing = match initial.get(field.key) {
                         Some(FieldValue::Pairs(pairs)) => pairs.clone(),
                         _ => Vec::new(),

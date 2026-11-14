@@ -3785,6 +3785,7 @@ dependencies = [
 name = "k8s-app"
 version = "0.1.15"
 dependencies = [
+ "base64",
  "directories",
  "k8s-core",
  "k8s-helm",

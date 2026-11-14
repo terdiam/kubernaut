@@ -122,6 +122,9 @@ version had that this one does not yet.
   that reads from a Secret survives an edit of the plain ones), and cannot change
   the name, the namespace or a deployment's selector. It writes into the same
   text, so Preview and Apply are unchanged.
+  A Secret's form lists its decoded values and saves them base64-encoded in
+  `data`; a value with line breaks or binary content (a certificate, a key) is not
+  listed and is kept as it is.
 - **Schema check** while you type, in both the editor and Create: the text is
   checked against the OpenAPI schema this cluster publishes for its kind, custom
   resources included, so unknown fields, wrong types, missing required fields and

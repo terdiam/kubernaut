@@ -21,6 +21,7 @@ serde_yaml_ng.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 ring.workspace = true
+base64.workspace = true
 tempfile.workspace = true
 directories.workspace = true
 rusqlite.workspace = true

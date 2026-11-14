@@ -28,6 +28,13 @@ pub enum Kind {
     Pairs {
         list: bool,
     },
+    /// A Secret's values, as key and value rows of plain text. A new Secret
+    /// writes them to `stringData`, which the apiserver encodes. An existing one
+    /// holds them base64-encoded in `data` and never returns `stringData`, so
+    /// editing reads `data` and writes `data`. Values the rows cannot hold, such
+    /// as a certificate with line breaks or binary content, are not listed and
+    /// are left as they are.
+    Secret,
     /// Words split on whitespace, written as a list: a command.
     Words,
     /// Free text with suggestions read from the cluster. `depends_on` names the
@@ -333,8 +340,11 @@ pub const SPECS: &[FormSpec] = &[
                 )
                 .start("Opaque"),
                 LABELS,
-                Field::new("string_data", "Values", "stringData", Kind::Pairs { list: false })
-                    .help("Plain text; the apiserver stores it base64-encoded. For a certificate or a key, use YAML so its line breaks survive."),
+                Field::new("string_data", "Values", "stringData", Kind::Secret).help(
+                    "Plain text; the apiserver stores it base64-encoded. A value with line \
+                     breaks, such as a certificate or a key, or with binary content, is not \
+                     listed here: edit it in YAML, and it is kept as it is.",
+                ),
             ],
         }],
     },
@@ -552,7 +562,7 @@ fn field_json(field: &Field, value: &FieldValue) -> Option<Value> {
                 .map(|(key, value)| json!({"name": key.trim(), "value": value}))
                 .collect(),
         ),
-        (Kind::Pairs { list: false }, FieldValue::Pairs(pairs)) => Value::Object(
+        (Kind::Pairs { list: false } | Kind::Secret, FieldValue::Pairs(pairs)) => Value::Object(
             pairs
                 .iter()
                 .filter(|(key, _)| !key.trim().is_empty())
@@ -700,6 +710,7 @@ pub fn read_values(spec: &FormSpec, object: &Value) -> Values {
                     })
                     .unwrap_or_default(),
             ),
+            Kind::Secret => FieldValue::Pairs(secret_rows(object)),
             Kind::Words => FieldValue::Text(
                 at.and_then(Value::as_array)
                     .map(|words| {
@@ -727,6 +738,64 @@ pub fn read_values(spec: &FormSpec, object: &Value) -> Values {
     values
 }
 
+/// A Secret's `data` entry as text a row can hold: UTF-8 without line breaks
+/// or NULs. Anything else is left out of the form rather than damaged by it.
+fn row_text(encoded: &str) -> Option<String> {
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .ok()?;
+    let text = String::from_utf8(bytes).ok()?;
+    (!text.contains(['\n', '\r', '\0'])).then_some(text)
+}
+
+/// The rows a Secret's form shows: what `data` holds that a row can carry, with
+/// any `stringData` on top, as it would be applied.
+fn secret_rows(object: &Value) -> Vec<(String, String)> {
+    let mut rows: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(data) = object.get("data").and_then(Value::as_object) {
+        for (key, value) in data {
+            if let Some(text) = value.as_str().and_then(row_text) {
+                rows.insert(key.clone(), text);
+            }
+        }
+    }
+    if let Some(plain) = object.get("stringData").and_then(Value::as_object) {
+        for (key, value) in plain {
+            if let Some(text) = text_of(value) {
+                rows.insert(key.clone(), text);
+            }
+        }
+    }
+    rows.into_iter().collect()
+}
+
+/// Write a Secret's rows into `data`, base64-encoded, and drop `stringData`,
+/// which the rows now cover. Entries the rows cannot show are kept as they were,
+/// unless a row of the same name replaces them.
+fn write_secret_rows(rows: &[(String, String)], object: &mut Value) {
+    use base64::Engine as _;
+    let encode = |text: &str| base64::engine::general_purpose::STANDARD.encode(text);
+
+    let mut data = Map::new();
+    if let Some(existing) = object.get("data").and_then(Value::as_object) {
+        for (key, value) in existing {
+            if value.as_str().and_then(row_text).is_none() {
+                data.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    for (key, value) in rows.iter().filter(|(key, _)| !key.trim().is_empty()) {
+        data.insert(key.trim().to_string(), Value::String(encode(value)));
+    }
+    remove_path(object, "stringData");
+    if data.is_empty() {
+        remove_path(object, "data");
+    } else {
+        set_path(object, "data", Value::Object(data));
+    }
+}
+
 /// Fields that identify an object, which cannot be changed once it exists.
 const IMMUTABLE: &[&str] = &["name", "namespace"];
 
@@ -739,6 +808,12 @@ pub fn apply_values(spec: &FormSpec, values: &Values, object: &mut Value) {
         .fields()
         .filter(|field| !IMMUTABLE.contains(&field.key))
     {
+        if field.kind == Kind::Secret {
+            if let Some(FieldValue::Pairs(rows)) = values.get(field.key) {
+                write_secret_rows(rows, object);
+            }
+            continue;
+        }
         let desired = values
             .get(field.key)
             .and_then(|value| field_json(field, value));
@@ -1071,6 +1146,80 @@ mod tests {
             edited["spec"]["template"]["spec"]["containers"][0]["image"],
             json!("a")
         );
+    }
+
+    fn secret() -> serde_json::Value {
+        // user=admin, pass=s3cret, a multi-line certificate and a binary blob.
+        json!({
+            "apiVersion": "v1", "kind": "Secret",
+            "metadata": {"name": "db"},
+            "type": "Opaque",
+            "data": {
+                "user": "YWRtaW4=",
+                "pass": "czNjcmV0",
+                "tls.crt": "LS0tLS1CRUdJTgphYmMKLS0tLS1FTkQ=",
+                "blob": "/wCA"
+            }
+        })
+    }
+
+    #[test]
+    fn an_existing_secret_shows_its_decoded_values_but_not_what_a_row_cannot_hold() {
+        let values = super::read_values(spec("Secret"), &secret());
+        assert_eq!(
+            values.get("string_data"),
+            Some(&FieldValue::Pairs(vec![
+                ("pass".into(), "s3cret".into()),
+                ("user".into(), "admin".into()),
+            ])),
+            "the certificate has line breaks and the blob is binary"
+        );
+    }
+
+    #[test]
+    fn editing_a_secret_writes_data_keeps_the_hidden_entries_and_drops_string_data() {
+        let object = secret();
+        let mut values = super::read_values(spec("Secret"), &object);
+        values.insert(
+            "string_data",
+            FieldValue::Pairs(vec![
+                ("user".into(), "root".into()),
+                ("token".into(), "abc".into()),
+            ]),
+        );
+        let mut edited = object.clone();
+        edited["stringData"] = json!({"old": "x"});
+        super::apply_values(spec("Secret"), &values, &mut edited);
+
+        assert!(edited.get("stringData").is_none());
+        let data = &edited["data"];
+        assert_eq!(data["user"], json!("cm9vdA=="), "changed");
+        assert_eq!(data["token"], json!("YWJj"), "added");
+        assert!(data.get("pass").is_none(), "removed in the form");
+        assert_eq!(data["tls.crt"], object["data"]["tls.crt"], "kept as it was");
+        assert_eq!(data["blob"], object["data"]["blob"], "kept as it was");
+    }
+
+    #[test]
+    fn a_secret_whose_rows_are_all_cleared_loses_data_and_a_new_one_still_uses_string_data() {
+        let object = json!({
+            "kind": "Secret", "metadata": {"name": "s"}, "data": {"a": "Yg=="}
+        });
+        let mut values = super::read_values(spec("Secret"), &object);
+        values.insert("string_data", FieldValue::Pairs(Vec::new()));
+        let mut edited = object.clone();
+        super::apply_values(spec("Secret"), &values, &mut edited);
+        assert!(edited.get("data").is_none());
+
+        let mut created = super::Values::new();
+        created.insert("name", FieldValue::Text("s".into()));
+        created.insert(
+            "string_data",
+            FieldValue::Pairs(vec![("k".into(), "v".into())]),
+        );
+        let built = super::build(spec("Secret"), &created);
+        assert_eq!(built["stringData"]["k"], json!("v"));
+        assert!(built.get("data").is_none());
     }
 
     #[test]
