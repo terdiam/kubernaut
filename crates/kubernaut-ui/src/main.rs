@@ -34,6 +34,7 @@ mod topology;
 mod ui;
 mod upgrade;
 mod usage;
+mod validation;
 mod yaml;
 
 use std::{cell::Cell, process::ExitCode, rc::Rc, sync::Arc};

@@ -25,6 +25,7 @@ use crate::{
     diff::{self, DiffLine},
     form::{FormContext, FormEvent, FormView},
     ui::{Emphasis, button_icon, chip, page_title, pill, toast_error, toast_success},
+    validation::ValidationView,
 };
 
 /// Larger than any manifest a person writes; a bigger file is more likely the
@@ -112,6 +113,8 @@ pub struct CreateView {
     diff_scroll: UniformListScrollHandle,
     /// The form, when one is filling in the editor.
     form: Option<(Entity<FormView>, Subscription)>,
+    /// What the schemas say is wrong with the text.
+    validation: Entity<ValidationView>,
     /// The text the form last wrote. An editor that differs from it was edited
     /// by hand.
     last_form_yaml: SharedString,
@@ -146,6 +149,9 @@ impl CreateView {
                 this.on_edit(cx);
             }
         });
+        let validation =
+            cx.new(|cx| ValidationView::new(core, runtime, cluster.clone(), &editor, window, cx));
+        validation.update(cx, |validation, cx| validation.check(cx));
         let namespace_input = cx.new(|cx| {
             let mut state = InputState::new(window, cx).placeholder("from the manifest");
             if let Some(namespace) = namespace {
@@ -176,6 +182,7 @@ impl CreateView {
             notice: None,
             diff_scroll: UniformListScrollHandle::new(),
             form: None,
+            validation,
             last_form_yaml: SharedString::default(),
             detached: false,
             _edit: edit,
@@ -185,6 +192,12 @@ impl CreateView {
 
     fn text(&self, cx: &App) -> SharedString {
         self.editor.read(cx).value()
+    }
+
+    /// Check text that was set from code, which the editor does not report.
+    fn revalidate(&self, cx: &mut Context<Self>) {
+        self.validation
+            .update(cx, |validation, cx| validation.check(cx));
     }
 
     fn namespace_text(&self, cx: &App) -> String {
@@ -215,6 +228,7 @@ impl CreateView {
         self.detached = false;
         self.editor
             .update(cx, |editor, cx| editor.set_value(text, window, cx));
+        self.revalidate(cx);
         self.previewed = None;
         self.results = None;
         self.notice = None;
@@ -258,6 +272,7 @@ impl CreateView {
         self.editor.update(cx, |editor, cx| {
             editor.set_value(yaml.to_string(), window, cx)
         });
+        self.revalidate(cx);
         self.previewed = None;
         self.results = None;
         self.notice = None;
@@ -883,11 +898,14 @@ impl Render for CreateView {
                         )
                     })
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .child(Editor::new(&self.editor).appearance(false).h(relative(1.))),
+                        div().flex_1().min_w_0().h_full().child(
+                            v_flex()
+                                .size_full()
+                                .child(div().flex_1().min_h_0().child(
+                                    Editor::new(&self.editor).appearance(false).h(relative(1.)),
+                                ))
+                                .child(self.validation.clone()),
+                        ),
                     ),
             )
             .children(panel)

@@ -8,10 +8,12 @@ pub mod discovery;
 pub mod error;
 pub mod jsonpath;
 pub mod kubeconfig;
+pub mod locate;
 pub mod objects;
 pub mod paths;
 pub mod row;
 pub mod schema;
+pub mod validate;
 pub mod watch;
 
 pub use cluster::{ClusterHandle, ClusterId, ClusterManager, ClusterStatus, ConnectOptions};

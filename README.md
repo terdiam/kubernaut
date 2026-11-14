@@ -120,6 +120,15 @@ version had that this one does not yet.
   that reads from a Secret survives an edit of the plain ones), and cannot change
   the name, the namespace or a deployment's selector. It writes into the same
   text, so Preview and Apply are unchanged.
+- **Schema check** while you type, in both the editor and Create: the text is
+  checked against the OpenAPI schema this cluster publishes for its kind, custom
+  resources included, so unknown fields, wrong types, missing required fields and
+  values outside an enum are underlined and listed with their path
+  (`spec.template.spec.containers[0].imagePullPolisy: unknown field`). A line that
+  is not YAML at all is reported where it breaks. Click a problem to jump to its
+  line. It advises and never blocks: the server's dry run in Preview still
+  decides. Quantities such as `cpu: 1` and int-or-string fields are accepted as
+  the apiserver accepts them.
 - **Edit** an object's YAML with a server-side dry-run diff before anything is
   applied, explicit field-manager conflicts, and an option to take ownership.
   Apply is enabled only for the exact text that was previewed.
@@ -216,8 +225,7 @@ audited like the other shells.
 
 The Tauri and React version had these; they are not ported yet.
 
-- YAML validation against the cluster's OpenAPI schema, node label and taint
-  editing, and pruning on apply.
+- Node label and taint editing, and pruning on apply.
 - Local crash-log viewing.
 - Automatic updates, and builds for Linux and Windows.
 

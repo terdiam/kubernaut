@@ -26,6 +26,7 @@ use crate::{
     drawer::Target,
     form::{FormContext, FormEvent, FormView},
     ui::{Emphasis, button_icon, chip, segment, segmented_bar, toast_success},
+    validation::ValidationView,
 };
 
 /// A dry run for one exact text and one setting of "take ownership".
@@ -72,6 +73,8 @@ pub struct YamlView {
     /// The form over the object, when its fields are being edited instead of
     /// its text.
     form: Option<(Entity<FormView>, Subscription)>,
+    /// What the object's schema says is wrong with the text.
+    validation: Entity<ValidationView>,
     _edit: Subscription,
 }
 
@@ -94,6 +97,10 @@ impl YamlView {
             }
         });
 
+        let validation = cx.new(|cx| {
+            ValidationView::new(core, runtime, target.cluster.clone(), &editor, window, cx)
+        });
+
         let task = runtime.spawn(fetch_yaml(Arc::clone(core), target.clone()));
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
@@ -102,6 +109,7 @@ impl YamlView {
                     this.original = text.as_str().into();
                     this.editor
                         .update(cx, |editor, cx| editor.set_value(text, window, cx));
+                    this.revalidate(cx);
                     this.load = Load::Ready;
                     cx.notify();
                 }
@@ -127,12 +135,19 @@ impl YamlView {
             notice: None,
             diff_scroll: UniformListScrollHandle::new(),
             form: None,
+            validation,
             _edit: edit,
         }
     }
 
     fn text(&self, cx: &App) -> SharedString {
         self.editor.read(cx).value()
+    }
+
+    /// Check text that was set from code, which the editor does not report.
+    fn revalidate(&self, cx: &mut Context<Self>) {
+        self.validation
+            .update(cx, |validation, cx| validation.check(cx));
     }
 
     fn is_modified(&self, cx: &App) -> bool {
@@ -326,6 +341,7 @@ impl YamlView {
         let original = self.original.clone();
         self.editor
             .update(cx, |editor, cx| editor.set_value(original, window, cx));
+        self.revalidate(cx);
         self.previewed = None;
         self.force = false;
         self.notice = None;
@@ -390,6 +406,7 @@ impl YamlView {
         self.editor.update(cx, |editor, cx| {
             editor.set_value(yaml.to_string(), window, cx)
         });
+        self.revalidate(cx);
         cx.notify();
     }
 
@@ -582,6 +599,9 @@ impl Render for YamlView {
                 column.child(div().px_3().pb_2().text_xs().text_color(color).child(text))
             })
             .child(body)
+            .when(self.form.is_none(), |column| {
+                column.child(self.validation.clone())
+            })
             .when_some(self.previewed.as_ref(), |column, previewed| {
                 column.child(self.render_changes(previewed, cx))
             })
