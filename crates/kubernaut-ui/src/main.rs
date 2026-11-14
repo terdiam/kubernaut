@@ -37,6 +37,13 @@ fn main() -> ExitCode {
     // plugins, and mutating the environment is only sound single-threaded.
     let booted = k8s_app::boot();
     let core = Arc::new(booted.core);
+    // A packaged build carries helm, trivy and kustomize beside the executable.
+    // A development build has none there and falls back to the ones on PATH.
+    core.set_helm_sidecar_dir(
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf)),
+    );
 
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()

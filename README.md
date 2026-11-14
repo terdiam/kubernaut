@@ -2,34 +2,28 @@
 
 [![Release](https://img.shields.io/github/v/release/terdiam/kubernaut)](https://github.com/terdiam/kubernaut/releases/latest)
 
-A multi-cluster Kubernetes desktop app for macOS, Windows and Linux. Rust core
-(`kube-rs`) behind a Tauri v2 shell, React/TypeScript UI — built to stay usable
-on clusters with thousands of objects, and to never touch a cluster you did not
-explicitly add.
+A multi-cluster Kubernetes desktop app. Rust core (`kube-rs`) with a native
+[GPUI](https://www.gpui.rs) interface — no webview, no JavaScript — built to stay
+usable on clusters with thousands of objects, and to never touch a cluster you
+did not explicitly add.
 
-## Screenshots
-
-Taken against a local [k3d](https://k3d.io) cluster, not a real one — every
-name in these images is invented.
-
-| | |
-| --- | --- |
-| ![Overview: gauges, usage history, live issues](screenshots/overview.png) Cluster overview, with an issue an `ImagePullBackOff` pod put there itself | ![Deployments, with the row-selection column](screenshots/deployments.png) Row selection on any resource table |
-| ![Diagnose tab quoting the kubelet's own error and giving next steps](screenshots/diagnose.png) Diagnose: the cluster's own error, and what to do about it | ![Bulk action bar: delete, restart, export](screenshots/bulk.png) Act on a selection — delete, restart, export |
-| ![Create dialog, form mode, for a Deployment](screenshots/create.png) Create, as a form or as YAML | ![Ingress form with the backend service and port chosen from the cluster](screenshots/ingress-form.png) Reference fields read from the cluster, not typed |
-| ![Helm releases and revision history](screenshots/helm.png) Every Helm release, read straight from the cluster | ![Security Center workload findings](screenshots/security.png) Workload posture findings, no scanner required |
-| ![Multi-pod log stream](screenshots/logs.png) Log streaming | ![Container shell terminal](screenshots/terminal.png) A shell into the pod |
+> **Status.** The native interface is the only one now; the Tauri and React
+> version has been removed. It does not yet cover everything under
+> [Features](#features). Known gaps: automatic updates, field-based create
+> forms (YAML create works), and pruning on apply. Only macOS (Apple silicon) is
+> built and checked; Linux and Windows builds are not produced.
 
 ## Install
 
-Download a build for your platform from
-[Releases](https://github.com/terdiam/kubernaut/releases). macOS and Windows
-builds are not code-signed (no paid developer account), so the OS will warn
-before the first run:
+Download `Kubernaut-<version>-macos-arm64.zip` from
+[Releases](https://github.com/terdiam/kubernaut/releases) and unzip it. The app
+is not signed with a Developer ID (no paid developer account), so macOS warns
+before the first run: right-click the app → **Open**, or clear the quarantine
+flag:
 
-- **macOS** — right-click the app → **Open**, or clear the quarantine flag:
-  `xattr -dr com.apple.quarantine /Applications/Kubernaut.app`
-- **Windows** — SmartScreen: **More info** → **Run anyway**.
+```bash
+xattr -dr com.apple.quarantine /Applications/Kubernaut.app
+```
 
 Or build from source — see [Build](#build).
 
@@ -67,7 +61,7 @@ clusters connected; every one is added explicitly.
   Virtualised, sortable, resizable, with live status colouring from one shared
   vocabulary (`CrashLoopBackOff` reads red everywhere, including in CRD
   columns).
-- Shared, ref-counted watches batched over a Tauri IPC channel, so many open
+- Shared, ref-counted watches batched into deltas for the UI, so many open
   tabs on the same resource cost one watch, not several.
 - A `kubernetes.io/tls` Secret's own certificate read straight off the row:
   domains from its Subject Alternative Name and when it expires, with the row
@@ -198,28 +192,27 @@ own annotations, so neither CLI is required.
 
 ## Build
 
+Needs Rust 1.93 or newer.
+
 ```bash
-npm install
-npm run app:build
+cargo build --release -p kubernaut-ui     # target/release/kubernaut-ui
+scripts/bundle-macos.sh                   # dist/Kubernaut.app and a zip
 ```
 
-Requires Node 22+ and a Rust toolchain (`rustup target add <triple>` for a
-target other than your host). See `.github/workflows/release.yml` for the
-exact matrix and how the `helm`/`trivy` sidecars are fetched and verified.
+`scripts/bundle-macos.sh --sidecars <dir>` also copies `helm`, `trivy` and
+`kustomize` into the app; `scripts/fetch-sidecars.sh` downloads and
+checksum-verifies them, and `.github/workflows/release.yml` shows how a release
+uses both. Without them the app uses whichever of the three are on `PATH`.
+
+For the smallest binary, `cargo build --profile release-small -p kubernaut-ui`.
 
 ## Develop
 
 ```bash
-npm install
-npm run app
-```
-
-`npm run app` runs `tauri dev`, which starts Vite and the Rust app together.
-
-```bash
+cargo run -p kubernaut-ui
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
-npm run typecheck
-npm test
 ```
 
 Log level is controlled by `KUBERNAUT_LOG` (e.g. `KUBERNAUT_LOG=debug,kube=info`).
@@ -230,11 +223,11 @@ Log level is controlled by `KUBERNAUT_LOG` (e.g. `KUBERNAUT_LOG=debug,kube=info`
 | --- | --- |
 | `crates/k8s-core` | kubeconfig, connection manager, discovery, watches, row projection |
 | `crates/k8s-ops` | logs, exec, port-forward, apply/diff, actions, bulk operations, diagnostics |
-| `crates/k8s-metrics` | quantity parsing, aggregation, sampling, Prometheus, topology |
+| `crates/k8s-metrics` | quantity parsing, aggregation, sampling, Prometheus, Alertmanager, topology |
 | `crates/k8s-helm` | release store (Secrets), helm CLI wrapper, upgrade diff |
 | `crates/k8s-security` | posture checks, RBAC analysis, vulnerability sources |
-| `src-tauri` | Tauri app, IPC commands, capabilities |
-| `ui` | React frontend |
+| `crates/k8s-app` | state shared by front ends: preferences, audit log, scan cache, write operations |
+| `crates/kubernaut-ui` | the native GPUI application |
 
 ## Testing against a real cluster
 

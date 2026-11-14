@@ -91,8 +91,8 @@ Check the `cargo` exit code itself: a pipeline like `cargo build | tail` reports
 
 ## Project notes
 
-- UI is migrating from Tauri + React to GPUI on branch `gpui-rewrite`.
-  New UI code goes in `crates/kubernaut-ui`; shared state in `crates/k8s-app`.
+- The UI is native GPUI in `crates/kubernaut-ui`; shared state in `crates/k8s-app`.
+  The Tauri and React version no longer exists in the tree.
 - Depend on `gpui-kit` only, never `gpui` directly: it pins a gpui fork family
   and a second copy would give incompatible types.
 - `use gpui_kit::*` also imports GPUI's `#[test]` macro and shadows Rust's. In

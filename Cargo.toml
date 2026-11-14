@@ -8,7 +8,6 @@ members = [
     "crates/k8s-helm",
     "crates/k8s-security",
     "crates/kubernaut-ui",
-    "src-tauri",
 ]
 
 [workspace.package]
@@ -42,14 +41,12 @@ http = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 futures = "0.3"
-async-trait = "0.1"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 serde_yaml_ng = "0.10"
 
 thiserror = "2"
-anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
@@ -58,8 +55,6 @@ dashmap = "6"
 arc-swap = "1"
 parking_lot = "0.12"
 directories = "6"
-chrono = { version = "0.4", features = ["serde"] }
-humantime = "2"
 regex = "1"
 base64 = "0.22"
 # Parses a TLS Secret's certificate for display (domains, expiry) — no
@@ -69,9 +64,6 @@ similar = "2"
 # Archive format for bulk export: openable by double-click on both macOS and
 # Windows, unlike a tarball.
 zip = { version = "4", default-features = false, features = ["deflate"] }
-json-patch = "4"
-jsonptr = "0.7"
-sha2 = "0.10"
 flate2 = "1"
 # Trivy scan-result cache. `bundled` compiles SQLite in rather than requiring
 # a system library, so the release build gains no new external dependency.
@@ -89,11 +81,6 @@ gpui-kit = { version = "0.9.1", features = ["tree-sitter-yaml"] }
 # Terminal emulation (escape sequences, grid, scrollback) for the native terminal.
 alacritty_terminal = "0.26"
 
-tauri = { version = "2.11", features = [] }
-tauri-build = { version = "2", features = [] }
-tauri-plugin-updater = "2.10"
-tauri-plugin-process = "2"
-tauri-plugin-dialog = "2"
 
 k8s-app = { path = "crates/k8s-app" }
 k8s-core = { path = "crates/k8s-core" }

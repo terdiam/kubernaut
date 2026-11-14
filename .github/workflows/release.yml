@@ -5,227 +5,49 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-# Pinned deliberately. Bumping the version means bumping it here, which makes
-# the change reviewable rather than silently picking up whatever is newest.
+# Pinned deliberately. Bumping a version means bumping it here, which makes the
+# change reviewable rather than silently picking up whatever is newest.
 env:
   HELM_VERSION: v3.19.0
   TRIVY_VERSION: 0.74.0
   KUSTOMIZE_VERSION: v5.8.1
 
 jobs:
-  bundle:
-    # GITHUB_TOKEN is read-only by default in this repository, so tauri-action's
-    # release upload failed with "Resource not accessible by integration" after
-    # a build that had otherwise succeeded.
+  macos:
+    # GITHUB_TOKEN is read-only by default in this repository, so uploading to
+    # the release needs this granted.
     permissions:
       contents: write
-
-    # Windows + Linux (amd64/arm64) for now. The macOS half of each release is
-    # built by hand and added to this workflow's draft with
-    # scripts/release-macos.sh.
-    #
-    # macOS is kept below, commented out, because removing it loses the
-    # platform strings rather than the intent: it needs a Developer ID
-    # certificate, and with APPLE_CERTIFICATE empty tauri-action still attempts
-    # the keychain import and the job dies with "failed to import keychain
-    # certificate" after ~11 minutes — at the 10x billing multiplier a private
-    # repository pays for.
-    #
-    # ubuntu-22.04-arm is a GitHub-hosted arm64 runner, so this is a native
-    # build, not a cross-compile — no extra linker/target setup needed beyond
-    # the same Linux system deps step used for amd64.
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            helm_platform: windows-amd64
-            trivy_platform: windows-64bit
-            kustomize_platform: windows_amd64
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            helm_platform: linux-amd64
-            trivy_platform: Linux-64bit
-            kustomize_platform: linux_amd64
-          - os: ubuntu-22.04-arm
-            target: aarch64-unknown-linux-gnu
-            helm_platform: linux-arm64
-            trivy_platform: Linux-ARM64
-            kustomize_platform: linux_arm64
-          # - os: macos-14
-          #   target: aarch64-apple-darwin
-          #   helm_platform: darwin-arm64
-          #   trivy_platform: macOS-ARM64
-          #   kustomize_platform: darwin_arm64
-          # - os: macos-14
-          #   target: x86_64-apple-darwin
-          #   helm_platform: darwin-amd64
-          #   trivy_platform: macOS-64bit
-          #   kustomize_platform: darwin_amd64
-    runs-on: ${{ matrix.os }}
-
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
       - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
       - uses: Swatinem/rust-cache@v2
 
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux'
+      - name: Check the tag matches the version being built
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
-          sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf libssl-dev
+          version=$(awk -F'"' '/^version = /{print $2; exit}' Cargo.toml)
+          [ "v${version}" = "${GITHUB_REF_NAME}" ] || {
+            echo "tag ${GITHUB_REF_NAME} but Cargo.toml says ${version}"; exit 1; }
 
-      # The sidecar is fetched and checksum-verified here rather than committed,
-      # so the repository holds no binaries. Upstream publishes the digest
-      # alongside the archive; pinning the digest in this file as well would
-      # additionally protect against a compromised distribution host, at the
-      # cost of a manual update on every bump.
-      - name: Fetch and verify helm
-        shell: bash
-        run: |
-          set -euo pipefail
-          archive="helm-${HELM_VERSION}-${{ matrix.helm_platform }}.tar.gz"
-          base="https://get.helm.sh"
-          curl -fsSLO "${base}/${archive}"
-          curl -fsSL "${base}/${archive}.sha256sum" -o expected.txt
+      - name: Fetch and verify helm, trivy and kustomize
+        run: scripts/fetch-sidecars.sh darwin-arm64 sidecars
 
-          if command -v sha256sum >/dev/null; then
-            sha256sum -c expected.txt
-          else
-            actual=$(shasum -a 256 "${archive}" | awk '{print $1}')
-            expected=$(awk '{print $1}' expected.txt)
-            [ "${actual}" = "${expected}" ] || { echo "checksum mismatch"; exit 1; }
-          fi
+      - name: Build Kubernaut.app
+        run: scripts/bundle-macos.sh --sidecars sidecars
 
-          tar -xzf "${archive}"
-          mkdir -p src-tauri/binaries
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            mv "${{ matrix.helm_platform }}/helm.exe" src-tauri/binaries/helm.exe
-          else
-            mv "${{ matrix.helm_platform }}/helm" src-tauri/binaries/helm
-            chmod +x src-tauri/binaries/helm
-          fi
-          src-tauri/binaries/helm* version --short
-
-      # Same reasoning as helm, with two differences that matter: trivy ships a
-      # single checksum file covering every asset, so the line for this archive
-      # is selected before verifying — `sha256sum -c` over the whole file fails
-      # on the assets that were never downloaded. And the binary sits at the
-      # archive root rather than in a platform folder.
-      - name: Fetch and verify trivy
-        shell: bash
-        run: |
-          set -euo pipefail
-          base="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            archive="trivy_${TRIVY_VERSION}_${{ matrix.trivy_platform }}.zip"
-          else
-            archive="trivy_${TRIVY_VERSION}_${{ matrix.trivy_platform }}.tar.gz"
-          fi
-
-          curl -fsSLO "${base}/${archive}"
-          curl -fsSL "${base}/trivy_${TRIVY_VERSION}_checksums.txt" -o all-checksums.txt
-          grep " ${archive}\$" all-checksums.txt > expected-trivy.txt
-
-          if command -v sha256sum >/dev/null; then
-            sha256sum -c expected-trivy.txt
-          else
-            actual=$(shasum -a 256 "${archive}" | awk '{print $1}')
-            expected=$(awk '{print $1}' expected-trivy.txt)
-            [ "${actual}" = "${expected}" ] || { echo "checksum mismatch"; exit 1; }
-          fi
-
-          mkdir -p src-tauri/binaries
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            if command -v unzip >/dev/null; then
-              unzip -q "${archive}" trivy.exe
-            else
-              powershell -Command "Expand-Archive -Path '${archive}' -DestinationPath . -Force"
-            fi
-            mv trivy.exe src-tauri/binaries/trivy.exe
-          else
-            tar -xzf "${archive}" trivy
-            mv trivy src-tauri/binaries/trivy
-            chmod +x src-tauri/binaries/trivy
-          fi
-          src-tauri/binaries/trivy* --version
-
-      # Same shape as trivy: one checksums.txt over every asset, binary at the
-      # archive root (no platform subfolder, unlike helm).
-      - name: Fetch and verify kustomize
-        shell: bash
-        run: |
-          set -euo pipefail
-          base="https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/${KUSTOMIZE_VERSION}"
-          ext=$([ "${{ runner.os }}" = "Windows" ] && echo zip || echo tar.gz)
-          archive="kustomize_${KUSTOMIZE_VERSION}_${{ matrix.kustomize_platform }}.${ext}"
-
-          curl -fsSLO "${base}/${archive}"
-          curl -fsSL "${base}/checksums.txt" -o kustomize-checksums.txt
-          grep " ${archive}\$" kustomize-checksums.txt > expected-kustomize.txt
-
-          if command -v sha256sum >/dev/null; then
-            sha256sum -c expected-kustomize.txt
-          else
-            actual=$(shasum -a 256 "${archive}" | awk '{print $1}')
-            expected=$(awk '{print $1}' expected-kustomize.txt)
-            [ "${actual}" = "${expected}" ] || { echo "checksum mismatch"; exit 1; }
-          fi
-
-          mkdir -p src-tauri/binaries
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            if command -v unzip >/dev/null; then
-              unzip -q "${archive}" kustomize.exe
-            else
-              powershell -Command "Expand-Archive -Path '${archive}' -DestinationPath . -Force"
-            fi
-            mv kustomize.exe src-tauri/binaries/kustomize.exe
-          else
-            tar -xzf "${archive}" kustomize
-            mv kustomize src-tauri/binaries/kustomize
-            chmod +x src-tauri/binaries/kustomize
-          fi
-          src-tauri/binaries/kustomize* version
-
-      - run: npm ci
-
-      - name: Build, sign and publish
-        uses: tauri-apps/tauri-action@v0
+      # Draft on purpose: a person checks the artefact before anyone downloads it.
+      - name: Attach to a draft release
+        if: startsWith(github.ref, 'refs/tags/v')
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 \
+            || gh release create "${GITHUB_REF_NAME}" --draft --title "Kubernaut ${GITHUB_REF_NAME}" --generate-notes
+          gh release upload "${GITHUB_REF_NAME}" dist/Kubernaut-*-macos-*.zip --clobber
 
-          # Update signing. Generated once with `tauri signer generate`; the
-          # public half lives in tauri.conf.json and the private half only
-          # here. Without these the workflow still builds, but publishes no
-          # update manifest — which is the correct failure: an unsigned update
-          # channel is worse than none.
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-          # macOS code signing and notarisation. Unsigned builds are quarantined
-          # by Gatekeeper and refuse to open from a normal download.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      - uses: actions/upload-artifact@v4
         with:
-          args: --target ${{ matrix.target }}
-          tagName: ${{ github.ref_name }}
-          releaseName: Kubernaut ${{ github.ref_name }}
-          # Draft on purpose: a human checks the artefacts before anyone's
-          # auto-updater sees them.
-          releaseDraft: true
-          includeUpdaterJson: true
+          name: Kubernaut-macos
+          path: dist/Kubernaut-*-macos-*.zip

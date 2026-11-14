@@ -1,9 +1,5 @@
 /target
 /dist
-node_modules
-src-tauri/gen
-src-tauri/binaries/*
-!src-tauri/binaries/README.md
 .DS_Store
 *.log
 
