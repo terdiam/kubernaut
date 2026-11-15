@@ -3783,7 +3783,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-app"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "base64",
  "directories",
@@ -3808,7 +3808,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-core"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "arc-swap",
  "base64",
@@ -3834,7 +3834,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-helm"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "base64",
  "dashmap",
@@ -3856,7 +3856,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-metrics"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "dashmap",
  "futures",
@@ -3888,7 +3888,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-ops"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "dashmap",
  "directories",
@@ -3915,7 +3915,7 @@ dependencies = [
 
 [[package]]
 name = "k8s-security"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "dashmap",
  "futures",
@@ -4082,7 +4082,7 @@ dependencies = [
 
 [[package]]
 name = "kubernaut-ui"
-version = "1.0.6"
+version = "1.0.7"
 dependencies = [
  "alacritty_terminal",
  "futures",
