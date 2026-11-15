@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 #
-# Build Kubernaut.app and a zip of it.
+# Build Kubernaut.app, a zip of it (what the in-app updater downloads) and a
+# disk image to drag it into Applications from.
 #
 # Usage: scripts/bundle-macos.sh [--sidecars <dir>] [--binary <path>]
 #
@@ -71,5 +72,16 @@ codesign --verify --deep --strict "$app"
 zip="dist/Kubernaut-${version}-macos-$(uname -m).zip"
 rm -f "$zip"
 ditto -c -k --keepParent "$app" "$zip"
+
+# The image holds a copy of the app and a shortcut to Applications.
+dmg="dist/Kubernaut-${version}-macos-$(uname -m).dmg"
+image=$(mktemp -d)
+ditto "$app" "$image/Kubernaut.app"
+ln -s /Applications "$image/Applications"
+rm -f "$dmg"
+hdiutil create -quiet -volname "Kubernaut ${version}" -srcfolder "$image" -ov -format UDZO "$dmg"
+rm -rf "$image"
+
 echo "built $app"
 echo "built $zip"
+echo "built $dmg"

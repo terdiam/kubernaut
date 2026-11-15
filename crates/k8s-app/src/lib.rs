@@ -22,6 +22,7 @@ pub mod scan_cache;
 pub mod security_ops;
 mod state;
 pub mod templates;
+pub mod update_install;
 pub mod updates;
 pub mod validate_ops;
 

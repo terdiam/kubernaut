@@ -3,20 +3,30 @@
   Build Kubernaut for Windows and pack it as a zip.
 
 .DESCRIPTION
-  scripts\bundle-windows.ps1 [-Sidecars <dir>] [-Binary <path>]
+  scripts\bundle-windows.ps1 [-Sidecars <dir>] [-Binary <path>] [-Installer]
 
   -Sidecars  copy helm.exe, trivy.exe and kustomize.exe from <dir> beside the
              executable, where the app looks for them
   -Binary    use an already built kubernaut-ui.exe instead of building one
+  -Installer also build the setup program with Inno Setup (ISCC.exe), which has
+             to be installed; without this switch only the zip is built
 
-  The zip unpacks to Kubernaut\ and holds the executable and the sidecars.
-  Run kubernaut-ui.exe from there; nothing is installed and nothing needs
-  administrator rights. The build is not code-signed, so SmartScreen warns on
-  the first run: More info, then Run anyway.
+  Two files come out of dist\:
+
+    Kubernaut-<version>-windows-x86_64.zip        unpacks to Kubernaut\ with the
+      executable and the sidecars. Run kubernaut-ui.exe from there. This is the
+      file the in-app updater downloads.
+    Kubernaut-<version>-windows-x86_64-setup.exe  installs for the current user
+      under %LOCALAPPDATA%\Programs\Kubernaut, adds a Start menu entry and an
+      uninstaller. Nothing needs administrator rights.
+
+  The build is not code-signed, so SmartScreen warns on the first run:
+  More info, then Run anyway.
 #>
 param(
   [string]$Sidecars = "",
-  [string]$Binary = ""
+  [string]$Binary = "",
+  [switch]$Installer
 )
 $ErrorActionPreference = "Stop"
 Set-Location (Join-Path $PSScriptRoot "..")
@@ -36,6 +46,8 @@ $stage = "dist\Kubernaut"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item $Binary (Join-Path $stage "kubernaut-ui.exe")
+# Marks the folder as an install, and names the version, for the in-app updater.
+"dev.kubernaut.app $version" | Set-Content -Encoding ascii (Join-Path $stage "kubernaut.package")
 
 if ($Sidecars) {
   foreach ($tool in "helm", "trivy", "kustomize") {
@@ -49,3 +61,15 @@ $zip = "dist\Kubernaut-$version-windows-x86_64.zip"
 if (Test-Path $zip) { Remove-Item -Force $zip }
 Compress-Archive -Path $stage -DestinationPath $zip
 Write-Host "built $zip"
+
+if ($Installer) {
+  $iscc = (Get-Command iscc -ErrorAction SilentlyContinue).Source
+  if (-not $iscc) {
+    $iscc = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe", "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe") |
+      Where-Object { Test-Path $_ } | Select-Object -First 1
+  }
+  if (-not $iscc) { throw "Inno Setup is not installed (ISCC.exe not found)" }
+  & $iscc "/DAppVersion=$version" "scripts\windows-installer.iss"
+  if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed" }
+  Write-Host "built dist\Kubernaut-$version-windows-x86_64-setup.exe"
+}

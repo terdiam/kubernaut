@@ -16,8 +16,10 @@ did not explicitly add.
 
 ## Install
 
-Download `Kubernaut-<version>-macos-arm64.zip` from
-[Releases](https://github.com/terdiam/kubernaut/releases) and unzip it. The app
+**macOS.** Download `Kubernaut-<version>-macos-<arm64|x86_64>.dmg` from
+[Releases](https://github.com/terdiam/kubernaut/releases), open it and drag
+Kubernaut onto Applications. (The `.zip` beside it holds the same app; it is
+what the in-app updater downloads.) The app
 is not signed with a Developer ID (no paid developer account), so macOS warns
 before the first run: right-click the app → **Open**, or clear the quarantine
 flag:
@@ -26,16 +28,27 @@ flag:
 xattr -dr com.apple.quarantine /Applications/Kubernaut.app
 ```
 
-**Linux.** Download `Kubernaut-<version>-linux-<x86_64|aarch64>.tar.gz`, unpack
-it and run `./install.sh`. It installs for the current user under `~/.local`
-(nothing needs root), adds `kubernaut-ui` to `~/.local/bin` and an entry to the
-applications menu. It needs a graphical session (X11 or Wayland) and a Vulkan
-driver.
+**Linux.** Either of two files:
 
-**Windows.** Download `Kubernaut-<version>-windows-x86_64.zip`, unzip it and run
-`kubernaut-ui.exe`, which carries the app icon. It is not code-signed, so
-SmartScreen warns on the first run: **More info**, then **Run anyway**. This
-build has not been run on a real Windows machine yet; please report what you find.
+- `kubernaut_<version>_<amd64|arm64>.deb`: `sudo apt install ./kubernaut_<version>_amd64.deb`
+  on Debian, Ubuntu and relatives. It installs under `/usr/lib/kubernaut`, which
+  root owns, so the app tells you when a new version exists and you install the
+  new `.deb` yourself.
+- `Kubernaut-<version>-linux-<x86_64|aarch64>.tar.gz`: unpack it and run
+  `./install.sh`. It installs for the current user under `~/.local` (nothing
+  needs root), adds `kubernaut-ui` to `~/.local/bin` and an entry to the
+  applications menu. An install made this way updates itself from inside the app.
+
+It needs a graphical session (X11 or Wayland) and a Vulkan driver.
+
+**Windows.** Download `Kubernaut-<version>-windows-x86_64-setup.exe` and run it.
+It installs for the current user under `%LOCALAPPDATA%\Programs\Kubernaut` (no
+administrator rights), adds a Start menu entry and an uninstaller, and the
+installed app updates itself. Or take the `.zip`, unzip it and run
+`kubernaut-ui.exe`; a copy run from there updates itself too. Neither is
+code-signed, so SmartScreen warns on the first run: **More info**, then **Run
+anyway**. This build has not been run on a real Windows machine yet; please
+report what you find.
 
 Or build from source — see [Build](#build).
 
@@ -282,18 +295,30 @@ Show folder opens where it came from. Nothing is sent anywhere.
 Settings → Updates shows the running version, checks for a newer release, and
 installs it with **Install and restart**. Because the app is not signed with a
 Developer ID, the system cannot vouch for an update, so the app does: a release
-is installed only if its zip carries an Ed25519 signature that verifies against
-the public key compiled into the app, and the unpacked app is the right bundle
-at the announced version. A download that fails any check is deleted and the
-running app is left as it was. Until a key is set up (below), or for a release
-that is not signed, the app only tells you a version exists and links its notes.
-macOS only.
+is installed only if its package carries an Ed25519 signature that verifies
+against the public key compiled into the app, and the unpacked package is
+Kubernaut at the announced version. A download that fails any check is deleted
+and the running app is left as it was. Until a key is set up (below), or for a
+release that is not signed, the app only tells you a version exists and links its
+notes.
+
+What gets replaced depends on the system. On macOS it is the `.app`. On Linux and
+Windows it is the install folder, found by the `kubernaut.package` file beside the
+executable, so a build run from `target/` never replaces itself, and neither does
+a `.deb`, whose folder root owns. Installs made before 1.0.4 do not have that file
+and need one reinstall; after that they update themselves. On Windows the new files
+are copied over the old, so the uninstaller survives; Windows then still lists
+the version the setup program installed. Linux and Windows updating is tested by
+unit tests that run the real swap script on each system in CI, but nobody has yet
+clicked it on a real Windows or Linux desktop.
 
 #### Releasing signed updates
 
-The release workflow signs each macOS zip with the private key in the repository
-secret `UPDATE_SIGNING_KEY` and uploads `Kubernaut-<version>-macos-<arch>.zip.sig`
-beside it; the matching public key is `PUBLIC_KEY_HEX` in
+The release workflow signs the macOS zip, the Linux tarball and the Windows zip
+with the private key in the repository secret `UPDATE_SIGNING_KEY` and uploads a
+`.sig` beside each (`Kubernaut-<version>-macos-<arch>.zip.sig`, and likewise for
+`linux-<arch>.tar.gz` and `windows-x86_64.zip`). The disk image, the `.deb` and
+the setup program are not signed or fetched by the updater. The matching public key is `PUBLIC_KEY_HEX` in
 `crates/k8s-app/src/updates.rs`. Check a downloaded release the way an installed
 copy would:
 
@@ -340,8 +365,9 @@ takes the update keeps its settings, since the data folder is the same.
 The Tauri and React version had these; they are not ported yet.
 
 - Windows is compiled, linted and tested by CI but has not been run by a person.
-- In-app install of updates on Linux and Windows. There the update check still
-  works and links the release page; installing is macOS only.
+- Linux and Windows self-update has run in tests, not yet on a desktop; a `.deb`
+  install is updated by hand.
+- `.rpm` and AppImage packages, and a `winget` or Homebrew entry.
 - Code signing and notarisation on any platform.
 
 ## Build
@@ -363,9 +389,9 @@ Windows needs the Visual Studio C++ build tools.
 
 ```bash
 cargo build --release -p kubernaut-ui     # target/release/kubernaut-ui
-scripts/bundle-macos.sh                   # dist/Kubernaut.app and a zip
-scripts/bundle-linux.sh                   # dist/Kubernaut-<version>-linux-<arch>.tar.gz
-scripts/bundle-windows.ps1                # dist\Kubernaut-<version>-windows-x86_64.zip
+scripts/bundle-macos.sh                   # dist/Kubernaut.app, a zip and a .dmg
+scripts/bundle-linux.sh                   # dist/Kubernaut-<version>-linux-<arch>.tar.gz and a .deb
+scripts/bundle-windows.ps1 -Installer     # dist\Kubernaut-<version>-windows-x86_64.zip and -setup.exe
 ```
 
 Each bundle script takes `--sidecars <dir>` (`-Sidecars` on Windows) to also copy

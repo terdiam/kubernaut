@@ -8,9 +8,18 @@
 #                     executable, where the app looks for them
 #   --binary <path>   use an already built kubernaut-ui instead of building one
 #
-# The tarball unpacks to kubernaut-<version>/ and holds the executable, the
-# sidecars, an icon, a desktop entry, and install.sh, which puts it under
-# ~/.local and registers the entry with the desktop. Nothing needs root.
+# Two files come out of dist/:
+#
+#   Kubernaut-<version>-linux-<arch>.tar.gz   unpacks to kubernaut-<version>/ with
+#       the executable, the sidecars, an icon and install.sh, which puts it under
+#       ~/.local and registers a desktop entry. Nothing needs root, and an
+#       install made this way updates itself from inside the app. This is the
+#       file the in-app updater downloads.
+#   kubernaut_<version>_<deb arch>.deb         the same under /usr/lib/kubernaut,
+#       for `apt install ./file.deb`. Root owns that folder, so the app tells the
+#       person a new version exists rather than replacing itself.
+#
+# The .deb needs dpkg-deb; it is skipped, with a note, where that is missing.
 #
 # Building needs the development packages of the window system and fonts; see
 # "Build" in the README for the list.
@@ -44,6 +53,8 @@ rm -rf "$stage"
 mkdir -p "$stage"
 cp "$binary" "$stage/kubernaut-ui"
 cp crates/kubernaut-ui/assets/512x512.png "$stage/kubernaut.png"
+# Marks the folder as an install, and names the version, for the in-app updater.
+printf 'dev.kubernaut.app %s\n' "$version" > "$stage/kubernaut.package"
 
 if [ -n "$sidecars" ]; then
   for tool in helm trivy kustomize; do
@@ -63,7 +74,7 @@ bin="${HOME}/.local/bin"
 
 rm -rf "$target"
 mkdir -p "$target" "$bin" "$prefix/applications"
-cp "$here"/kubernaut-ui "$here"/kubernaut.png "$target"/
+cp "$here"/kubernaut-ui "$here"/kubernaut.png "$here"/kubernaut.package "$target"/
 for tool in helm trivy kustomize; do
   [ -f "$here/$tool" ] && cp "$here/$tool" "$target/$tool"
 done
@@ -90,3 +101,71 @@ tarball="dist/Kubernaut-${version}-linux-${arch}.tar.gz"
 rm -f "$tarball"
 tar -C dist -czf "$tarball" "$name"
 echo "built $tarball"
+
+if ! command -v dpkg-deb >/dev/null 2>&1; then
+  echo "dpkg-deb not found: no .deb built"
+  exit 0
+fi
+
+case "$arch" in
+  x86_64) deb_arch=amd64 ;;
+  aarch64) deb_arch=arm64 ;;
+  *) echo "no .deb for $arch"; exit 0 ;;
+esac
+
+# What the executable links against, as the distribution's own tool works it out.
+depends=""
+if command -v dpkg-shlibdeps >/dev/null 2>&1; then
+  scratch=$(mktemp -d)
+  mkdir "$scratch/debian"
+  printf 'Source: kubernaut\n\nPackage: kubernaut\nArchitecture: any\n' > "$scratch/debian/control"
+  depends=$(cd "$scratch" && dpkg-shlibdeps -O -e "$OLDPWD/$stage/kubernaut-ui" 2>/dev/null \
+    | sed -n 's/^shlibs:Depends=//p') || depends=""
+  rm -rf "$scratch"
+fi
+
+root="dist/deb-root"
+rm -rf "$root"
+mkdir -p "$root/DEBIAN" "$root/usr/lib/kubernaut" "$root/usr/bin" \
+  "$root/usr/share/applications" "$root/usr/share/icons/hicolor/512x512/apps"
+for file in kubernaut-ui helm trivy kustomize; do
+  [ -f "$stage/$file" ] && install -m 755 "$stage/$file" "$root/usr/lib/kubernaut/$file"
+done
+install -m 644 "$stage/kubernaut.package" "$root/usr/lib/kubernaut/kubernaut.package"
+install -m 644 "$stage/kubernaut.png" "$root/usr/share/icons/hicolor/512x512/apps/kubernaut.png"
+ln -s ../lib/kubernaut/kubernaut-ui "$root/usr/bin/kubernaut-ui"
+
+cat > "$root/usr/share/applications/kubernaut.desktop" <<DESKTOP
+[Desktop Entry]
+Type=Application
+Name=Kubernaut
+Comment=Manage Kubernetes clusters
+Exec=/usr/bin/kubernaut-ui
+Icon=kubernaut
+Terminal=false
+Categories=Development;
+StartupWMClass=kubernaut-ui
+DESKTOP
+
+size=$(du -sk "$root/usr" | cut -f1)
+cat > "$root/DEBIAN/control" <<CONTROL
+Package: kubernaut
+Version: ${version}
+Architecture: ${deb_arch}
+Maintainer: Kubernaut <noreply@users.noreply.github.com>
+Section: devel
+Priority: optional
+Installed-Size: ${size}
+Depends: ${depends:-libc6}
+Recommends: libvulkan1, mesa-vulkan-drivers, libxkbcommon-x11-0, libwayland-client0
+Homepage: https://github.com/terdiam/kubernaut
+Description: Kubernetes desktop client
+ Browse and manage Kubernetes clusters: workloads, logs, shells, Helm,
+ security scans and a live topology of what is running.
+CONTROL
+
+deb="dist/kubernaut_${version}_${deb_arch}.deb"
+rm -f "$deb"
+dpkg-deb --root-owner-group --build "$root" "$deb" >/dev/null
+rm -rf "$root"
+echo "built $deb"

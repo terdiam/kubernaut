@@ -284,8 +284,8 @@ impl SettingsView {
         self.update = UpdateState::Working("Downloading and checking the signature…");
         cx.notify();
         let task = self.runtime.spawn_blocking(move || -> Result<(), String> {
-            let bundle = updates::current_bundle().ok_or(
-                "this copy is not running from an app bundle, so it cannot replace itself",
+            let bundle = updates::current_install().ok_or(
+                "this copy is not running from an installed package, so it cannot replace itself",
             )?;
             let directory = updates::staging_directory()?;
             let outcome = (|| {

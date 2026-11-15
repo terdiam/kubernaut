@@ -75,12 +75,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${GITHUB_REF_NAME}" dist/Kubernaut-*-macos-*.zip* --clobber
+          gh release upload "${GITHUB_REF_NAME}" dist/Kubernaut-*-macos-*.zip* dist/Kubernaut-*-macos-*.dmg --clobber
 
       - uses: actions/upload-artifact@v4
         with:
           name: Kubernaut-macos
-          path: dist/Kubernaut-*-macos-*.zip*
+          path: |
+            dist/Kubernaut-*-macos-*.zip*
+            dist/Kubernaut-*-macos-*.dmg
 
   linux:
     needs: draft
@@ -121,21 +123,38 @@ jobs:
       - name: Fetch and verify helm, trivy and kustomize
         run: scripts/fetch-sidecars.sh ${{ matrix.sidecars }} sidecars
 
-      - name: Build the tarball
+      - name: Build the tarball and the .deb
         run: scripts/bundle-linux.sh --sidecars sidecars
+
+      # The in-app updater downloads the tarball and installs it only if this
+      # signature verifies. The .deb is not signed: apt installs it, and the app
+      # does not replace a package that root owns.
+      - name: Sign the tarball
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "${UPDATE_SIGNING_KEY}" ]; then
+            echo "::warning::UPDATE_SIGNING_KEY is not set; the release will not be installable by the in-app updater"
+          else
+            cargo run --release -q -p k8s-app --example update_tool -- sign dist/Kubernaut-*-linux-*.tar.gz
+          fi
 
       - name: Attach to the draft release
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${GITHUB_REF_NAME}" dist/Kubernaut-*-linux-*.tar.gz --clobber
+        run: gh release upload "${GITHUB_REF_NAME}" dist/Kubernaut-*-linux-*.tar.gz* dist/kubernaut_*.deb --clobber
 
       - uses: actions/upload-artifact@v4
         with:
           name: Kubernaut-${{ matrix.sidecars }}
-          path: dist/Kubernaut-*-linux-*.tar.gz
+          path: |
+            dist/Kubernaut-*-linux-*.tar.gz*
+            dist/kubernaut_*.deb
 
   # Built on a Windows runner and never run by a person yet; see the README.
+  # The swap that updates it is run on a Windows runner by the tests in CI.
   windows:
     needs: draft
     permissions:
@@ -158,18 +177,39 @@ jobs:
         shell: bash
         run: scripts/fetch-sidecars.sh windows-amd64 sidecars
 
-      - name: Build the zip
+      # Inno Setup builds the setup program. It is not on every runner image.
+      - name: Install Inno Setup
         shell: pwsh
-        run: scripts/bundle-windows.ps1 -Sidecars sidecars
+        run: choco install innosetup --yes --no-progress
+
+      - name: Build the zip and the setup program
+        shell: pwsh
+        run: scripts/bundle-windows.ps1 -Sidecars sidecars -Installer
+
+      # The in-app updater downloads the zip and installs it only if this
+      # signature verifies. The setup program is not signed: a person runs it.
+      - name: Sign the zip
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+        run: |
+          if [ -z "${UPDATE_SIGNING_KEY}" ]; then
+            echo "::warning::UPDATE_SIGNING_KEY is not set; the release will not be installable by the in-app updater"
+          else
+            cargo run --release -q -p k8s-app --example update_tool -- sign dist/Kubernaut-*-windows-*.zip
+          fi
 
       - name: Attach to the draft release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${GITHUB_REF_NAME}" dist/Kubernaut-*-windows-*.zip --clobber
+        run: gh release upload "${GITHUB_REF_NAME}" dist/Kubernaut-*-windows-*.zip* dist/Kubernaut-*-windows-*-setup.exe --clobber
 
       - uses: actions/upload-artifact@v4
         with:
           name: Kubernaut-windows
-          path: dist/Kubernaut-*-windows-*.zip
+          path: |
+            dist/Kubernaut-*-windows-*.zip*
+            dist/Kubernaut-*-windows-*-setup.exe
