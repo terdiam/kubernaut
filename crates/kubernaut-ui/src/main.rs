@@ -14,6 +14,7 @@ mod charts;
 mod cluster_info;
 mod crashes;
 mod create;
+mod details;
 mod diagnose;
 mod diff;
 mod drain;

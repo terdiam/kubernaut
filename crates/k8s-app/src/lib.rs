@@ -9,6 +9,7 @@ mod boot;
 pub mod cluster_ops;
 pub mod clusters;
 pub mod crashes;
+pub mod details;
 pub mod forms;
 pub mod forward_ops;
 pub mod helm_ops;

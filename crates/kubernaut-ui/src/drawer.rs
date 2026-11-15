@@ -28,6 +28,7 @@ use k8s_ops::{
 use tokio::runtime::Handle;
 
 use crate::{
+    details::DetailsView,
     diagnose::{DiagnoseEvent, DiagnoseView, kind_of},
     log_buffer::log_target,
     logs::LogView,
@@ -77,6 +78,8 @@ pub enum DrawerEvent {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
+    /// What the object is made of and how it is doing, read for a person.
+    Details,
     Yaml,
     Events,
     Logs,
@@ -132,6 +135,7 @@ pub struct DrawerView {
     /// Created when the tab is first opened.
     node_edit: Option<Entity<NodeEditView>>,
     tab: Tab,
+    details: Entity<DetailsView>,
     yaml: Entity<YamlView>,
     events: Load<Vec<EventLine>>,
     events_scroll: UniformListScrollHandle,
@@ -148,6 +152,7 @@ impl DrawerView {
         cx: &mut Context<Self>,
     ) -> Self {
         let yaml = cx.new(|cx| YamlView::new(core, runtime, &target, window, cx));
+        let details = cx.new(|cx| DetailsView::new(core, runtime, &target, cx));
 
         let events_task = runtime.spawn(fetch_events(Arc::clone(core), target.clone()));
         cx.spawn(async move |this, cx| {
@@ -176,7 +181,8 @@ impl DrawerView {
             quota: None,
             node_edit: None,
             target,
-            tab: Tab::Yaml,
+            tab: Tab::Details,
+            details,
             yaml,
             events: Load::Loading,
             events_scroll: UniformListScrollHandle::new(),
@@ -205,7 +211,7 @@ impl DrawerView {
             Tab::Quota => self.ensure_quota(cx),
             Tab::Labels => self.ensure_node_edit(window, cx),
             // These change the cluster, so they wait for the person to say yes.
-            Tab::Yaml | Tab::Events | Tab::Debug | Tab::NodeShell => {}
+            Tab::Details | Tab::Yaml | Tab::Events | Tab::Debug | Tab::NodeShell => {}
         }
         cx.notify();
     }
@@ -641,6 +647,7 @@ impl Render for DrawerView {
             .child(
                 div().flex_none().px_3().py_2().child(
                     segmented_bar(cx.theme())
+                        .child(self.render_tab(Tab::Details, IconName::Info, "Details", cx))
                         .child(self.render_tab(Tab::Yaml, IconName::FileCode, "YAML", cx))
                         .child(self.render_tab(Tab::Events, IconName::Activity, "Events", cx))
                         .when(metric_target(&self.target).is_some(), |tabs| {
@@ -702,6 +709,7 @@ impl Render for DrawerView {
                     .flex()
                     .flex_col()
                     .child(match self.tab {
+                        Tab::Details => self.details.clone().into_any_element(),
                         Tab::Yaml => self.yaml.clone().into_any_element(),
                         Tab::Events => self.render_events(cx),
                         Tab::Logs => match &self.logs {
