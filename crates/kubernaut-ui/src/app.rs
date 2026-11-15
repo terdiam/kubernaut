@@ -3746,14 +3746,17 @@ fn visible_groups<'a>(
     order: SidebarOrder<'_>,
 ) -> Vec<VisibleGroup<'a>> {
     let mut sections: BTreeMap<Category, Vec<(usize, &ResourceDescriptor)>> = BTreeMap::new();
-    // A kind served at several versions (autoscaling v1 and v2) is one list.
+    // A kind served at several versions (autoscaling v1 and v2) is one list, and
+    // so is a built-in kind served by two groups (`Event` in core and in
+    // events.k8s.io): both show the same objects. CRDs of the same kind in
+    // different groups are different types and stay apart.
     let mut seen: HashSet<(&str, &str)> = HashSet::new();
     for resource in discovery
         .groups
         .iter()
         .flat_map(|group| &group.resources)
         .filter(|r| r.watchable)
-        .filter(|r| seen.insert((&r.group, &r.kind)))
+        .filter(|r| seen.insert((if r.is_crd { &r.group } else { "" }, &r.kind)))
         .filter(|r| {
             needle.is_empty()
                 || r.kind.to_lowercase().contains(needle)
@@ -3940,6 +3943,40 @@ mod tests {
             "crdMetadataAvailable": true,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn a_built_in_kind_served_by_two_groups_is_listed_once() {
+        let resource = |group: &str, is_crd: bool| {
+            serde_json::json!({
+                "key": format!("{group}/v1/events"), "group": group, "version": "v1",
+                "kind": "Event", "plural": "events", "apiVersion": "v1",
+                "namespaced": true, "verbs": [], "isCrd": is_crd,
+                "watchable": true, "editable": true, "deletable": true,
+            })
+        };
+        let cache: DiscoveryCache = serde_json::from_value(serde_json::json!({
+            "cluster": "test",
+            "groups": [
+                {"name": "", "preferredVersion": "v1", "resources": [resource("", false)]},
+                {"name": "events.k8s.io", "preferredVersion": "v1",
+                 "resources": [resource("events.k8s.io", false)]},
+                {"name": "a.example", "preferredVersion": "v1", "resources": [resource("a.example", true)]},
+                {"name": "b.example", "preferredVersion": "v1", "resources": [resource("b.example", true)]},
+            ],
+            "fetchedAt": "2026-01-01T00:00:00Z",
+            "crdMetadataAvailable": true,
+        }))
+        .unwrap();
+        let groups = visible_groups(&cache, "", &HashSet::new(), SidebarOrder::default());
+        let listed: Vec<(&str, bool)> = groups
+            .iter()
+            .flat_map(|g| &g.resources)
+            .map(|r| (&*r.group, r.is_crd))
+            .collect();
+        assert_eq!(listed.iter().filter(|(_, crd)| !crd).count(), 1);
+        assert_eq!(listed[0].0, "", "the core one is kept");
+        assert_eq!(listed.iter().filter(|(_, crd)| *crd).count(), 2);
     }
 
     #[test]
