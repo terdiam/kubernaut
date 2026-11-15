@@ -101,7 +101,10 @@ pub fn is_workload(resource: &str) -> bool {
 }
 
 /// The menu as groups; the caller draws a separator between groups.
-pub fn groups(resource: &str, pinned: bool) -> Vec<Vec<RowAction>> {
+///
+/// `suspended` is a CronJob's state when it is known: only the action that would
+/// change something is offered. Unknown offers both.
+pub fn groups(resource: &str, pinned: bool, suspended: Option<bool>) -> Vec<Vec<RowAction>> {
     let is_pod = resource == "core/v1/pods";
     let is_workload = WORKLOADS.contains(&resource);
     let is_node = resource == "core/v1/nodes";
@@ -125,7 +128,13 @@ pub fn groups(resource: &str, pinned: bool) -> Vec<Vec<RowAction>> {
         change.push(RowAction::Restart);
     }
     if resource == CRONJOBS {
-        change.extend([RowAction::Trigger, RowAction::Suspend, RowAction::Resume]);
+        change.push(RowAction::Trigger);
+        if suspended != Some(true) {
+            change.push(RowAction::Suspend);
+        }
+        if suspended != Some(false) {
+            change.push(RowAction::Resume);
+        }
     }
     if is_node {
         change.push(RowAction::Cordon);
@@ -158,11 +167,12 @@ pub fn build_menu(
     resource: &str,
     include_open: bool,
     pinned: bool,
+    suspended: Option<bool>,
     pick: impl Fn(RowAction, &mut Window, &mut App) + Clone + 'static,
 ) -> PopupMenu {
     let mut menu = menu;
     let mut first = true;
-    for group in groups(resource, pinned) {
+    for group in groups(resource, pinned, suspended) {
         let group: Vec<RowAction> = group
             .into_iter()
             .filter(|action| include_open || *action != RowAction::Open)
@@ -191,7 +201,10 @@ mod tests {
     use super::{RowAction, groups};
 
     fn flat(resource: &str) -> Vec<RowAction> {
-        groups(resource, false).into_iter().flatten().collect()
+        groups(resource, false, None)
+            .into_iter()
+            .flatten()
+            .collect()
     }
 
     #[test]
@@ -219,7 +232,7 @@ mod tests {
     #[test]
     fn a_pinned_object_offers_unpin_instead_of_pin() {
         let flat_of = |pinned| -> Vec<RowAction> {
-            groups("core/v1/pods", pinned)
+            groups("core/v1/pods", pinned, None)
                 .into_iter()
                 .flatten()
                 .collect()
@@ -269,6 +282,26 @@ mod tests {
             assert!(cronjob.contains(&action));
         }
         assert!(!flat("batch/v1/jobs").contains(&RowAction::Trigger));
+    }
+
+    #[test]
+    fn a_cronjob_offers_only_the_change_that_would_do_something() {
+        let of = |suspended| -> Vec<RowAction> {
+            groups("batch/v1/cronjobs", false, suspended)
+                .into_iter()
+                .flatten()
+                .collect()
+        };
+        assert!(of(Some(false)).contains(&RowAction::Suspend));
+        assert!(!of(Some(false)).contains(&RowAction::Resume));
+        assert!(of(Some(true)).contains(&RowAction::Resume));
+        assert!(!of(Some(true)).contains(&RowAction::Suspend));
+        let unknown = of(None);
+        assert!(unknown.contains(&RowAction::Suspend) && unknown.contains(&RowAction::Resume));
+        assert!(
+            of(Some(true)).contains(&RowAction::Trigger),
+            "run now stays"
+        );
     }
 
     #[test]

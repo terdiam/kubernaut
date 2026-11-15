@@ -235,6 +235,12 @@ impl ResourceDelegate {
         Some((row.name.clone(), namespace))
     }
 
+    /// What a row shows under the column of that name, when the watch has one.
+    fn cell_of(&self, view_ix: usize, column: &str) -> Option<SharedString> {
+        let at = self.columns.iter().position(|spec| spec.name == column)?;
+        self.store.row(view_ix)?.cells.get(at).cloned()
+    }
+
     /// The rows in view, in order.
     fn visible(&self) -> impl Iterator<Item = &StoredRow> + '_ {
         (0..self.store.len()).filter_map(|view_ix| self.store.row(view_ix))
@@ -370,11 +376,19 @@ impl TableDelegate for ResourceDelegate {
 
         let owner = self.context.owner.clone();
         let pinned = self.context.core.preferences().is_pinned(&target.pin());
+        let suspended = self
+            .cell_of(row_ix, "Suspend")
+            .and_then(|cell| match &*cell {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            });
         row_actions::build_menu(
             menu,
             &self.context.resource,
             true,
             pinned,
+            suspended,
             move |action, window, cx| {
                 owner
                     .update(cx, |app, cx| {

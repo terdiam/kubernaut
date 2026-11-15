@@ -606,18 +606,20 @@ impl Render for DrawerView {
                         let owner = cx.entity().downgrade();
                         let resource = self.target.resource.clone();
                         let pinned = self.core.preferences().is_pinned(&self.target.pin());
+                        let details = self.details.clone();
                         Button::new("drawer-actions")
                             .ghost()
                             .compact()
                             .icon(IconName::Ellipsis)
                             .tooltip("Actions")
-                            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, _| {
+                            .dropdown_menu_with_anchor(Anchor::TopRight, move |menu, _, cx| {
                                 let owner = owner.clone();
                                 row_actions::build_menu(
                                     menu,
                                     &resource,
                                     false,
                                     pinned,
+                                    details.read(cx).suspended(),
                                     move |action, _, cx| {
                                         owner
                                             .update(cx, |_, cx| cx.emit(DrawerEvent::Row(action)))

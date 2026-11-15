@@ -1,7 +1,10 @@
 //! The Details tab: an object's identity, make-up, owners and conditions,
 //! read from the object itself by `k8s_app::details`.
 
-use std::sync::Arc;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use gpui_kit::{
     base::StyledExt,
@@ -27,8 +30,15 @@ enum State {
     Failed(SharedString),
 }
 
+/// How often an open Details tab reads the object again, so replicas, restarts
+/// and conditions follow the cluster instead of freezing at the first read.
+const REFRESH: Duration = Duration::from_secs(4);
+
 pub struct DetailsView {
     state: State,
+    /// When this was last drawn. A tab nobody is looking at is not drawn, and
+    /// stops reading: with eight tabs open, only the one in view asks.
+    drawn: Instant,
 }
 
 impl DetailsView {
@@ -38,23 +48,57 @@ impl DetailsView {
         target: &Target,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (core, target) = (Arc::clone(core), target.clone());
-        let task = runtime.spawn(async move { fetch(&core, &target).await });
+        let (core, runtime, target) = (Arc::clone(core), runtime.clone(), target.clone());
         cx.spawn(async move |this, cx| {
-            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
-            this.update(cx, |this, cx| {
-                this.state = match result {
-                    Ok(details) => State::Ready(Box::new(details)),
-                    Err(reason) => State::Failed(reason.into()),
-                };
-                cx.notify();
-            })
-            .ok();
+            loop {
+                let (core, target) = (Arc::clone(&core), target.clone());
+                let task = runtime.spawn(async move { fetch(&core, &target).await });
+                let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+                if this.update(cx, |this, cx| this.apply(result, cx)).is_err() {
+                    return;
+                }
+                // Wait until the tab is on screen again before the next read.
+                loop {
+                    cx.background_executor().timer(REFRESH).await;
+                    match this.update(cx, |this, _| this.drawn.elapsed() < REFRESH * 2) {
+                        Ok(true) => break,
+                        Ok(false) => {}
+                        Err(_) => return,
+                    }
+                }
+            }
         })
         .detach();
         Self {
             state: State::Loading,
+            drawn: Instant::now(),
         }
+    }
+
+    /// Take a read. A later failure keeps the last good reading rather than
+    /// replacing what was shown with an error, and an unchanged one does not
+    /// redraw.
+    fn apply(&mut self, result: Result<Details, String>, cx: &mut Context<Self>) {
+        match (result, &self.state) {
+            (Ok(new), State::Ready(old)) if **old == new => return,
+            (Ok(new), _) => self.state = State::Ready(Box::new(new)),
+            (Err(_), State::Ready(_)) => return,
+            (Err(reason), _) => self.state = State::Failed(reason.into()),
+        }
+        cx.notify();
+    }
+
+    /// Whether this is a suspended CronJob, when it is a CronJob that has been
+    /// read. Used to offer Suspend or Resume, not both.
+    pub fn suspended(&self) -> Option<bool> {
+        let State::Ready(details) = &self.state else {
+            return None;
+        };
+        details
+            .summary
+            .iter()
+            .find(|(label, _)| label == "Suspended")
+            .map(|(_, value)| value == "true")
     }
 }
 
@@ -105,6 +149,7 @@ fn row(label: impl Into<SharedString>, value: impl Into<SharedString>, muted: Hs
 
 impl Render for DetailsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.drawn = Instant::now();
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let details = match &self.state {
@@ -149,7 +194,7 @@ impl Render for DetailsView {
                                     .items_center()
                                     .text_sm()
                                     .child(
-                                        div().w(px(130.)).flex_none().child(condition.kind.clone()),
+                                        div().w(px(200.)).flex_none().child(condition.kind.clone()),
                                     )
                                     .child(pill(condition.status.clone(), colour))
                                     .when(!condition.reason.is_empty(), |line| {
@@ -161,7 +206,7 @@ impl Render for DetailsView {
                             .when(!condition.message.is_empty(), |item| {
                                 item.child(
                                     div()
-                                        .pl(px(138.))
+                                        .pl(px(208.))
                                         .text_xs()
                                         .text_color(muted)
                                         .child(condition.message.clone()),
@@ -188,12 +233,17 @@ impl Render for DetailsView {
                     );
         }
         if !details.annotations.is_empty() {
-            body = body.child(section("Annotations", muted)).children(
-                details
-                    .annotations
-                    .iter()
-                    .map(|(key, value)| row(key.clone(), value.clone(), muted)),
-            );
+            // Key over value: a key such as `deployment.kubernetes.io/revision`
+            // does not fit the label column, and a value can run long.
+            body =
+                body.child(section("Annotations", muted))
+                    .children(details.annotations.iter().map(|(key, value)| {
+                        v_flex()
+                            .py_0p5()
+                            .text_sm()
+                            .child(div().text_color(muted).child(key.clone()))
+                            .child(div().pl_2().child(value.clone()))
+                    }));
         }
         div()
             .id("details")
