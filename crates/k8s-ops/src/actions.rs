@@ -11,7 +11,7 @@ use k8s_core::cluster::ClusterHandle;
 use k8s_openapi::{api::core::v1::Pod, jiff::Timestamp};
 use kube::{
     Api, ResourceExt,
-    api::{DeleteParams, DynamicObject, EvictParams, ListParams, Patch, PatchParams},
+    api::{DeleteParams, DynamicObject, EvictParams, ListParams, Patch, PatchParams, PostParams},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -70,6 +70,88 @@ pub async fn current_scale(cluster: &Arc<ClusterHandle>, target: &TargetRef) -> 
     let api = api_for(cluster, target).await?;
     let scale = api.get_scale(&target.name).await?;
     Ok(scale.spec.and_then(|s| s.replicas).unwrap_or(0))
+}
+
+/// Pause or resume a CronJob's schedule. A running Job is left alone.
+pub async fn set_suspended(
+    cluster: &Arc<ClusterHandle>,
+    target: &TargetRef,
+    suspended: bool,
+) -> Result<()> {
+    let api = api_for(cluster, target).await?;
+    let patch = json!({ "spec": { "suspend": suspended } });
+    api.patch(&target.name, &PatchParams::default(), &Patch::Merge(&patch))
+        .await?;
+    Ok(())
+}
+
+/// Run a CronJob now: create a Job from its template, as
+/// `kubectl create job --from=cronjob/NAME` does. Returns the Job's name.
+pub async fn trigger_cronjob(cluster: &Arc<ClusterHandle>, target: &TargetRef) -> Result<String> {
+    let api = api_for(cluster, target).await?;
+    let cronjob = api.get(&target.name).await?;
+    let namespace = target.namespace.as_deref().ok_or_else(|| {
+        OpsError::other("a CronJob lives in a namespace; none was given for this one")
+    })?;
+    let job = job_from_cronjob(
+        &serde_json::to_value(&cronjob).map_err(|err| OpsError::other(err.to_string()))?,
+        namespace,
+        &crate::exec::short_suffix(),
+    )?;
+    let jobs: Api<k8s_openapi::api::batch::v1::Job> =
+        Api::namespaced(cluster.client.clone(), namespace);
+    let job = serde_json::from_value(job).map_err(|err| OpsError::other(err.to_string()))?;
+    let created = jobs.create(&PostParams::default(), &job).await?;
+    Ok(created.name_any())
+}
+
+/// The Job a CronJob would start, owned by it so that deleting the CronJob
+/// cleans the Job up and `kubectl` shows where it came from.
+fn job_from_cronjob(
+    cronjob: &serde_json::Value,
+    namespace: &str,
+    suffix: &str,
+) -> Result<serde_json::Value> {
+    let name = cronjob
+        .pointer("/metadata/name")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| OpsError::other("the CronJob has no name"))?;
+    let uid = cronjob
+        .pointer("/metadata/uid")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| OpsError::other("the CronJob has no uid"))?;
+    let spec = cronjob
+        .pointer("/spec/jobTemplate/spec")
+        .ok_or_else(|| OpsError::other("the CronJob has no job template"))?;
+    let template = |field: &str| {
+        cronjob
+            .pointer(&format!("/spec/jobTemplate/metadata/{field}"))
+            .cloned()
+            .unwrap_or_else(|| json!({}))
+    };
+    let mut annotations = template("annotations");
+    if let Some(map) = annotations.as_object_mut() {
+        map.insert("cronjob.kubernetes.io/instantiate".into(), json!("manual"));
+    }
+    Ok(json!({
+        "apiVersion": "batch/v1",
+        "kind": "Job",
+        "metadata": {
+            "name": format!("{name}-manual-{suffix}"),
+            "namespace": namespace,
+            "labels": template("labels"),
+            "annotations": annotations,
+            "ownerReferences": [{
+                "apiVersion": "batch/v1",
+                "kind": "CronJob",
+                "name": name,
+                "uid": uid,
+                "controller": true,
+                "blockOwnerDeletion": true,
+            }],
+        },
+        "spec": spec,
+    }))
 }
 
 /// Roll the pods of a workload by touching the pod template annotation.
@@ -310,6 +392,36 @@ pub async fn evict_pod(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_manual_job_copies_the_template_and_is_owned_by_the_cronjob() {
+        let cronjob = json!({
+            "metadata": {"name": "backup", "uid": "u-1"},
+            "spec": {"jobTemplate": {
+                "metadata": {"labels": {"app": "backup"}, "annotations": {"a": "b"}},
+                "spec": {"template": {"spec": {"restartPolicy": "Never"}}},
+            }},
+        });
+        let job = job_from_cronjob(&cronjob, "ops", "x7k2q").unwrap();
+        assert_eq!(job["metadata"]["name"], "backup-manual-x7k2q");
+        assert_eq!(job["metadata"]["namespace"], "ops");
+        assert_eq!(job["metadata"]["labels"]["app"], "backup");
+        assert_eq!(job["metadata"]["annotations"]["a"], "b");
+        assert_eq!(
+            job["metadata"]["annotations"]["cronjob.kubernetes.io/instantiate"],
+            "manual"
+        );
+        assert_eq!(job["metadata"]["ownerReferences"][0]["uid"], "u-1");
+        assert_eq!(job["spec"]["template"]["spec"]["restartPolicy"], "Never");
+    }
+
+    #[test]
+    fn a_cronjob_without_a_template_or_uid_is_refused() {
+        let no_template = json!({"metadata": {"name": "a", "uid": "u"}, "spec": {}});
+        assert!(job_from_cronjob(&no_template, "ns", "s").is_err());
+        let no_uid = json!({"metadata": {"name": "a"}, "spec": {"jobTemplate": {"spec": {}}}});
+        assert!(job_from_cronjob(&no_uid, "ns", "s").is_err());
+    }
 
     #[test]
     fn confirmation_must_match_exactly() {

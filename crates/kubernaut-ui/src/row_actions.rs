@@ -22,6 +22,10 @@ pub enum RowAction {
     CopyName,
     CopyYaml,
     Restart,
+    Scale,
+    Trigger,
+    Suspend,
+    Resume,
     Cordon,
     Uncordon,
     Drain,
@@ -40,6 +44,10 @@ impl RowAction {
             Self::CopyName => "Copy name",
             Self::CopyYaml => "Copy YAML",
             Self::Restart => "Restart",
+            Self::Scale => "Scale…",
+            Self::Trigger => "Run now",
+            Self::Suspend => "Suspend",
+            Self::Resume => "Resume",
             Self::Cordon => "Cordon",
             Self::Uncordon => "Uncordon",
             Self::Drain => "Drain…",
@@ -57,6 +65,10 @@ impl RowAction {
             Self::Unpin => IconName::PinOff,
             Self::CopyName | Self::CopyYaml => IconName::Copy,
             Self::Restart => IconName::RotateCw,
+            Self::Scale => IconName::ChevronsUpDown,
+            Self::Trigger => IconName::Play,
+            Self::Suspend => IconName::Pause,
+            Self::Resume => IconName::Play,
             Self::Cordon => IconName::Pause,
             Self::Uncordon => IconName::Play,
             Self::Drain => IconName::Download,
@@ -71,6 +83,16 @@ const WORKLOADS: [&str; 3] = [
     "apps/v1/statefulsets",
     "apps/v1/daemonsets",
 ];
+
+/// Kinds with a scale subresource worth offering. A DaemonSet has none: it runs
+/// one pod per node.
+const SCALABLE: [&str; 3] = [
+    "apps/v1/deployments",
+    "apps/v1/statefulsets",
+    "apps/v1/replicasets",
+];
+
+const CRONJOBS: &str = "batch/v1/cronjobs";
 
 /// Whether a kind is a workload that can be rolled, so a set of them can be
 /// restarted together.
@@ -96,8 +118,14 @@ pub fn groups(resource: &str, pinned: bool) -> Vec<Vec<RowAction>> {
     }
 
     let mut change = Vec::new();
+    if SCALABLE.contains(&resource) {
+        change.push(RowAction::Scale);
+    }
     if is_workload {
         change.push(RowAction::Restart);
+    }
+    if resource == CRONJOBS {
+        change.extend([RowAction::Trigger, RowAction::Suspend, RowAction::Resume]);
     }
     if is_node {
         change.push(RowAction::Cordon);
@@ -218,6 +246,29 @@ mod tests {
         assert!(deployment.contains(&RowAction::Logs));
         assert!(deployment.contains(&RowAction::Restart));
         assert!(!deployment.contains(&RowAction::Shell));
+    }
+
+    #[test]
+    fn only_kinds_with_a_replica_count_can_be_scaled() {
+        for resource in [
+            "apps/v1/deployments",
+            "apps/v1/statefulsets",
+            "apps/v1/replicasets",
+        ] {
+            assert!(flat(resource).contains(&RowAction::Scale), "{resource}");
+        }
+        for resource in ["apps/v1/daemonsets", "core/v1/pods", "batch/v1/cronjobs"] {
+            assert!(!flat(resource).contains(&RowAction::Scale), "{resource}");
+        }
+    }
+
+    #[test]
+    fn a_cronjob_can_run_now_and_be_paused_or_resumed() {
+        let cronjob = flat("batch/v1/cronjobs");
+        for action in [RowAction::Trigger, RowAction::Suspend, RowAction::Resume] {
+            assert!(cronjob.contains(&action));
+        }
+        assert!(!flat("batch/v1/jobs").contains(&RowAction::Trigger));
     }
 
     #[test]

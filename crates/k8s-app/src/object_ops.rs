@@ -47,6 +47,80 @@ pub async fn restart(core: &AppCore, cluster: &str, target: TargetRef) -> Result
     result.map_err(|e| e.to_string())
 }
 
+/// Replicas as the scale subresource reports them, for the Scale dialog.
+/// Reading only, so a protected cluster may be asked.
+pub async fn current_scale(
+    core: &AppCore,
+    cluster: &str,
+    target: TargetRef,
+) -> Result<i32, String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    actions::current_scale(&handle, &target)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Set a workload's replica count through its scale subresource.
+pub async fn scale(
+    core: &AppCore,
+    cluster: &str,
+    target: TargetRef,
+    replicas: i32,
+) -> Result<(), String> {
+    core.ensure_writable(cluster)?;
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let result = actions::scale(&handle, &target, replicas).await;
+    core.record_audit(
+        cluster,
+        &format!("scale to {replicas}"),
+        &label(&target),
+        &result,
+    );
+    result.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// Read the replica count a person typed. Whole, non-negative, and no more
+/// than the API's `int32`; anything else is said in words rather than sent.
+pub fn parse_replicas(text: &str) -> Result<i32, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err("Enter a number of replicas.".into());
+    }
+    match text.parse::<i64>() {
+        Ok(value) if value < 0 => Err("Replicas cannot be negative.".into()),
+        Ok(value) => i32::try_from(value).map_err(|_| "That is too many replicas.".to_string()),
+        Err(_) => Err(format!("`{text}` is not a whole number.")),
+    }
+}
+
+/// Start a CronJob's Job now. Returns the new Job's name.
+pub async fn trigger_cronjob(
+    core: &AppCore,
+    cluster: &str,
+    target: TargetRef,
+) -> Result<String, String> {
+    core.ensure_writable(cluster)?;
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let result = actions::trigger_cronjob(&handle, &target).await;
+    core.record_audit(cluster, "trigger", &label(&target), &result);
+    result.map_err(|e| e.to_string())
+}
+
+/// Pause or resume a CronJob's schedule.
+pub async fn set_suspended(
+    core: &AppCore,
+    cluster: &str,
+    target: TargetRef,
+    suspended: bool,
+) -> Result<(), String> {
+    core.ensure_writable(cluster)?;
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let result = actions::set_suspended(&handle, &target, suspended).await;
+    let action = if suspended { "suspend" } else { "resume" };
+    core.record_audit(cluster, action, &label(&target), &result);
+    result.map_err(|e| e.to_string())
+}
+
 /// Mark a node (un)schedulable.
 pub async fn set_cordoned(
     core: &AppCore,
@@ -270,7 +344,7 @@ pub async fn export_archive(
 
 #[cfg(test)]
 mod tests {
-    use super::{BulkOutcome, bulk_label, bulk_result, failed};
+    use super::{BulkOutcome, bulk_label, bulk_result, failed, parse_replicas};
     use k8s_ops::actions::TargetRef;
 
     fn outcome(ok: bool) -> BulkOutcome {
@@ -281,6 +355,19 @@ mod tests {
             ok,
             error: (!ok).then(|| "forbidden".to_string()),
         }
+    }
+
+    #[test]
+    fn replicas_are_whole_non_negative_and_fit_an_int32() {
+        assert_eq!(parse_replicas(" 3 "), Ok(3));
+        assert_eq!(parse_replicas("0"), Ok(0));
+        for bad in ["", "  ", "-1", "2.5", "three", "2147483648"] {
+            assert!(parse_replicas(bad).is_err(), "{bad:?}");
+        }
+        assert!(
+            parse_replicas("-1").unwrap_err().contains("negative"),
+            "says why"
+        );
     }
 
     #[test]

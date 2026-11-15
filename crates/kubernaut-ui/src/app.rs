@@ -285,6 +285,10 @@ enum Op {
     Restart,
     /// `true` to cordon, `false` to uncordon.
     Cordon(bool),
+    /// Start a CronJob's Job now.
+    Trigger,
+    /// `true` to suspend a CronJob, `false` to resume it.
+    Suspend(bool),
 }
 
 impl Op {
@@ -295,6 +299,9 @@ impl Op {
             Self::Restart => format!("Restarting {}", target.name),
             Self::Cordon(true) => format!("Cordoned {}", target.name),
             Self::Cordon(false) => format!("Uncordoned {}", target.name),
+            Self::Trigger => format!("Started a Job from {}", target.name),
+            Self::Suspend(true) => format!("Suspended {}", target.name),
+            Self::Suspend(false) => format!("Resumed {}", target.name),
         }
     }
 
@@ -305,6 +312,9 @@ impl Op {
             Self::Restart => format!("Could not restart {}", target.name),
             Self::Cordon(true) => format!("Could not cordon {}", target.name),
             Self::Cordon(false) => format!("Could not uncordon {}", target.name),
+            Self::Trigger => format!("Could not run {}", target.name),
+            Self::Suspend(true) => format!("Could not suspend {}", target.name),
+            Self::Suspend(false) => format!("Could not resume {}", target.name),
         }
     }
 }
@@ -1857,6 +1867,17 @@ impl AppView {
             RowAction::Cordon => self.run_op(Op::Cordon(true), target, window, cx),
             RowAction::Uncordon => self.run_op(Op::Cordon(false), target, window, cx),
             RowAction::Drain => self.drain_node(target, window, cx),
+            RowAction::Scale => self.scale_workload(target, window, cx),
+            RowAction::Trigger => self.confirm_op(
+                Op::Trigger,
+                target,
+                "Run",
+                "A Job is created now from its template, besides the ones the schedule makes.",
+                window,
+                cx,
+            ),
+            RowAction::Suspend => self.run_op(Op::Suspend(true), target, window, cx),
+            RowAction::Resume => self.run_op(Op::Suspend(false), target, window, cx),
             RowAction::Restart => self.confirm_op(
                 Op::Restart,
                 target,
@@ -1874,6 +1895,109 @@ impl AppView {
                 cx,
             ),
         }
+    }
+
+    /// Scale a workload: read its replica count, ask for a new one, set it.
+    fn scale_workload(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        if let Err(reason) = self.core.ensure_writable(&target.cluster) {
+            toast_error(window, cx, format!("Cannot scale {}", target.name), reason);
+            return;
+        }
+        let core = Arc::clone(&self.core);
+        let (cluster, reference) = (target.cluster.to_string(), target_ref(&target));
+        let task = self
+            .runtime
+            .spawn(async move { object_ops::current_scale(&core, &cluster, reference).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update_in(cx, |this, window, cx| match result {
+                Ok(current) => this.ask_replicas(target, current, window, cx),
+                Err(reason) => toast_error(
+                    window,
+                    cx,
+                    format!("Cannot read the scale of {}", target.name),
+                    reason,
+                ),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn ask_replicas(
+        &mut self,
+        target: Target,
+        current: i32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = cx.new(|cx| {
+            let mut state = InputState::new(window, cx).placeholder("Replicas");
+            state.set_value(current.to_string(), window, cx);
+            state
+        });
+        let owner = cx.entity().downgrade();
+        let title: SharedString = format!("Scale {} {}", target.kind, target.name).into();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let (owner, target, input) = (owner.clone(), target.clone(), input.clone());
+            dialog
+                .title(title.clone())
+                .description(
+                    v_flex()
+                        .gap_2()
+                        .child(format!("It has {current} replicas now."))
+                        .child(Input::new(&input)),
+                )
+                .ok_text("Scale")
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    let text = input.read(cx).value().to_string();
+                    match object_ops::parse_replicas(&text) {
+                        Ok(replicas) => {
+                            owner
+                                .update(cx, |app, cx| {
+                                    app.apply_scale(target.clone(), replicas, window, cx)
+                                })
+                                .ok();
+                            true
+                        }
+                        Err(reason) => {
+                            toast_error(window, cx, "Not a valid replica count", reason);
+                            false
+                        }
+                    }
+                })
+        });
+    }
+
+    fn apply_scale(
+        &mut self,
+        target: Target,
+        replicas: i32,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let core = Arc::clone(&self.core);
+        let (cluster, reference) = (target.cluster.to_string(), target_ref(&target));
+        let task = self
+            .runtime
+            .spawn(async move { object_ops::scale(&core, &cluster, reference, replicas).await });
+        cx.spawn_in(window, async move |_, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            cx.update(|window, cx| match result {
+                Ok(()) => {
+                    toast_success(window, cx, format!("Scaled {} to {replicas}", target.name))
+                }
+                Err(reason) => toast_error(
+                    window,
+                    cx,
+                    format!("Could not scale {}", target.name),
+                    reason,
+                ),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Drain a node: look at what it would do, ask, then do it.
@@ -2397,6 +2521,12 @@ impl AppView {
                 Op::Restart => object_ops::restart(&core, &cluster, reference).await,
                 Op::Cordon(cordoned) => {
                     object_ops::set_cordoned(&core, &cluster, &reference.name, cordoned).await
+                }
+                Op::Trigger => object_ops::trigger_cronjob(&core, &cluster, reference)
+                    .await
+                    .map(|_| ()),
+                Op::Suspend(suspended) => {
+                    object_ops::set_suspended(&core, &cluster, reference, suspended).await
                 }
             }
         });

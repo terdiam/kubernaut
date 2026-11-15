@@ -1080,7 +1080,7 @@ fn default_login_shell() -> String {
 
 /// Short random suffix for generated object names. Not security-sensitive; it
 /// only has to avoid a collision between two open sessions.
-fn short_suffix() -> String {
+pub(crate) fn short_suffix() -> String {
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
     use rand::RngExt;
     let mut rng = rand::rng();
