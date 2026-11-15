@@ -404,11 +404,17 @@ struct OpenOverview {
     _events: Subscription,
 }
 
-/// The drawer for the selected row, and the subscription that closes it.
+/// A drawer tab: the object it shows, and the subscription that closes it.
 struct OpenDrawer {
     view: Entity<DrawerView>,
+    target: Target,
     _close: Subscription,
 }
+
+/// Objects kept open at once. Each holds its own streams, so the oldest
+/// background tab makes room for a new one instead of the count growing
+/// without limit.
+const MAX_DRAWERS: usize = 8;
 
 pub struct AppView {
     core: Arc<AppCore>,
@@ -434,7 +440,9 @@ pub struct AppView {
     list_scroll: UniformListScrollHandle,
     filter: Entity<InputState>,
     table: Option<OpenTable>,
-    drawer: Option<OpenDrawer>,
+    /// Open objects, as tabs beside the list. One is shown, `active_drawer`.
+    drawers: Vec<OpenDrawer>,
+    active_drawer: usize,
     /// The Helm releases view, shown instead of a resource table.
     helm: Option<Entity<HelmView>>,
     /// What the GitOps controllers are syncing.
@@ -599,7 +607,8 @@ impl AppView {
             list_scroll: UniformListScrollHandle::new(),
             filter,
             table: None,
-            drawer: None,
+            drawers: Vec::new(),
+            active_drawer: 0,
             helm: None,
             gitops: None,
             security: None,
@@ -638,7 +647,7 @@ impl AppView {
     fn clear_pages(&mut self) {
         self.selected = None;
         self.table = None;
-        self.drawer = None;
+        self.drawers.clear();
         self.helm = None;
         self.gitops = None;
         self.security = None;
@@ -1821,27 +1830,140 @@ impl AppView {
         self.show_drawer(target, window, cx);
     }
 
-    /// Open the detail drawer for an object, replacing any drawer already open.
+    /// Open an object in the drawer: its tab if it is already open, otherwise a
+    /// new one beside the others.
     fn show_drawer(&mut self, target: Target, window: &mut Window, cx: &mut Context<Self>) {
+        let existing = self
+            .drawers
+            .iter()
+            .position(|open| open.view.read(cx).is_for(&target));
+        if let Some(index) = existing {
+            self.active_drawer = index;
+            cx.notify();
+            return;
+        }
         let subject = target.clone();
-        let view = cx.new(|cx| DrawerView::new(&self.core, &self.runtime, target, window, cx));
+        let view =
+            cx.new(|cx| DrawerView::new(&self.core, &self.runtime, target.clone(), window, cx));
+        let id = view.entity_id();
         let close = cx.subscribe_in(
             &view,
             window,
             move |this, _, event: &DrawerEvent, window, cx| match event {
-                DrawerEvent::Close => {
-                    this.drawer = None;
-                    cx.notify();
-                }
+                DrawerEvent::Close => this.close_drawer(id, cx),
                 DrawerEvent::Row(action) => this.row_action(*action, subject.clone(), window, cx),
                 DrawerEvent::Open(target) => this.show_drawer(target.clone(), window, cx),
             },
         );
-        self.drawer = Some(OpenDrawer {
+        if self.drawers.len() >= MAX_DRAWERS {
+            // The oldest tab that is not the one being read.
+            let drop = tab_to_evict(self.active_drawer);
+            self.drawers.remove(drop);
+            self.active_drawer =
+                active_after_close(self.active_drawer, drop, self.drawers.len() + 1);
+        }
+        self.drawers.push(OpenDrawer {
             view,
+            target,
             _close: close,
         });
+        self.active_drawer = self.drawers.len() - 1;
         cx.notify();
+    }
+
+    /// Close one drawer tab and show a neighbour.
+    fn close_drawer(&mut self, id: EntityId, cx: &mut Context<Self>) {
+        let Some(index) = self
+            .drawers
+            .iter()
+            .position(|open| open.view.entity_id() == id)
+        else {
+            return;
+        };
+        let before = self.drawers.len();
+        self.drawers.remove(index);
+        self.active_drawer = active_after_close(self.active_drawer, index, before);
+        cx.notify();
+    }
+
+    /// The drawer column: its tabs when there is more than one, and the open
+    /// object under them.
+    fn render_drawer(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let active = self.drawers.get(self.active_drawer)?;
+        let theme = cx.theme();
+        let (background, border, muted, selected, hover) = (
+            theme.background,
+            theme.border,
+            theme.muted_foreground,
+            theme.secondary,
+            theme.secondary_hover,
+        );
+        let strip = (self.drawers.len() > 1).then(|| {
+            h_flex()
+                .id("drawer-tabs")
+                .flex_none()
+                .h(px(32.))
+                .px_1()
+                .gap_1()
+                .items_center()
+                .overflow_x_scroll()
+                .border_b_1()
+                .border_color(border)
+                .children(self.drawers.iter().enumerate().map(|(index, open)| {
+                    let id = open.view.entity_id();
+                    let is_active = index == self.active_drawer;
+                    let name: SharedString = open.target.name.clone();
+                    h_flex()
+                        .id(("drawer-tab", index))
+                        .flex_none()
+                        .max_w(px(170.))
+                        .h(px(24.))
+                        .pl_2()
+                        .pr_1()
+                        .gap_1()
+                        .items_center()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .text_xs()
+                        .when(is_active, |tab| tab.bg(selected).font_semibold())
+                        .when(!is_active, |tab| {
+                            tab.text_color(muted).hover(|t| t.bg(hover))
+                        })
+                        .child(div().min_w_0().truncate().child(name))
+                        .child(
+                            div()
+                                .id(("drawer-tab-close", index))
+                                .size(px(16.))
+                                .flex_none()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .rounded_sm()
+                                .hover(|close| close.bg(border))
+                                .child(Icon::new(IconName::Close).size_3())
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    cx.stop_propagation();
+                                    this.close_drawer(id, cx);
+                                })),
+                        )
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.active_drawer = index;
+                            cx.notify();
+                        }))
+                }))
+        });
+        Some(
+            v_flex()
+                .w(px(560.))
+                .h_full()
+                .flex_none()
+                .bg(background)
+                .border_l_1()
+                .border_color(border)
+                .children(strip)
+                .child(active.view.clone())
+                .into_any_element(),
+        )
     }
 
     /// Do what a row's context menu entry asks.
@@ -2243,7 +2365,7 @@ impl AppView {
         cx: &mut Context<Self>,
     ) {
         self.show_drawer(target, window, cx);
-        if let Some(drawer) = &self.drawer {
+        if let Some(drawer) = self.drawers.get(self.active_drawer) {
             drawer
                 .view
                 .update(cx, |drawer, cx| drawer.show(tab, window, cx));
@@ -2552,14 +2674,16 @@ impl AppView {
             Ok(()) => {
                 toast_success(window, cx, op.done(target));
                 // The row is gone; so is anything the drawer was showing of it.
-                if op == Op::Delete
-                    && self
-                        .drawer
-                        .as_ref()
-                        .is_some_and(|drawer| drawer.view.read(cx).is_for(target))
-                {
-                    self.drawer = None;
-                    cx.notify();
+                if op == Op::Delete {
+                    let gone: Vec<EntityId> = self
+                        .drawers
+                        .iter()
+                        .filter(|open| open.view.read(cx).is_for(target))
+                        .map(|open| open.view.entity_id())
+                        .collect();
+                    for id in gone {
+                        self.close_drawer(id, cx);
+                    }
                 }
             }
             Err(reason) => toast_error(window, cx, op.failed(target), reason),
@@ -3522,9 +3646,7 @@ impl AppView {
                     .min_h_0()
                     .min_w_0()
                     .child(topology.view.clone())
-                    .when_some(self.drawer.as_ref(), |row, drawer| {
-                        row.child(drawer.view.clone())
-                    }),
+                    .when_some(self.render_drawer(cx), |row, drawer| row.child(drawer)),
             );
         }
         if let Some(usage) = &self.usage {
@@ -3536,9 +3658,7 @@ impl AppView {
                     .min_h_0()
                     .min_w_0()
                     .child(usage.view.clone())
-                    .when_some(self.drawer.as_ref(), |row, drawer| {
-                        row.child(drawer.view.clone())
-                    }),
+                    .when_some(self.render_drawer(cx), |row, drawer| row.child(drawer)),
             );
         }
         if let Some(shell) = &self.shell {
@@ -3604,9 +3724,7 @@ impl AppView {
                     .min_h_0()
                     .min_w_0()
                     .child(gitops.view.clone())
-                    .when_some(self.drawer.as_ref(), |row, drawer| {
-                        row.child(drawer.view.clone())
-                    }),
+                    .when_some(self.render_drawer(cx), |row, drawer| row.child(drawer)),
             );
         }
         if let Some(create) = &self.create {
@@ -3623,9 +3741,7 @@ impl AppView {
                     .min_h_0()
                     .min_w_0()
                     .child(alerts.view.clone())
-                    .when_some(self.drawer.as_ref(), |row, drawer| {
-                        row.child(drawer.view.clone())
-                    }),
+                    .when_some(self.render_drawer(cx), |row, drawer| row.child(drawer)),
             );
         }
         if let Some(security) = &self.security {
@@ -3636,9 +3752,7 @@ impl AppView {
                     .min_h_0()
                     .min_w_0()
                     .child(security.view.clone())
-                    .when_some(self.drawer.as_ref(), |row, drawer| {
-                        row.child(drawer.view.clone())
-                    }),
+                    .when_some(self.render_drawer(cx), |row, drawer| row.child(drawer)),
             );
         }
         if let Some(overview) = &self.overview {
@@ -3668,9 +3782,7 @@ impl AppView {
                         .min_h_0()
                         .min_w_0()
                         .child(overview.view.clone())
-                        .when_some(self.drawer.as_ref(), |row, drawer| {
-                            row.child(drawer.view.clone())
-                        }),
+                        .when_some(self.render_drawer(cx), |row, drawer| row.child(drawer)),
                 );
         }
         match &self.table {
@@ -3683,9 +3795,7 @@ impl AppView {
                     .min_h_0()
                     .min_w_0()
                     .child(self.render_table(table, cx))
-                    .when_some(self.drawer.as_ref(), |row, drawer| {
-                        row.child(drawer.view.clone())
-                    }),
+                    .when_some(self.render_drawer(cx), |row, drawer| row.child(drawer)),
             ),
             None => main.child(
                 div()
@@ -3984,6 +4094,23 @@ fn section_resources(rows: &[SidebarRow], key: &str) -> Vec<String> {
         .collect()
 }
 
+/// The tab to show once tab `closed` is gone from `len_before` tabs: the same
+/// object as before when it was not the one closed, else its neighbour.
+fn active_after_close(active: usize, closed: usize, len_before: usize) -> usize {
+    let len_after = len_before.saturating_sub(1);
+    if closed < active {
+        active - 1
+    } else {
+        active.min(len_after.saturating_sub(1))
+    }
+}
+
+/// The tab to drop to make room for a new one: the oldest that is not the one
+/// being read.
+fn tab_to_evict(active: usize) -> usize {
+    usize::from(active == 0)
+}
+
 /// Two letters for a tile: the first letters of the first and last words, or
 /// the first two characters of a single word.
 fn initials(name: &str) -> String {
@@ -4019,8 +4146,8 @@ mod tests {
     // Explicit, not `super::*`: that would glob-import GPUI's `#[test]` macro
     // and shadow Rust's own.
     use super::{
-        SidebarOrder, SidebarRow, build_rows, build_tiles, initials, parse_colour, section_names,
-        section_resources, visible_groups,
+        SidebarOrder, SidebarRow, active_after_close, build_rows, build_tiles, initials,
+        parse_colour, section_names, section_resources, tab_to_evict, visible_groups,
     };
     use crate::categories::Category;
     use gpui_kit::SharedString;
@@ -4034,6 +4161,28 @@ mod tests {
         assert_eq!(initials("prod"), "PR");
         assert_eq!(initials("a"), "A");
         assert_eq!(initials("---"), "?");
+    }
+
+    #[test]
+    fn closing_a_tab_keeps_the_one_being_read_or_moves_to_its_neighbour() {
+        // [a b c d], reading c (2).
+        assert_eq!(active_after_close(2, 0, 4), 1, "left of it: it shifts down");
+        assert_eq!(active_after_close(2, 3, 4), 2, "right of it: unchanged");
+        assert_eq!(
+            active_after_close(2, 2, 4),
+            2,
+            "itself: the one that follows"
+        );
+        // The last tab closed while reading it: the one before.
+        assert_eq!(active_after_close(3, 3, 4), 2);
+        // The only tab.
+        assert_eq!(active_after_close(0, 0, 1), 0);
+    }
+
+    #[test]
+    fn making_room_never_drops_the_tab_being_read() {
+        assert_eq!(tab_to_evict(0), 1);
+        assert_eq!(tab_to_evict(3), 0);
     }
 
     #[test]

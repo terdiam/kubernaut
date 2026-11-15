@@ -555,8 +555,7 @@ impl DrawerView {
 impl Render for DrawerView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (background, border, muted, secondary, hover) = (
-            theme.background,
+        let (border, muted, secondary, hover) = (
             theme.border,
             theme.muted_foreground,
             theme.secondary,
@@ -576,13 +575,12 @@ impl Render for DrawerView {
             .child(kind)
             .children(self.target.namespace.clone());
 
+        // Width, background and the left edge belong to the column that holds
+        // this and the tab strip, so one tab and many look alike.
         v_flex()
-            .w(px(560.))
-            .h_full()
-            .flex_none()
-            .bg(background)
-            .border_l_1()
-            .border_color(border)
+            .w_full()
+            .flex_1()
+            .min_h_0()
             .child(
                 h_flex()
                     .h(px(52.))
