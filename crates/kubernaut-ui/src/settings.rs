@@ -42,6 +42,57 @@ fn namespace_edit(value: &str) -> Result<Option<String>, &'static str> {
     Ok(Some(value.to_string()))
 }
 
+/// A proxy as typed: blank clears it. Only the schemes the client can use, and
+/// a host after them, so a typo is said at once and not at the next connect.
+fn proxy_edit(value: &str) -> Result<Option<String>, &'static str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let Some((scheme, rest)) = value.split_once("://") else {
+        return Err("Write it as http://host:port.");
+    };
+    if !matches!(scheme, "http" | "https" | "socks5") {
+        return Err("Use http, https or socks5.");
+    }
+    if rest.is_empty() || value.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("Write it as http://host:port.");
+    }
+    Ok(Some(value.to_string()))
+}
+
+/// A user or group name for `Impersonate-*`. It travels in a header, so a
+/// control character is refused here rather than failing the connection.
+fn identity_ok(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 253 && !value.chars().any(char::is_control)
+}
+
+fn identity_edit(value: &str) -> Result<Option<String>, &'static str> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if !identity_ok(value) {
+        return Err("That is not a valid user name.");
+    }
+    Ok(Some(value.to_string()))
+}
+
+/// Groups as typed, comma separated: trimmed, without blanks or repeats, in the
+/// order given. `None` when there are none.
+fn groups_edit(value: &str) -> Result<Option<String>, &'static str> {
+    let mut groups: Vec<&str> = Vec::new();
+    for group in value.split(',').map(str::trim).filter(|g| !g.is_empty()) {
+        if !identity_ok(group) {
+            return Err("That is not a valid group name.");
+        }
+        if !groups.contains(&group) {
+            groups.push(group);
+        }
+    }
+    Ok((!groups.is_empty()).then(|| groups.join(", ")))
+}
+
 /// A text box that saves when Enter is pressed or focus leaves it.
 struct TextField {
     input: Entity<InputState>,
@@ -55,6 +106,9 @@ enum Field {
     Namespace,
     Display,
     Workspace,
+    Proxy,
+    ImpersonateUser,
+    ImpersonateGroups,
 }
 
 /// Colours offered for a cluster, as the hex the preferences file stores. Red
@@ -89,6 +143,11 @@ struct ClusterRow {
     namespace: TextField,
     display: TextField,
     workspace: TextField,
+    proxy: TextField,
+    impersonate_user: TextField,
+    impersonate_groups: TextField,
+    /// Server identity checks are skipped. Off unless someone turns it on.
+    insecure: bool,
     colour: Option<String>,
     error: Option<SharedString>,
 }
@@ -172,6 +231,23 @@ impl SettingsView {
                     ),
                     display: field(Field::Display, profile.display_name, "Same as the context"),
                     workspace: field(Field::Workspace, profile.workspace, "None"),
+                    proxy: field(
+                        Field::Proxy,
+                        profile.proxy_url,
+                        "None, e.g. http://host:3128",
+                    ),
+                    impersonate_user: field(
+                        Field::ImpersonateUser,
+                        profile.impersonate_user,
+                        "None, as kubectl --as",
+                    ),
+                    impersonate_groups: field(
+                        Field::ImpersonateGroups,
+                        (!profile.impersonate_groups.is_empty())
+                            .then(|| profile.impersonate_groups.join(", ")),
+                        "None, comma separated",
+                    ),
+                    insecure: profile.accept_invalid_certs,
                     colour: profile.colour,
                     name,
                     error: None,
@@ -337,6 +413,31 @@ impl SettingsView {
         cx.notify();
     }
 
+    fn set_insecure(
+        &mut self,
+        index: usize,
+        insecure: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(row) = self.rows.get_mut(index) else {
+            return;
+        };
+        if row.insecure == insecure {
+            return;
+        }
+        row.insecure = insecure;
+        let name = row.name.to_string();
+        self.persist(
+            "the certificate setting",
+            move |p| p.update_profile(&name, |profile| profile.accept_invalid_certs = insecure),
+            false,
+            window,
+            cx,
+        );
+        cx.notify();
+    }
+
     fn commit(&mut self, index: usize, which: Field, window: &mut Window, cx: &mut Context<Self>) {
         let Some(row) = self.rows.get_mut(index) else {
             return;
@@ -346,11 +447,17 @@ impl SettingsView {
             Field::Namespace => &mut row.namespace,
             Field::Display => &mut row.display,
             Field::Workspace => &mut row.workspace,
+            Field::Proxy => &mut row.proxy,
+            Field::ImpersonateUser => &mut row.impersonate_user,
+            Field::ImpersonateGroups => &mut row.impersonate_groups,
         };
         let typed = field.input.read(cx).value();
         let checked = match which {
             Field::Namespace => namespace_edit(&typed),
             Field::Display | Field::Workspace => label_edit(&typed),
+            Field::Proxy => proxy_edit(&typed),
+            Field::ImpersonateUser => identity_edit(&typed),
+            Field::ImpersonateGroups => groups_edit(&typed),
         };
         let value = match checked {
             Ok(value) => value,
@@ -382,6 +489,34 @@ impl SettingsView {
                     "the group",
                     move |p| p.update_profile(&name, |profile| profile.workspace = value),
                     true,
+                    window,
+                    cx,
+                ),
+                Field::Proxy => self.persist(
+                    "the proxy",
+                    move |p| p.update_profile(&name, |profile| profile.proxy_url = value),
+                    false,
+                    window,
+                    cx,
+                ),
+                Field::ImpersonateUser => self.persist(
+                    "the impersonated user",
+                    move |p| p.update_profile(&name, |profile| profile.impersonate_user = value),
+                    false,
+                    window,
+                    cx,
+                ),
+                Field::ImpersonateGroups => self.persist(
+                    "the impersonated groups",
+                    move |p| {
+                        p.update_profile(&name, |profile| {
+                            profile.impersonate_groups = value
+                                .as_deref()
+                                .map(|joined| joined.split(", ").map(str::to_string).collect())
+                                .unwrap_or_default();
+                        })
+                    },
+                    false,
                     window,
                     cx,
                 ),
@@ -671,6 +806,63 @@ impl Render for SettingsView {
                             .child(h_flex().gap_2().items_center().children(swatches)),
                     )
                     .child(labelled("Default namespace", &row.namespace.input))
+                    .child(labelled("Proxy", &row.proxy.input))
+                    .child(labelled("Impersonate user", &row.impersonate_user.input))
+                    .child(labelled(
+                        "Impersonate groups",
+                        &row.impersonate_groups.input,
+                    ))
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .items_center()
+                            .child(
+                                div()
+                                    .w(px(110.))
+                                    .text_sm()
+                                    .text_color(muted)
+                                    .child("Certificates"),
+                            )
+                            .child(
+                                segmented_bar(cx.theme())
+                                    .child(
+                                        segment(
+                                            ("settings-verify", index),
+                                            "Verify",
+                                            !row.insecure,
+                                            cx.theme(),
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.set_insecure(index, false, window, cx)
+                                            }),
+                                        ),
+                                    )
+                                    .child(
+                                        segment(
+                                            ("settings-skip", index),
+                                            "Skip checks",
+                                            row.insecure,
+                                            cx.theme(),
+                                        )
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.set_insecure(index, true, window, cx)
+                                            }),
+                                        ),
+                                    ),
+                            ),
+                    )
+                    .when(row.insecure, |column| {
+                        column.child(div().text_xs().text_color(danger).child(
+                            "This cluster's identity is not checked, so anyone on the network \
+                             could pose as it.",
+                        ))
+                    })
+                    .child(div().text_xs().text_color(muted).child(
+                        "The proxy, impersonation and certificate settings apply the next \
+                         time this cluster connects.",
+                    ))
                     .when_some(row.error.clone(), |column, error| {
                         column.child(div().text_xs().text_color(danger).child(error))
                     }),
@@ -771,13 +963,45 @@ impl Render for SettingsView {
 
 #[cfg(test)]
 mod tests {
-    use super::{label_edit, namespace_edit};
+    use super::{groups_edit, identity_edit, label_edit, namespace_edit, proxy_edit};
 
     #[test]
     fn a_blank_namespace_clears_and_a_valid_one_is_trimmed() {
         assert_eq!(namespace_edit(""), Ok(None));
         assert_eq!(namespace_edit("   "), Ok(None));
         assert_eq!(namespace_edit(" shop "), Ok(Some("shop".to_string())));
+    }
+
+    #[test]
+    fn a_proxy_needs_a_known_scheme_and_a_host() {
+        assert_eq!(proxy_edit(" "), Ok(None));
+        assert_eq!(
+            proxy_edit(" http://proxy:3128 "),
+            Ok(Some("http://proxy:3128".to_string()))
+        );
+        assert!(proxy_edit("socks5://10.0.0.1:1080").is_ok());
+        for bad in ["proxy:3128", "ftp://proxy", "http://", "http://a b"] {
+            assert!(proxy_edit(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn impersonated_names_are_trimmed_and_must_fit_in_a_header() {
+        assert_eq!(identity_edit(""), Ok(None));
+        assert_eq!(identity_edit(" ops "), Ok(Some("ops".to_string())));
+        assert!(identity_edit("a\nb").is_err());
+        assert!(identity_edit(&"x".repeat(300)).is_err());
+    }
+
+    #[test]
+    fn groups_are_split_trimmed_and_deduplicated_in_order() {
+        assert_eq!(groups_edit(""), Ok(None));
+        assert_eq!(groups_edit(" , ,"), Ok(None));
+        assert_eq!(
+            groups_edit("dev, ops,dev ,qa"),
+            Ok(Some("dev, ops, qa".to_string()))
+        );
+        assert!(groups_edit("dev,a\tb").is_err());
     }
 
     #[test]
