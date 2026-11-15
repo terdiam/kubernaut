@@ -87,6 +87,12 @@ impl CoreError {
             if let Some(hint) = hint {
                 return Self::Other(format!("cannot connect to `{context}`: {hint}"));
             }
+        } else {
+            // The top of a transport error says only "client error (Connect)";
+            // what went wrong is in the causes beneath it.
+            let chain = error_chain(&source);
+            let reason = transport_hint(&chain).unwrap_or_else(|| chain.clone());
+            return Self::Other(format!("cannot connect to `{context}`: {reason}"));
         }
         Self::ClientBuild {
             context: context.to_string(),
@@ -100,6 +106,89 @@ impl CoreError {
             source: Box::new(source),
         }
     }
+}
+
+/// An error and everything beneath it, joined, so the cause is not lost behind
+/// a one-line summary such as `client error (Connect)`.
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut text = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+
+/// What a transport failure means and what to do about it, from the text of its
+/// causes. `None` when it is not one of the failures people hit and can fix.
+fn transport_hint(chain: &str) -> Option<String> {
+    let lower = chain.to_ascii_lowercase();
+    if lower.contains("invalid peer certificate") {
+        return Some(certificate_hint(chain, &lower));
+    }
+    if lower.contains("connection refused") {
+        return Some(
+            "the connection was refused: nothing is listening at that address and port, or a \
+             firewall turned it away. Check the server URL in the kubeconfig and that the \
+             apiserver is running"
+                .to_string(),
+        );
+    }
+    if lower.contains("dns error")
+        || lower.contains("failed to lookup")
+        || lower.contains("name or service not known")
+    {
+        return Some(
+            "the server's host name could not be resolved. Check the URL in the kubeconfig, \
+             and the VPN or DNS if it is an internal name"
+                .to_string(),
+        );
+    }
+    if lower.contains("timed out") || lower.contains("deadline has elapsed") {
+        return Some(
+            "no answer from the server: the VPN may be down, or a firewall is dropping the \
+             connection"
+                .to_string(),
+        );
+    }
+    if lower.contains("unreachable") || lower.contains("no route to host") {
+        return Some("there is no route to the server: the VPN may be disconnected".to_string());
+    }
+    None
+}
+
+/// Why the server's certificate was refused. `chain` keeps rustls's own words
+/// for the one case, a name mismatch, where they are the useful part.
+fn certificate_hint(chain: &str, lower: &str) -> String {
+    if lower.contains("unknownissuer") || lower.contains("badsignature") {
+        // A regenerated CA often keeps its name (`CN=kubernetes`), so the
+        // failure is a bad signature rather than an unknown issuer.
+        return "the server's certificate was not issued by the CA in this kubeconfig. The \
+                cluster was probably rebuilt, or its CA regenerated, so the stored CA is out \
+                of date: import a fresh kubeconfig (on kubeadm, /etc/kubernetes/admin.conf), \
+                or edit this cluster and replace its certificate authority"
+            .to_string();
+    }
+    if let Some(at) = lower.find("not valid for name") {
+        let detail = chain.get(at..).unwrap_or(chain);
+        return format!(
+            "the server's certificate does not cover the address in this kubeconfig ({detail}). \
+             Connect by a name or IP the certificate lists, or add the address to the \
+             apiserver's certificate SANs"
+        );
+    }
+    if lower.contains("notvalidyet") || lower.contains("not valid yet") {
+        return "the server's certificate is not valid yet: check this computer's clock"
+            .to_string();
+    }
+    if lower.contains("expired") {
+        return "the server's certificate has expired. On kubeadm, `kubeadm certs \
+                check-expiration` on a control-plane node shows which"
+            .to_string();
+    }
+    format!("the server's certificate was rejected ({chain})")
 }
 
 /// What to do about a rejected credential, given how the context supplies one.
@@ -200,6 +289,128 @@ mod tests {
             other => panic!("expected a hint, got {other:?}"),
         };
         assert!(message.contains("RBAC"), "{message}");
+    }
+
+    /// A transport failure the way kube reports one: a summary, then causes.
+    #[derive(Debug)]
+    struct Layer(&'static str, Option<Box<Layer>>);
+
+    impl fmt::Display for Layer {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl std::error::Error for Layer {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            self.1
+                .as_deref()
+                .map(|e| e as &(dyn std::error::Error + 'static))
+        }
+    }
+
+    fn transport(summary: &'static str, causes: &[&'static str]) -> CoreError {
+        let layers = causes
+            .iter()
+            .rev()
+            .fold(None, |inner, text| Some(Box::new(Layer(text, inner))));
+        let error = Layer(summary, layers);
+        CoreError::client_build("qb", AuthKind::Exec, kube::Error::Service(Box::new(error)))
+    }
+
+    fn message(error: CoreError) -> String {
+        match error {
+            CoreError::Other(message) => message,
+            other => panic!("expected a message, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_regenerated_ca_is_named_as_such_and_not_as_connect() {
+        // Seen for real: the cluster was rebuilt, its CA kept the name
+        // `kubernetes` but not the key, and the app said only "(Connect)".
+        let text = message(transport(
+            "client error (Connect)",
+            &["invalid peer certificate: BadSignature"],
+        ));
+        assert!(text.starts_with("cannot connect to `qb`"), "{text}");
+        assert!(text.contains("not issued by the CA"), "{text}");
+        assert!(text.contains("import a fresh kubeconfig"), "{text}");
+        assert!(!text.contains("(Connect)"), "{text}");
+
+        let unknown = message(transport(
+            "client error (Connect)",
+            &["invalid peer certificate: UnknownIssuer"],
+        ));
+        assert!(unknown.contains("not issued by the CA"), "{unknown}");
+    }
+
+    #[test]
+    fn an_address_the_certificate_does_not_cover_says_what_it_does_cover() {
+        let text = message(transport(
+            "client error (Connect)",
+            &[
+                r#"invalid peer certificate: certificate not valid for name "10.0.0.9"; certificate is only valid for DnsName("k8s-api.qb.internal")"#,
+            ],
+        ));
+        assert!(text.contains("does not cover the address"), "{text}");
+        assert!(
+            text.contains(r#"only valid for DnsName("k8s-api.qb.internal")"#),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn dates_and_clocks_are_told_apart() {
+        let expired = message(transport(
+            "client error (Connect)",
+            &["invalid peer certificate: Expired"],
+        ));
+        assert!(expired.contains("has expired"), "{expired}");
+        let early = message(transport(
+            "client error (Connect)",
+            &["invalid peer certificate: NotValidYet"],
+        ));
+        assert!(early.contains("clock"), "{early}");
+    }
+
+    #[test]
+    fn network_failures_point_at_the_network() {
+        let refused = message(transport(
+            "client error (Connect)",
+            &["tcp connect error", "Connection refused (os error 61)"],
+        ));
+        assert!(refused.contains("refused"), "{refused}");
+        let dns = message(transport(
+            "client error (Connect)",
+            &[
+                "dns error",
+                "failed to lookup address information: Name or service not known",
+            ],
+        ));
+        assert!(dns.contains("could not be resolved"), "{dns}");
+        let timeout = message(transport(
+            "client error (Connect)",
+            &["tcp connect error", "Connection timed out (os error 110)"],
+        ));
+        assert!(timeout.contains("VPN"), "{timeout}");
+        let route = message(transport(
+            "client error (Connect)",
+            &["tcp connect error", "No route to host (os error 65)"],
+        ));
+        assert!(route.contains("no route"), "{route}");
+    }
+
+    #[test]
+    fn an_unknown_transport_failure_still_shows_its_causes() {
+        let text = message(transport(
+            "client error (Connect)",
+            &["something new", "deep cause"],
+        ));
+        assert!(
+            text.contains("client error (Connect): something new: deep cause"),
+            "{text}"
+        );
     }
 
     #[test]
