@@ -14,6 +14,20 @@ did not explicitly add.
 > tested and starts, checked in a container; Windows is compiled, linted and
 > tested by CI but has not been run by a person yet.
 
+## Screenshots
+
+Taken against a throwaway local k3d cluster; every name in them is invented.
+
+![Cluster overview](screenshots/overview.png)
+
+![Topology, from Ingress to Pod](screenshots/topology.png)
+
+| | |
+|---|---|
+| ![Diagnose a pod that cannot pull its image](screenshots/diagnose.png) | ![YAML checked against the cluster's schema](screenshots/validation.png) |
+| ![Drain a node, with a preview](screenshots/drain.png) | ![Helm release history and rollback](screenshots/helm.png) |
+| ![Security findings](screenshots/security.png) | ![A shell in a pod](screenshots/terminal.png) |
+
 ## Install
 
 **macOS.** Download `Kubernaut-<version>-macos-<arm64|x86_64>.dmg` from

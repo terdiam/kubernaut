@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Kubernaut — Kubernetes desktop app</title>
-<meta name="description" content="A multi-cluster Kubernetes desktop app for macOS, Windows and Linux. Rust core, no telemetry, no clusters connected until you add them." />
+<meta name="description" content="A native, multi-cluster Kubernetes desktop app for macOS, Windows and Linux, written in Rust. No telemetry, and no clusters connected until you add them." />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⎈</text></svg>" />
 <style>
   :root{
@@ -72,13 +72,13 @@
   <div class="wrap">
     <div class="logo">⎈</div>
     <h1>Kubernaut</h1>
-    <p class="tagline">A multi-cluster Kubernetes desktop app for macOS, Windows and Linux.
-      Rust core, no telemetry, starts with <b>no</b> clusters connected.</p>
+    <p class="tagline">A native, multi-cluster Kubernetes desktop app for macOS, Windows and Linux,
+      written in Rust. No telemetry, and it starts with <b>no</b> clusters connected.</p>
 
     <div class="badges">
       <span class="badge pulse" id="version-badge">Checking latest version…</span>
       <span class="badge">Apache-2.0</span>
-      <span class="badge">macOS · Windows · Linux (amd64/arm64)</span>
+      <span class="badge">macOS · Windows · Linux</span>
     </div>
 
     <div class="download-card">
@@ -95,8 +95,9 @@
       Kubernetes GUIs tend to break one of two ways: they hold the entire object list in the
       frontend and choke on a large cluster, or they read <code>~/.kube/config</code> on launch
       and put every configured cluster one click away, production included. Kubernaut keeps all
-      cluster state in Rust — the UI only ever asks for a page or subscribes to a delta stream —
-      and starts with <b>no</b> clusters connected; every one is added explicitly.
+      cluster state in Rust and draws it natively, so there is no web view to feed. The UI only
+      ever asks for a page or subscribes to a delta stream, and it starts with <b>no</b>
+      clusters connected; every one is added explicitly.
     </p>
   </div>
 </section>
@@ -105,48 +106,52 @@
   <div class="wrap">
     <h2>Screenshots</h2>
     <p style="color:var(--muted);font-size:0.85rem;margin-top:-12px;">
-      Taken against a local <a href="https://k3d.io" target="_blank" rel="noopener">k3d</a>
-      cluster, not a real one — every name in these images is invented.
+      Taken against a throwaway local <a href="https://k3d.io" target="_blank" rel="noopener">k3d</a>
+      cluster, not a real one. Every name in these images is invented.
     </p>
     <div class="shots">
       <figure>
-        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/overview.png" alt="Cluster overview: gauges, usage history, live issues" loading="lazy" />
-        <figcaption>Cluster overview, with an issue an <code>ImagePullBackOff</code> pod put there itself</figcaption>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/overview.png" alt="Cluster overview: usage gauges and the issues that need attention" loading="lazy" />
+        <figcaption>Cluster overview, with the issue an <code>ImagePullBackOff</code> pod put there itself</figcaption>
       </figure>
       <figure>
-        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/deployments.png" alt="Deployments table with row selection" loading="lazy" />
-        <figcaption>Row selection on any resource table</figcaption>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/topology.png" alt="Topology graph from Ingress to Service to Workload to Pod" loading="lazy" />
+        <figcaption>Topology: Ingress → Service → Workload → Pod, draggable, with the failing pods in red</figcaption>
       </figure>
       <figure>
-        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/diagnose.png" alt="Diagnose tab quoting the kubelet's own error" loading="lazy" />
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/diagnose.png" alt="Diagnose tab quoting the kubelet error" loading="lazy" />
         <figcaption>Diagnose: the cluster's own error, and what to do about it</figcaption>
       </figure>
       <figure>
-        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/bulk.png" alt="Bulk action bar: delete, restart, export" loading="lazy" />
-        <figcaption>Act on a selection — delete, restart, export</figcaption>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/deployments.png" alt="Deployments table with three rows selected and a bulk action bar" loading="lazy" />
+        <figcaption>Select rows, then restart, export or delete them together</figcaption>
       </figure>
       <figure>
-        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/create.png" alt="Create dialog, form mode, for a Deployment" loading="lazy" />
-        <figcaption>Create, as a form or as YAML</figcaption>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/validation.png" alt="YAML editor underlining a field the cluster schema rejects" loading="lazy" />
+        <figcaption>YAML checked against the cluster's own schema, with the problem underlined</figcaption>
       </figure>
       <figure>
-        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/ingress-form.png" alt="Ingress form with backend service and port chosen from the cluster" loading="lazy" />
-        <figcaption>Reference fields read from the cluster, not typed</figcaption>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/ingress-form.png" alt="Ingress form with the backend service chosen from the cluster and live YAML beside it" loading="lazy" />
+        <figcaption>Forms read their choices from the cluster, with the YAML beside them</figcaption>
       </figure>
       <figure>
-        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/helm.png" alt="Helm releases and revision history" loading="lazy" />
-        <figcaption>Every Helm release, read straight from the cluster</figcaption>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/drain.png" alt="Drain dialog listing the pods that will be evicted" loading="lazy" />
+        <figcaption>Drain a node with a preview of exactly which pods move</figcaption>
       </figure>
       <figure>
-        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/security.png" alt="Security Center workload findings" loading="lazy" />
-        <figcaption>Workload posture findings, no scanner required</figcaption>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/helm.png" alt="Helm release with its revision history and rollback" loading="lazy" />
+        <figcaption>Every Helm release, with history and rollback</figcaption>
       </figure>
       <figure>
-        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/logs.png" alt="Multi-pod log stream" loading="lazy" />
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/security.png" alt="Security page listing a privileged container and cluster-admin grants" loading="lazy" />
+        <figcaption>Security findings, no scanner required</figcaption>
+      </figure>
+      <figure>
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/logs.png" alt="Log stream of a pod" loading="lazy" />
         <figcaption>Log streaming</figcaption>
       </figure>
       <figure>
-        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/terminal.png" alt="Container shell terminal" loading="lazy" />
+        <img src="https://raw.githubusercontent.com/terdiam/kubernaut/main/screenshots/terminal.png" alt="Shell inside a pod" loading="lazy" />
         <figcaption>A shell into the pod</figcaption>
       </figure>
     </div>
@@ -157,22 +162,16 @@
   <div class="wrap">
     <h2>Features</h2>
     <div class="features">
-      <div><h3>Multi-cluster</h3><p>Contexts added explicitly, lazy health-probed connections,
-        protected contexts that refuse destructive actions outright.</p></div>
-      <div><h3>Resource browser</h3><p>Full API discovery including CRDs, virtualised tables,
-        row selection, a fuzzy command palette across clusters.</p></div>
-      <div><h3>Create, edit, import</h3><p>Form or YAML with a real cluster-side diff before
-        anything applies; reference fields read from the cluster, not typed.</p></div>
-      <div><h3>Diagnose</h3><p>Reads a pod's status the way a human would — quotes the cluster,
-        not a guess — with a next step straight into logs or a shell.</p></div>
-      <div><h3>Logs and terminal</h3><p>Multi-pod log tail, four terminal modes, port forwarding
-        bound to loopback by default.</p></div>
-      <div><h3>Metrics and topology</h3><p>Cluster gauges, namespace heatmap, sizing
-        recommendations, and an Ingress → Service → Pod → Node graph.</p></div>
-      <div><h3>Helm</h3><p>Every release read straight from the cluster's own Secrets, with a
-        real pre-upgrade diff.</p></div>
-      <div><h3>Security Center</h3><p>Workload posture checks, RBAC analysis, and image CVEs —
-        no scanner required.</p></div>
+      <div><h3>Multi-cluster</h3><p>Clusters are added explicitly, connect lazily, and protected ones refuse every change.</p></div>
+      <div><h3>Resource browser</h3><p>Full API discovery including CRDs, virtualised tables, row selection, and a command palette across clusters.</p></div>
+      <div><h3>Create, edit, validate</h3><p>Form or YAML with the cluster's own schema underlining mistakes, and a server-side diff before anything applies. Reference fields are read from the cluster.</p></div>
+      <div><h3>Diagnose</h3><p>Reads a pod's status the way a person would, quotes the cluster rather than guessing, and offers a next step into logs or a shell.</p></div>
+      <div><h3>Logs and terminals</h3><p>Multi-pod log tail, a shell in a pod, a debug container, a shell on a node, and port forwarding bound to loopback.</p></div>
+      <div><h3>Topology and usage</h3><p>Ingress to Service to Workload to Pod on a graph you can drag, with namespace usage against what is requested.</p></div>
+      <div><h3>Nodes</h3><p>Cordon, uncordon and drain with a preview, and edit labels and taints from the node's own tab.</p></div>
+      <div><h3>Helm and GitOps</h3><p>Every release read from the cluster, with a pre-upgrade diff, history and rollback.</p></div>
+      <div><h3>Security Center</h3><p>Workload posture checks, RBAC analysis and image CVEs. No scanner required for the first two.</p></div>
+      <div><h3>Signed updates</h3><p>Releases are signed, and the app checks the signature before it installs one. Installers for macOS, Linux and Windows.</p></div>
     </div>
   </div>
 </section>
@@ -192,15 +191,11 @@
   const downloadArea = document.getElementById("download-area");
   const osTabs = document.getElementById("os-tabs");
 
-  // Matches each platform to the asset-name substrings that identify it,
-  // in priority order — first match wins. Two Linux arch package names
-  // ("arm64.deb" / "aarch64.rpm") are why this is per-OS instead of one
-  // flat map: the same OS needs an arch pass a level down.
-  const CLASSIFY = {
-    mac: (n) => n.endsWith(".dmg"),
-    windows: (n) => n.endsWith(".exe") || n.endsWith(".msi"),
-    linux: (n) => n.endsWith(".deb") || n.endsWith(".rpm") || n.endsWith(".AppImage"),
-  };
+  // The release's file names, as the bundle scripts write them:
+  //   Kubernaut-<v>-macos-arm64.dmg                  (the .zip beside it is for the in-app updater)
+  //   Kubernaut-<v>-windows-x86_64-setup.exe / .zip
+  //   kubernaut_<v>_<amd64|arm64>.deb, Kubernaut-<v>-linux-<x86_64|aarch64>.tar.gz
+  const link = (a, label) => `<a href="${a.browser_download_url}">${label}</a>`;
 
   function detectOS() {
     const ua = navigator.userAgent;
@@ -215,41 +210,44 @@
   }
 
   function renderMac(assets) {
-    const dmg = assets.find((a) => CLASSIFY.mac(a.name));
+    const dmgs = assets.filter((a) => a.name.endsWith(".dmg"));
+    const dmg = dmgs.find((a) => isArm(a.name)) || dmgs[0];
     if (!dmg) return `<p class="loading">No macOS build in the latest release.</p>`;
-    return `<a class="primary-dl" href="${dmg.browser_download_url}">Download for macOS (Universal)</a>
+    return `<a class="primary-dl" href="${dmg.browser_download_url}">Download for macOS (Apple silicon)</a>
       <p class="other-os">Unsigned build — right-click the app → <b>Open</b> on first launch,
       or run <code>xattr -dr com.apple.quarantine /Applications/Kubernaut.app</code>.</p>`;
   }
 
   function renderWindows(assets) {
-    const exe = assets.find((a) => a.name.endsWith("-setup.exe"));
-    const msi = assets.find((a) => a.name.endsWith(".msi"));
-    const primary = exe || msi;
+    const setup = assets.find((a) => a.name.endsWith("-setup.exe"));
+    const zip = assets.find((a) => /windows-.*\.zip$/.test(a.name));
+    const primary = setup || zip;
     if (!primary) return `<p class="loading">No Windows build in the latest release.</p>`;
-    const links = [exe, msi].filter(Boolean)
-      .map((a) => `<a href="${a.browser_download_url}">${a.name.endsWith(".msi") ? "MSI" : "EXE"}</a>`)
-      .join(" · ");
+    const links = [setup && link(setup, "Installer (.exe)"), zip && link(zip, "Portable (.zip)")]
+      .filter(Boolean).join(" · ");
     return `<a class="primary-dl" href="${primary.browser_download_url}">Download for Windows</a>
       <div class="secondary-links">${links}</div>
       <p class="other-os">Unsigned build — SmartScreen: <b>More info</b> → <b>Run anyway</b>.</p>`;
   }
 
   function renderLinux(assets) {
-    const linuxAssets = assets.filter((a) => CLASSIFY.linux(a.name));
-    if (!linuxAssets.length) return `<p class="loading">No Linux build in the latest release.</p>`;
-    const amd64 = linuxAssets.filter((a) => !isArm(a.name));
-    const arm64 = linuxAssets.filter((a) => isArm(a.name));
-    const row = (label, list) =>
-      list.length
-        ? `<p class="other-os"><b>${label}:</b> ${list
-            .map((a) => `<a href="${a.browser_download_url}">${a.name.split(".").pop()}</a>`)
-            .join(" · ")}</p>`
-        : "";
-    const primary = amd64.find((a) => a.name.endsWith(".AppImage")) || amd64[0];
-    return `${primary ? `<a class="primary-dl" href="${primary.browser_download_url}">Download AppImage (amd64)</a>` : ""}
-      ${row("amd64", amd64)}
-      ${row("arm64", arm64)}`;
+    const debs = assets.filter((a) => a.name.endsWith(".deb"));
+    // Kubernaut.app.tar.gz is the macOS file for old Tauri installs, not a Linux build.
+    const tars = assets.filter((a) => a.name.includes("-linux-") && a.name.endsWith(".tar.gz"));
+    if (!debs.length && !tars.length) {
+      return `<p class="loading">No Linux build in the latest release.</p>`;
+    }
+    const row = (label, arm) => {
+      const items = [...debs.filter((a) => isArm(a.name) === arm).map((a) => link(a, ".deb")),
+        ...tars.filter((a) => isArm(a.name) === arm).map((a) => link(a, ".tar.gz"))];
+      return items.length ? `<p class="other-os"><b>${label}:</b> ${items.join(" · ")}</p>` : "";
+    };
+    const primary = debs.find((a) => !isArm(a.name)) || tars.find((a) => !isArm(a.name)) || debs[0] || tars[0];
+    return `<a class="primary-dl" href="${primary.browser_download_url}">Download for Linux</a>
+      ${row("x86_64", false)}
+      ${row("arm64", true)}
+      <p class="other-os">The <code>.deb</code> is for <code>apt install ./file.deb</code>; the tarball
+      installs for one user and updates itself. Needs X11 or Wayland and a Vulkan driver.</p>`;
   }
 
   const RENDER = { mac: renderMac, windows: renderWindows, linux: renderLinux };
