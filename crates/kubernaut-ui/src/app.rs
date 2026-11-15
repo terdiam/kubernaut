@@ -24,7 +24,7 @@ use gpui_kit::{
 };
 use k8s_app::{
     AppCore, cluster_ops, metrics_ops, object_ops,
-    preferences::{PinnedObject, Preferences, arrange, set_pinned},
+    preferences::{PinnedObject, Preferences, arrange, reordered, set_pinned},
     updates,
 };
 use k8s_core::{
@@ -137,6 +137,53 @@ impl Render for DraggedTile {
             .font_semibold()
             .child(self.initials.clone())
     }
+}
+
+/// A sidebar section header being dragged, carried by its label.
+#[derive(Clone)]
+struct DraggedSection(SharedString);
+
+/// A resource row being dragged: its key, and the kind shown while it moves.
+#[derive(Clone)]
+struct DraggedResource {
+    key: SharedString,
+    kind: SharedString,
+}
+
+/// The pill shown under the pointer while a sidebar row is dragged.
+fn drag_pill(label: SharedString, cx: &App) -> Div {
+    let theme = cx.theme();
+    div()
+        .px_2()
+        .h(ROW_HEIGHT)
+        .flex()
+        .items_center()
+        .rounded_md()
+        .border_1()
+        .border_color(theme.primary)
+        .bg(theme.secondary)
+        .opacity(0.9)
+        .text_sm()
+        .child(label)
+}
+
+impl Render for DraggedSection {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        drag_pill(self.0.clone(), cx)
+    }
+}
+
+impl Render for DraggedResource {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        drag_pill(self.kind.clone(), cx)
+    }
+}
+
+/// The saved order of the sidebar. Borrowed, so building rows copies nothing.
+#[derive(Clone, Copy, Default)]
+struct SidebarOrder<'a> {
+    sections: &'a [String],
+    resources: &'a [String],
 }
 
 /// Tiles grouped under a workspace divider. The grouping is purely visual:
@@ -367,6 +414,9 @@ pub struct AppView {
     active: Option<usize>,
     selected: Option<SharedString>,
     collapsed: HashSet<SharedString>,
+    /// Saved order of the sidebar's sections and, within them, its resources.
+    section_order: Vec<String>,
+    resource_order: Vec<String>,
     /// Derived from the active cluster's discovery, the filter and
     /// `collapsed`; rebuilt by `refresh_rows` when one of those changes, never
     /// per frame.
@@ -426,7 +476,10 @@ impl AppView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (tiles, rail) = build_tiles(&core.clusters.contexts(), &core.preferences());
+        let preferences = core.preferences();
+        let (tiles, rail) = build_tiles(&core.clusters.contexts(), &preferences);
+        let (section_order, resource_order) =
+            (preferences.section_order, preferences.resource_order);
         let pins = core.preferences().pinned;
 
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter resources"));
@@ -530,6 +583,8 @@ impl AppView {
             active: None,
             selected: None,
             collapsed: HashSet::new(),
+            section_order,
+            resource_order,
             rows: Vec::new(),
             list_scroll: UniformListScrollHandle::new(),
             filter,
@@ -612,10 +667,65 @@ impl AppView {
     fn refresh_rows(&mut self, cx: &mut Context<Self>) {
         let needle = self.filter.read(cx).value().trim().to_lowercase();
         self.rows = match self.active_state().and_then(|s| s.discovery.as_deref()) {
-            Some(discovery) => build_rows(discovery, &needle, &self.collapsed),
+            Some(discovery) => build_rows(discovery, &needle, &self.collapsed, self.order()),
             None => Vec::new(),
         };
         cx.notify();
+    }
+
+    fn order(&self) -> SidebarOrder<'_> {
+        SidebarOrder {
+            sections: &self.section_order,
+            resources: &self.resource_order,
+        }
+    }
+
+    /// Put the dragged section in the slot of the one it was dropped on.
+    fn move_section(&mut self, moved: &str, target: &str, cx: &mut Context<Self>) {
+        if self.is_filtering(cx) {
+            return;
+        }
+        let shown = section_names(&self.rows);
+        if let Some(next) = reordered(&self.section_order, shown, moved, target) {
+            self.section_order.clone_from(&next);
+            self.save_order(move |p| p.section_order = next, cx);
+        }
+    }
+
+    /// Reorder a resource within its section. Dropping on another section's
+    /// row does nothing: a kind belongs to one section.
+    fn move_resource(&mut self, moved: &str, target: &str, cx: &mut Context<Self>) {
+        if self.is_filtering(cx) {
+            return;
+        }
+        let shown = section_resources(&self.rows, target);
+        if let Some(next) = reordered(&self.resource_order, shown, moved, target) {
+            self.resource_order.clone_from(&next);
+            self.save_order(move |p| p.resource_order = next, cx);
+        }
+    }
+
+    /// A filtered list shows some rows only, so dragging in it would be a guess.
+    fn is_filtering(&self, cx: &App) -> bool {
+        !self.filter.read(cx).value().trim().is_empty()
+    }
+
+    fn save_order(
+        &mut self,
+        edit: impl FnOnce(&mut Preferences) + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let core = Arc::clone(&self.core);
+        let task = self
+            .runtime
+            .spawn(async move { core.update_preferences(edit) });
+        cx.spawn(async move |_, _| {
+            if let Ok(Err(reason)) = task.await {
+                tracing::warn!(%reason, "could not save the sidebar order");
+            }
+        })
+        .detach();
+        self.refresh_rows(cx);
     }
 
     fn toggle_group(&mut self, name: &SharedString, cx: &mut Context<Self>) {
@@ -1009,7 +1119,7 @@ impl AppView {
             command: Command::Cluster(index),
         }));
         if let Some(discovery) = discovery {
-            for group in visible_groups(discovery, "", &HashSet::new()) {
+            for group in visible_groups(discovery, "", &HashSet::new(), self.order()) {
                 let hint: SharedString = group.category.label().into();
                 items.extend(group.resources.into_iter().map(|resource| Item {
                     label: resource.kind.clone().into(),
@@ -2788,6 +2898,9 @@ impl AppView {
                 open,
             } => {
                 let key = name.clone();
+                let dragged = DraggedSection(name.clone());
+                let hover = theme.sidebar_accent;
+                let target = name.clone();
                 let chevron = if *open {
                     IconName::ChevronDown
                 } else {
@@ -2810,11 +2923,21 @@ impl AppView {
                     .child(div().flex_1().child(name.clone()))
                     .child(div().font_normal().child(count.clone()))
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle_group(&key, cx)))
+                    .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                    .drag_over::<DraggedSection>(move |row, _, _, _| row.bg(hover))
+                    .on_drop(cx.listener(move |this, dragged: &DraggedSection, _, cx| {
+                        this.move_section(&dragged.0, &target, cx);
+                    }))
                     .into_any_element()
             }
             SidebarRow::Resource { key, kind } => {
                 let is_selected = self.selected.as_ref() == Some(key);
                 let key = key.clone();
+                let dragged = DraggedResource {
+                    key: key.clone(),
+                    kind: kind.clone(),
+                };
+                let target = key.clone();
                 let (primary, hover) = (theme.primary, theme.sidebar_accent);
                 div()
                     .id(("resource", index))
@@ -2841,6 +2964,11 @@ impl AppView {
                     .child(div().flex_1().min_w_0().truncate().child(kind.clone()))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.open_resource(&key, window, cx);
+                    }))
+                    .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+                    .drag_over::<DraggedResource>(move |row, _, _, _| row.bg(hover))
+                    .on_drop(cx.listener(move |this, dragged: &DraggedResource, _, cx| {
+                        this.move_resource(&dragged.key, &target, cx);
                     }))
                     .into_any_element()
             }
@@ -3615,6 +3743,7 @@ fn visible_groups<'a>(
     discovery: &'a DiscoveryCache,
     needle: &str,
     collapsed: &HashSet<SharedString>,
+    order: SidebarOrder<'_>,
 ) -> Vec<VisibleGroup<'a>> {
     let mut sections: BTreeMap<Category, Vec<(usize, &ResourceDescriptor)>> = BTreeMap::new();
     // A kind served at several versions (autoscaling v1 and v2) is one list.
@@ -3636,10 +3765,23 @@ fn visible_groups<'a>(
         sections.entry(category).or_default().push((rank, resource));
     }
 
+    // Stable sorts: whatever the user has not placed keeps the default order.
+    let place = |list: &[String], name: &str| {
+        list.iter()
+            .position(|entry| entry == name)
+            .unwrap_or(usize::MAX)
+    };
+    let mut sections: Vec<_> = sections.into_iter().collect();
+    sections.sort_by_key(|(category, _)| place(order.sections, category.label()));
     sections
         .into_iter()
         .map(|(category, mut resources)| {
-            resources.sort_by(|(ra, a), (rb, b)| ra.cmp(rb).then_with(|| a.kind.cmp(&b.kind)));
+            resources.sort_by(|(ra, a), (rb, b)| {
+                place(order.resources, &a.key)
+                    .cmp(&place(order.resources, &b.key))
+                    .then_with(|| ra.cmp(rb))
+                    .then_with(|| a.kind.cmp(&b.kind))
+            });
             VisibleGroup {
                 category,
                 open: !needle.is_empty() || !collapsed.contains(category.label()),
@@ -3653,8 +3795,9 @@ fn build_rows(
     discovery: &DiscoveryCache,
     needle: &str,
     collapsed: &HashSet<SharedString>,
+    order: SidebarOrder<'_>,
 ) -> Vec<SidebarRow> {
-    let groups = visible_groups(discovery, needle, collapsed);
+    let groups = visible_groups(discovery, needle, collapsed, order);
     let capacity = groups
         .iter()
         .map(|g| 1 + if g.open { g.resources.len() } else { 0 })
@@ -3675,6 +3818,37 @@ fn build_rows(
         }
     }
     rows
+}
+
+/// Every section header in the rows, in order.
+fn section_names(rows: &[SidebarRow]) -> Vec<String> {
+    rows.iter()
+        .filter_map(|row| match row {
+            SidebarRow::Group { name, .. } => Some(name.to_string()),
+            SidebarRow::Resource { .. } => None,
+        })
+        .collect()
+}
+
+/// The keys of the section `key` is listed in, in order. Empty when it is not
+/// in the rows.
+fn section_resources(rows: &[SidebarRow], key: &str) -> Vec<String> {
+    let Some(at) = rows
+        .iter()
+        .position(|row| matches!(row, SidebarRow::Resource { key: k, .. } if k == key))
+    else {
+        return Vec::new();
+    };
+    let is_resource = |row: &&SidebarRow| matches!(row, SidebarRow::Resource { .. });
+    let start = rows[..at].iter().rev().take_while(is_resource).count();
+    rows[at - start..]
+        .iter()
+        .take_while(is_resource)
+        .filter_map(|row| match row {
+            SidebarRow::Resource { key, .. } => Some(key.to_string()),
+            SidebarRow::Group { .. } => None,
+        })
+        .collect()
 }
 
 /// Two letters for a tile: the first letters of the first and last words, or
@@ -3711,7 +3885,10 @@ fn parse_colour(value: &str) -> Option<Hsla> {
 mod tests {
     // Explicit, not `super::*`: that would glob-import GPUI's `#[test]` macro
     // and shadow Rust's own.
-    use super::{SidebarRow, build_rows, build_tiles, initials, parse_colour, visible_groups};
+    use super::{
+        SidebarOrder, SidebarRow, build_rows, build_tiles, initials, parse_colour, section_names,
+        section_resources, visible_groups,
+    };
     use crate::categories::Category;
     use gpui_kit::SharedString;
     use k8s_app::preferences::{ClusterProfile, Preferences};
@@ -3768,7 +3945,7 @@ mod tests {
     #[test]
     fn sidebar_groups_types_by_purpose_not_by_api_group() {
         let cache = discovery();
-        let groups = visible_groups(&cache, "", &HashSet::new());
+        let groups = visible_groups(&cache, "", &HashSet::new(), SidebarOrder::default());
 
         let sections: Vec<_> = groups.iter().map(|g| g.category).collect();
         assert_eq!(
@@ -3784,12 +3961,17 @@ mod tests {
     #[test]
     fn filter_matches_kind_or_plural_and_drops_sections_without_a_match() {
         let cache = discovery();
-        let groups = visible_groups(&cache, "deploy", &HashSet::new());
+        let groups = visible_groups(&cache, "deploy", &HashSet::new(), SidebarOrder::default());
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].category, Category::Workloads);
 
         // Plural, not just kind.
-        let groups = visible_groups(&cache, "configmaps", &HashSet::new());
+        let groups = visible_groups(
+            &cache,
+            "configmaps",
+            &HashSet::new(),
+            SidebarOrder::default(),
+        );
         assert_eq!(groups[0].resources.len(), 1);
     }
 
@@ -3798,27 +3980,60 @@ mod tests {
         let cache = discovery();
         let collapsed: HashSet<SharedString> = ["Workloads".into()].into();
 
-        let groups = visible_groups(&cache, "", &collapsed);
+        let groups = visible_groups(&cache, "", &collapsed, SidebarOrder::default());
         assert!(!groups[0].open);
         assert!(groups[1].open);
 
-        let groups = visible_groups(&cache, "pod", &collapsed);
+        let groups = visible_groups(&cache, "pod", &collapsed, SidebarOrder::default());
         assert!(groups[0].open, "a search must not hide its own results");
     }
 
     #[test]
     fn rows_are_flat_and_a_collapsed_section_contributes_only_its_header() {
         let cache = discovery();
-        let open = build_rows(&cache, "", &HashSet::new());
+        let open = build_rows(&cache, "", &HashSet::new(), SidebarOrder::default());
         // Workloads header + 3, Config header + 1, Custom header + 1.
         assert_eq!(open.len(), 8);
 
         let collapsed: HashSet<SharedString> = ["Workloads".into()].into();
-        let rows = build_rows(&cache, "", &collapsed);
+        let rows = build_rows(&cache, "", &collapsed, SidebarOrder::default());
         assert_eq!(rows.len(), 5);
         assert!(matches!(rows[0], SidebarRow::Group { open: false, .. }));
         assert!(matches!(rows[1], SidebarRow::Group { open: true, .. }));
         assert!(matches!(rows[2], SidebarRow::Resource { .. }));
+    }
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn a_saved_order_moves_sections_and_resources_and_the_rest_keep_their_place() {
+        let cache = discovery();
+        let sections = strings(&["Custom resources"]);
+        let resources = strings(&["x/v1/deployments", "x/v1/pods"]);
+        let order = SidebarOrder {
+            sections: &sections,
+            resources: &resources,
+        };
+        let groups = visible_groups(&cache, "", &HashSet::new(), order);
+        assert_eq!(groups[0].category, Category::Custom);
+        assert_eq!(groups[1].category, Category::Workloads);
+        assert_eq!(groups[2].category, Category::Config);
+        let kinds: Vec<_> = groups[1].resources.iter().map(|r| &*r.kind).collect();
+        assert_eq!(kinds, ["Deployment", "Pod", "PodTemplate"]);
+    }
+
+    #[test]
+    fn the_rows_say_which_names_a_drag_can_reorder() {
+        let rows = build_rows(&discovery(), "", &HashSet::new(), SidebarOrder::default());
+        assert_eq!(
+            section_names(&rows),
+            ["Workloads", "Config", "Custom resources"]
+        );
+        let run = section_resources(&rows, "x/v1/deployments");
+        assert_eq!(run.len(), 3, "only the section the row is in: {run:?}");
+        assert!(section_resources(&rows, "nothing").is_empty());
     }
 
     fn context(name: &str) -> ContextEntry {

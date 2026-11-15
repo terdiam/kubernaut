@@ -167,6 +167,13 @@ pub struct Preferences {
     /// Contexts missing from it follow the listed ones in kubeconfig order.
     pub cluster_order: Vec<String>,
 
+    /// Section labels of the resource sidebar in the order the user arranged
+    /// them. Sections it does not list follow, in the default order.
+    pub section_order: Vec<String>,
+
+    /// Resource keys in the order the user arranged them within their section.
+    pub resource_order: Vec<String>,
+
     /// Resources pinned for one-click access from the sidebar.
     pub pinned: Vec<PinnedObject>,
 
@@ -191,6 +198,8 @@ impl Default for Preferences {
             cluster_profiles: std::collections::BTreeMap::new(),
             namespace_scopes: std::collections::BTreeMap::new(),
             cluster_order: Vec::new(),
+            section_order: Vec::new(),
+            resource_order: Vec::new(),
             pinned: Vec::new(),
             custom_columns: std::collections::BTreeMap::new(),
             custom_actions: Vec::new(),
@@ -224,6 +233,27 @@ pub fn move_to(names: &mut Vec<String>, moved: &str, target: &str) -> bool {
         }
         _ => false,
     }
+}
+
+/// The saved `order` after `moved` takes `target`'s slot among `shown`, the
+/// names on screen. Names that are not shown keep their place after them, so a
+/// section absent from one cluster is not forgotten. `None` when nothing moved.
+pub fn reordered(
+    order: &[String],
+    mut shown: Vec<String>,
+    moved: &str,
+    target: &str,
+) -> Option<Vec<String>> {
+    if !move_to(&mut shown, moved, target) {
+        return None;
+    }
+    let rest: Vec<String> = order
+        .iter()
+        .filter(|name| !shown.contains(name))
+        .cloned()
+        .collect();
+    shown.extend(rest);
+    Some(shown)
 }
 
 fn config_path() -> Option<PathBuf> {
@@ -376,6 +406,14 @@ mod tests {
         assert_eq!(names, ["b", "c", "a", "d"]);
         assert!(move_to(&mut names, "d", "b"));
         assert_eq!(names, ["d", "b", "c", "a"]);
+    }
+
+    #[test]
+    fn names_that_are_not_shown_keep_a_place_after_the_shown_ones() {
+        let order = strings(&["x", "a", "b"]);
+        let next = reordered(&order, strings(&["a", "b", "c"]), "c", "a").unwrap();
+        assert_eq!(next, ["c", "a", "b", "x"]);
+        assert!(reordered(&order, strings(&["a", "b"]), "a", "a").is_none());
     }
 
     #[test]
