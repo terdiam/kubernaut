@@ -5,7 +5,11 @@ use std::{ops::Range, sync::Arc};
 use futures::{StreamExt, channel::mpsc};
 use gpui_kit::{
     base::StyledExt,
-    component::{ActiveTheme, h_flex, v_flex},
+    component::{
+        ActiveTheme, h_flex,
+        input::{Input, InputEvent, InputState},
+        v_flex,
+    },
     prelude::FluentBuilder,
     *,
 };
@@ -16,6 +20,7 @@ use tokio::{runtime::Handle, task::JoinHandle};
 use crate::{
     drawer::Target,
     log_buffer::{LineKind, LogBuffer},
+    ui::{toast_error, toast_success},
 };
 
 const ROW_HEIGHT: Pixels = px(20.);
@@ -51,6 +56,10 @@ pub struct LogView {
     task: Option<JoinHandle<()>>,
     status: Option<SharedString>,
     tx: mpsc::UnboundedSender<(u64, Message)>,
+    /// Names the saved file after what is being read.
+    name: SharedString,
+    filter: Entity<InputState>,
+    _filter_events: Subscription,
 }
 
 impl Drop for LogView {
@@ -67,8 +76,18 @@ impl LogView {
         runtime: &Handle,
         target: &Target,
         log_target: LogTarget,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter lines"));
+        let filter_events =
+            cx.subscribe_in(&filter, window, |this, input, event: &InputEvent, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let text = input.read(cx).value().to_string();
+                    this.buffer.set_filter(&text);
+                    cx.notify();
+                }
+            });
         let (tx, mut rx) = mpsc::unbounded::<(u64, Message)>();
         cx.spawn(async move |this, cx| {
             while let Some((generation, message)) = rx.next().await {
@@ -99,6 +118,9 @@ impl LogView {
             task: None,
             status: Some("Starting…".into()),
             tx,
+            name: target.name.clone(),
+            filter,
+            _filter_events: filter_events,
         };
         view.load_containers();
         view.restart(cx);
@@ -173,9 +195,9 @@ impl LogView {
             Message::Batch(events) => {
                 self.buffer.push_all(&events);
                 self.status = None;
-                if self.follow && !self.buffer.is_empty() {
+                if self.follow && self.buffer.visible_len() > 0 {
                     self.scroll
-                        .scroll_to_item(self.buffer.len() - 1, ScrollStrategy::Bottom);
+                        .scroll_to_item(self.buffer.visible_len() - 1, ScrollStrategy::Bottom);
                 }
             }
             Message::Failed(message) => self.status = Some(message.into()),
@@ -231,7 +253,15 @@ impl LogView {
         }
 
         let is_pod = matches!(self.log_target, LogTarget::Pod { .. });
+        let filtering = self.buffer.is_filtering();
+        let counts: SharedString =
+            format!("{} of {}", self.buffer.visible_len(), self.buffer.len()).into();
+        let muted = cx.theme().muted_foreground;
         toolbar
+            .child(div().w(px(180.)).child(Input::new(&self.filter)))
+            .when(filtering, |bar| {
+                bar.child(div().text_xs().text_color(muted).child(counts))
+            })
             .when(is_pod, |bar| {
                 bar.child(
                     self.chip("previous", "Previous", self.previous, cx)
@@ -261,6 +291,40 @@ impl LogView {
                     cx.notify();
                 },
             )))
+            .child(
+                self.chip("save", "Save…", false, cx)
+                    .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
+            )
+    }
+
+    /// Write the lines on screen (those matching the filter, if there is one) to
+    /// a file the person picks.
+    fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.buffer.visible_len() == 0 {
+            toast_error(window, cx, "Nothing to save", "No log lines are shown.");
+            return;
+        }
+        let text = self.buffer.to_text();
+        let directory = std::env::var_os("HOME")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from("/"));
+        let chosen = cx.prompt_for_new_path(&directory, Some(&format!("{}.log", self.name)));
+        let runtime = self.runtime.clone();
+        cx.spawn_in(window, async move |_, cx| {
+            let Some(path) = chosen.await.ok().and_then(Result::ok).flatten() else {
+                return;
+            };
+            let target = path.clone();
+            let task = runtime.spawn(async move { tokio::fs::write(target, text).await });
+            let result = task.await;
+            cx.update(|window, cx| match result {
+                Ok(Ok(())) => toast_success(window, cx, format!("Saved {}", path.display())),
+                Ok(Err(err)) => toast_error(window, cx, "Could not save the log", err.to_string()),
+                Err(err) => toast_error(window, cx, "Could not save the log", err.to_string()),
+            })
+            .ok();
+        })
+        .detach();
     }
 }
 
@@ -282,11 +346,11 @@ impl Render for LogView {
                 .into_any_element(),
             _ => uniform_list(
                 "log-lines",
-                self.buffer.len(),
+                self.buffer.visible_len(),
                 cx.processor(move |this, range: Range<usize>, _window, _cx| {
                     range
                         .filter_map(|index| {
-                            let line = this.buffer.get(index)?;
+                            let line = this.buffer.visible(index)?;
                             let color = match line.kind {
                                 LineKind::Output => None,
                                 LineKind::Notice => Some(muted),

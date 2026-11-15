@@ -204,7 +204,7 @@ impl DrawerView {
         }
         self.tab = tab;
         match tab {
-            Tab::Logs => self.ensure_logs(cx),
+            Tab::Logs => self.ensure_logs(window, cx),
             Tab::Terminal => self.ensure_terminal(window, cx),
             Tab::Diagnose => self.ensure_diagnose(window, cx),
             Tab::Metrics => self.ensure_metrics(cx),
@@ -235,7 +235,7 @@ impl DrawerView {
             .on_click(cx.listener(move |this, _, window, cx| this.show(tab, window, cx)))
     }
 
-    fn ensure_logs(&mut self, cx: &mut Context<Self>) {
+    fn ensure_logs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.logs.is_some() {
             return;
         }
@@ -243,7 +243,7 @@ impl DrawerView {
             return;
         };
         let (core, runtime, target) = (&self.core, &self.runtime, &self.target);
-        self.logs = Some(cx.new(|cx| LogView::new(core, runtime, target, log_target, cx)));
+        self.logs = Some(cx.new(|cx| LogView::new(core, runtime, target, log_target, window, cx)));
     }
 
     /// A pod, or a workload whose pods can be looked at, can be diagnosed.
