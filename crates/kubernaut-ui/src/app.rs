@@ -23,8 +23,8 @@ use gpui_kit::{
     *,
 };
 use k8s_app::{
-    AppCore, metrics_ops, object_ops,
-    preferences::{PinnedObject, Preferences, set_pinned},
+    AppCore, cluster_ops, metrics_ops, object_ops,
+    preferences::{PinnedObject, Preferences, arrange, set_pinned},
     updates,
 };
 use k8s_core::{
@@ -111,6 +111,32 @@ struct Tile {
     display: SharedString,
     initials: SharedString,
     accent: Option<Hsla>,
+}
+
+/// A tile being dragged to a new place in the rail, carried by its context name.
+#[derive(Clone)]
+struct DraggedTile {
+    name: SharedString,
+    initials: SharedString,
+}
+
+impl Render for DraggedTile {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.theme();
+        div()
+            .size(px(40.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_xl()
+            .border_1()
+            .border_color(theme.primary)
+            .bg(theme.secondary)
+            .opacity(0.9)
+            .text_sm()
+            .font_semibold()
+            .child(self.initials.clone())
+    }
 }
 
 /// Tiles grouped under a workspace divider. The grouping is purely visual:
@@ -1375,6 +1401,80 @@ impl AppView {
         cx.notify();
     }
 
+    /// Put the dragged cluster in the slot of the one it was dropped on, and
+    /// remember that order.
+    fn move_cluster(&mut self, moved: &str, target: &str, cx: &mut Context<Self>) {
+        let current: Vec<String> = self
+            .tiles
+            .iter()
+            .map(|tile| tile.name.to_string())
+            .collect();
+        let (moved, target) = (moved.to_string(), target.to_string());
+        let core = Arc::clone(&self.core);
+        let task = self.runtime.spawn(async move {
+            core.update_preferences(|p| p.reorder_clusters(current, &moved, &target))
+        });
+        cx.spawn(async move |this, cx| {
+            let saved = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update(cx, |this, cx| {
+                if let Err(reason) = saved {
+                    tracing::warn!(%reason, "could not save the cluster order");
+                }
+                this.refresh_clusters(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Ask before removing an imported kubeconfig, naming every cluster in it.
+    fn confirm_remove_cluster(
+        &mut self,
+        file: k8s_app::clusters::ManagedKubeconfig,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let owner = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _, _| {
+            let (owner, path) = (owner.clone(), file.file.clone());
+            dialog
+                .title(format!("Remove {}?", file.contexts.join(", ")))
+                .description(
+                    "It disappears from the app and its connection closes. Nothing changes \
+                     in the cluster itself, and your own kubeconfig is not touched.",
+                )
+                .ok_text("Remove")
+                .ok_variant(ButtonVariant::Danger)
+                .show_cancel(true)
+                .on_ok(move |_, window, cx| {
+                    let path = path.clone();
+                    owner
+                        .update(cx, |app, cx| app.remove_cluster(path, window, cx))
+                        .ok();
+                    true
+                })
+        });
+    }
+
+    fn remove_cluster(&mut self, file: String, window: &mut Window, cx: &mut Context<Self>) {
+        let core = Arc::clone(&self.core);
+        let task = self
+            .runtime
+            .spawn(async move { cluster_ops::remove(&core, &file).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update_in(cx, |this, window, cx| {
+                match result {
+                    Ok(()) => toast_success(window, cx, "Removed"),
+                    Err(reason) => toast_error(window, cx, "Could not remove it", reason),
+                }
+                this.refresh_clusters(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     /// Say how a cluster is connected: where, as whom, and anything unusual.
     fn show_cluster_info(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tile) = self.tiles.get(index) else {
@@ -2543,6 +2643,14 @@ impl AppView {
         let tip: SharedString = format!("{} · {state}", tile.display).into();
         let owner = cx.entity().downgrade();
         let connected = self.clusters.contains_key(&tile.name);
+        let dragged = DraggedTile {
+            name: tile.name.clone(),
+            initials: tile.initials.clone(),
+        };
+        let target = tile.name.clone();
+        let removable = cluster_ops::managed()
+            .into_iter()
+            .find(|file| file.contexts.iter().any(|c| *c == *tile.name));
 
         div()
             .id(("tile", index))
@@ -2604,6 +2712,11 @@ impl AppView {
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.select_cluster(index, window, cx);
             }))
+            .on_drag(dragged, |dragged, _, _, cx| cx.new(|_| dragged.clone()))
+            .drag_over::<DraggedTile>(move |row, _, _, _| row.bg(hover))
+            .on_drop(cx.listener(move |this, dragged: &DraggedTile, _, cx| {
+                this.move_cluster(&dragged.name, &target, cx);
+            }))
             .context_menu(move |menu, _, _| {
                 let owner_for =
                     |act: fn(&mut AppView, usize, &mut Window, &mut Context<AppView>)| {
@@ -2624,7 +2737,7 @@ impl AppView {
                             .on_click(owner_for(AppView::edit_cluster)),
                     )
                     .separator();
-                if connected {
+                let menu = if connected {
                     menu.item(
                         PopupMenuItem::new("Disconnect")
                             .icon(Icon::new(IconName::Close))
@@ -2636,6 +2749,30 @@ impl AppView {
                             .icon(Icon::new(IconName::Play))
                             .on_click(owner_for(AppView::select_cluster)),
                     )
+                };
+                // Only a cluster imported into the app can go: the rest live in the
+                // user's own kubeconfig, which this app never edits.
+                match &removable {
+                    Some(file) => {
+                        let (owner, file) = (owner.clone(), file.clone());
+                        menu.separator().item(
+                            PopupMenuItem::new("Remove…")
+                                .icon(Icon::new(IconName::Delete))
+                                .on_click(move |_: &ClickEvent, window, cx| {
+                                    let file = file.clone();
+                                    owner
+                                        .update(cx, |app, cx| {
+                                            app.confirm_remove_cluster(file, window, cx)
+                                        })
+                                        .ok();
+                                }),
+                        )
+                    }
+                    None => menu.separator().item(
+                        PopupMenuItem::new("Remove (in your kubeconfig)")
+                            .icon(Icon::new(IconName::Delete))
+                            .disabled(true),
+                    ),
                 }
             })
     }
@@ -3414,7 +3551,7 @@ fn status_label(status: &ClusterStatus) -> SharedString {
     }
 }
 
-/// Tiles and their workspace grouping, in first-appearance order.
+/// Tiles in the user's saved order, and their workspace grouping.
 fn build_tiles(
     contexts: &[ContextEntry],
     preferences: &Preferences,
@@ -3422,7 +3559,9 @@ fn build_tiles(
     let mut tiles = Vec::with_capacity(contexts.len());
     let mut groups: Vec<(Option<String>, Vec<usize>)> = Vec::new();
 
-    for (index, context) in contexts.iter().enumerate() {
+    let names: Vec<&str> = contexts.iter().map(|c| c.name.as_str()).collect();
+    let arranged = arrange(&names, &preferences.cluster_order);
+    for (index, context) in arranged.into_iter().map(|i| &contexts[i]).enumerate() {
         let profile = preferences.profile(&context.name);
         let display = profile
             .display_name

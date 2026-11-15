@@ -163,6 +163,10 @@ pub struct Preferences {
     /// name. A cluster with nothing here shows every namespace.
     pub namespace_scopes: std::collections::BTreeMap<String, Vec<String>>,
 
+    /// Context names in the order the user arranged them in the cluster rail.
+    /// Contexts missing from it follow the listed ones in kubeconfig order.
+    pub cluster_order: Vec<String>,
+
     /// Resources pinned for one-click access from the sidebar.
     pub pinned: Vec<PinnedObject>,
 
@@ -186,10 +190,39 @@ impl Default for Preferences {
             check_updates_on_startup: true,
             cluster_profiles: std::collections::BTreeMap::new(),
             namespace_scopes: std::collections::BTreeMap::new(),
+            cluster_order: Vec::new(),
             pinned: Vec::new(),
             custom_columns: std::collections::BTreeMap::new(),
             custom_actions: Vec::new(),
         }
+    }
+}
+
+/// Indexes of `names` in the saved `order`. Names it does not list keep their
+/// relative order after the listed ones, so a new cluster lands at the end.
+pub fn arrange(names: &[&str], order: &[String]) -> Vec<usize> {
+    let mut indexes: Vec<usize> = (0..names.len()).collect();
+    indexes.sort_by_key(|&index| {
+        order
+            .iter()
+            .position(|entry| entry == names[index])
+            .unwrap_or(usize::MAX)
+    });
+    indexes
+}
+
+/// Move `moved` to the slot `target` occupies, shifting the others. False when
+/// either is missing or they are the same, so nothing changed.
+pub fn move_to(names: &mut Vec<String>, moved: &str, target: &str) -> bool {
+    let from = names.iter().position(|name| name == moved);
+    let to = names.iter().position(|name| name == target);
+    match (from, to) {
+        (Some(from), Some(to)) if from != to => {
+            let item = names.remove(from);
+            names.insert(to, item);
+            true
+        }
+        _ => false,
     }
 }
 
@@ -258,6 +291,14 @@ impl Preferences {
         }
     }
 
+    /// Put `moved` in `target`'s place in the rail. `current` is the order on
+    /// screen, which becomes the saved order. A no-op leaves the file untouched.
+    pub fn reorder_clusters(&mut self, mut current: Vec<String>, moved: &str, target: &str) {
+        if move_to(&mut current, moved, target) {
+            self.cluster_order = current;
+        }
+    }
+
     /// True when an action against this context should be refused.
     pub fn is_protected(&self, context: &str) -> bool {
         self.protected_contexts
@@ -316,6 +357,41 @@ impl Preferences {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn strings(items: &[&str]) -> Vec<String> {
+        items.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn saved_order_wins_and_unlisted_names_go_last() {
+        let order = strings(&["c", "a"]);
+        assert_eq!(arrange(&["a", "b", "c", "d"], &order), vec![2, 0, 1, 3]);
+        assert_eq!(arrange(&["a", "b"], &[]), vec![0, 1]);
+    }
+
+    #[test]
+    fn a_move_takes_the_targets_slot() {
+        let mut names = strings(&["a", "b", "c", "d"]);
+        assert!(move_to(&mut names, "a", "c"));
+        assert_eq!(names, ["b", "c", "a", "d"]);
+        assert!(move_to(&mut names, "d", "b"));
+        assert_eq!(names, ["d", "b", "c", "a"]);
+    }
+
+    #[test]
+    fn a_move_that_changes_nothing_says_so() {
+        let mut names = strings(&["a", "b"]);
+        assert!(!move_to(&mut names, "a", "a"));
+        assert!(!move_to(&mut names, "a", "zzz"));
+        assert!(!move_to(&mut names, "zzz", "a"));
+        assert_eq!(names, ["a", "b"]);
+    }
+
+    #[test]
+    fn an_old_preferences_file_has_no_order() {
+        let preferences: Preferences = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert!(preferences.cluster_order.is_empty());
+    }
 
     #[test]
     fn unknown_fields_do_not_break_loading() {
