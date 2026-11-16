@@ -40,4 +40,4 @@ Name: "{autoprograms}\Kubernaut"; Filename: "{app}\kubernaut-ui.exe"
 Name: "{autodesktop}\Kubernaut"; Filename: "{app}\kubernaut-ui.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\kubernaut-ui.exe"; Description: "Start Kubernaut"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\kubernaut-ui.exe"; Description: "Start Kubernaut"; Flags: nowait postinstall skipifsilent shellexec

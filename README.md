@@ -61,8 +61,9 @@ administrator rights), adds a Start menu entry and an uninstaller, and the
 installed app updates itself. Or take the `.zip`, unzip it and run
 `kubernaut-ui.exe`; a copy run from there updates itself too. Neither is
 code-signed, so SmartScreen warns on the first run: **More info**, then **Run
-anyway**. This build has not been run on a real Windows machine yet; please
-report what you find.
+anyway**. The app asks to **run as administrator** each time it starts (its
+manifest says so), so that the self-update can replace its own files wherever it
+was put; the setup program itself needs no administrator rights.
 
 Or build from source — see [Build](#build).
 
@@ -406,7 +407,9 @@ sudo apt-get install build-essential pkg-config clang cmake \
   libvulkan-dev libdbus-1-dev libgbm-dev libdrm-dev libegl1-mesa-dev libssl-dev
 ```
 
-Windows needs the Visual Studio C++ build tools.
+Windows needs the Visual Studio C++ build tools. The executable carries a manifest
+that asks for administrator rights, so `cargo run` and the tests of `kubernaut-ui`
+need an elevated terminal there.
 
 ```bash
 cargo build --release -p kubernaut-ui     # target/release/kubernaut-ui

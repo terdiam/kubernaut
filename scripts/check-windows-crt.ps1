@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-  Fail if a Windows executable needs the Visual C++ runtime DLLs.
+  Fail if a Windows executable needs the Visual C++ runtime DLLs, or lacks the
+  run-as-administrator manifest.
 
 .DESCRIPTION
   scripts\check-windows-crt.ps1 <path to .exe>
@@ -21,3 +22,10 @@ if ($found) {
   throw "$Binary needs the Visual C++ runtime: $($found -join ', '). Link it statically (.cargo/config.toml)."
 }
 Write-Host "ok: $Binary does not import the Visual C++ runtime DLLs"
+
+# The manifest asks Windows to start the app as administrator (crates/kubernaut-ui/build.rs),
+# which the self-update needs to replace its own files. It is plain text in the resource section.
+if ($text -notmatch 'requireAdministrator') {
+  throw "$Binary has no requireAdministrator manifest. Check crates/kubernaut-ui/build.rs."
+}
+Write-Host "ok: $Binary asks to run as administrator"
