@@ -40,10 +40,14 @@ jobs:
 
       # A clean Windows install has no Visual C++ runtime, so the executable must
       # carry its own: see .cargo/config.toml.
-      - name: The Windows executable does not need the Visual C++ runtime
+      - name: The Windows executable does not need the Visual C++ runtime, and can ask for administrator
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           cargo build -p kubernaut-ui
           if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
           scripts/check-windows-crt.ps1 -Binary target/debug/kubernaut-ui.exe
+          # The release step puts the administrator manifest into a copy; try it here too.
+          Copy-Item target/debug/kubernaut-ui.exe target/debug/kubernaut-ui-admin.exe
+          scripts/set-windows-manifest.ps1 -Binary target/debug/kubernaut-ui-admin.exe
+          scripts/check-windows-crt.ps1 -Binary target/debug/kubernaut-ui-admin.exe -RequireAdministrator

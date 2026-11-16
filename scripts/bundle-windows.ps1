@@ -47,6 +47,10 @@ $stage = "dist\Kubernaut"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }
 New-Item -ItemType Directory -Force $stage | Out-Null
 Copy-Item $Binary (Join-Path $stage "kubernaut-ui.exe")
+# The shipped copy asks to run as administrator so the self-update can replace its
+# own files; the build in target\ is left as it is.
+& (Join-Path $PSScriptRoot "set-windows-manifest.ps1") -Binary (Join-Path $stage "kubernaut-ui.exe")
+& (Join-Path $PSScriptRoot "check-windows-crt.ps1") -Binary (Join-Path $stage "kubernaut-ui.exe") -RequireAdministrator
 # Marks the folder as an install, and names the version, for the in-app updater.
 "dev.kubernaut.app $version" | Set-Content -Encoding ascii (Join-Path $stage "kubernaut.package")
 

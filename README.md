@@ -407,9 +407,9 @@ sudo apt-get install build-essential pkg-config clang cmake \
   libvulkan-dev libdbus-1-dev libgbm-dev libdrm-dev libegl1-mesa-dev libssl-dev
 ```
 
-Windows needs the Visual Studio C++ build tools. The executable carries a manifest
-that asks for administrator rights, so `cargo run` and the tests of `kubernaut-ui`
-need an elevated terminal there.
+Windows needs the Visual Studio C++ build tools. Only the shipped executable asks
+to run as administrator (`scripts/bundle-windows.ps1` puts the manifest in); a
+build from `cargo` does not, so `cargo run` and the tests need no elevated terminal.
 
 ```bash
 cargo build --release -p kubernaut-ui     # target/release/kubernaut-ui

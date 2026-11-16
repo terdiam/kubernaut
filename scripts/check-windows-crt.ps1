@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
-  Fail if a Windows executable needs the Visual C++ runtime DLLs, or lacks the
-  run-as-administrator manifest.
+  Fail if a Windows executable needs the Visual C++ runtime DLLs, or, with
+  -RequireAdministrator, lacks the run-as-administrator manifest.
 
 .DESCRIPTION
   scripts\check-windows-crt.ps1 <path to .exe>
@@ -10,7 +10,11 @@
   executable that imports them does not start there. The build links the C
   runtime in statically (.cargo/config.toml); this catches that going missing.
 #>
-param([Parameter(Mandatory = $true)][string]$Binary)
+param(
+  [Parameter(Mandatory = $true)][string]$Binary,
+  # Also require the run-as-administrator manifest (see set-windows-manifest.ps1).
+  [switch]$RequireAdministrator
+)
 $ErrorActionPreference = "Stop"
 if (-not (Test-Path $Binary)) { throw "no executable at $Binary" }
 
@@ -23,9 +27,11 @@ if ($found) {
 }
 Write-Host "ok: $Binary does not import the Visual C++ runtime DLLs"
 
-# The manifest asks Windows to start the app as administrator (crates/kubernaut-ui/build.rs),
-# which the self-update needs to replace its own files. It is plain text in the resource section.
-if ($text -notmatch 'requireAdministrator') {
-  throw "$Binary has no requireAdministrator manifest. Check crates/kubernaut-ui/build.rs."
+# The manifest is plain text in the resource section. The shipped executable asks
+# to run as administrator; a development build does not, so this is opt-in.
+if ($RequireAdministrator) {
+  if ($text -notmatch 'requireAdministrator') {
+    throw "$Binary has no requireAdministrator manifest. Run scripts/set-windows-manifest.ps1 on it."
+  }
+  Write-Host "ok: $Binary asks to run as administrator"
 }
-Write-Host "ok: $Binary asks to run as administrator"
