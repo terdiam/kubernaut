@@ -375,7 +375,7 @@ impl TableDelegate for ResourceDelegate {
         };
 
         let owner = self.context.owner.clone();
-        let pinned = self.context.core.preferences().is_pinned(&target.pin());
+        let pinned = self.context.core.is_pinned(&target.pin());
         let suspended = self
             .cell_of(row_ix, "Suspend")
             .and_then(|cell| match &*cell {

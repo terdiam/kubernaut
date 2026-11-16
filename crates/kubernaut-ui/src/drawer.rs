@@ -605,7 +605,7 @@ impl Render for DrawerView {
                     .child({
                         let owner = cx.entity().downgrade();
                         let resource = self.target.resource.clone();
-                        let pinned = self.core.preferences().is_pinned(&self.target.pin());
+                        let pinned = self.core.is_pinned(&self.target.pin());
                         let details = self.details.clone();
                         Button::new("drawer-actions")
                             .ghost()

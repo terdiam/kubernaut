@@ -90,6 +90,12 @@ impl AppCore {
         self.preferences.read().clone()
     }
 
+    /// Whether an object is pinned, without copying every preference to ask:
+    /// the drawer asks this on each frame it is drawn.
+    pub fn is_pinned(&self, pin: &crate::preferences::PinnedObject) -> bool {
+        self.preferences.read().is_pinned(pin)
+    }
+
     /// Change one preference and save the file.
     ///
     /// Edits are applied to a fresh copy under a lock, so two settings changed

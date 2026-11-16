@@ -3053,9 +3053,7 @@ impl AppView {
             initials: tile.initials.clone(),
         };
         let target = tile.name.clone();
-        let removable = cluster_ops::managed()
-            .into_iter()
-            .find(|file| file.contexts.iter().any(|c| *c == *tile.name));
+        let name = tile.name.clone();
 
         div()
             .id(("tile", index))
@@ -3123,6 +3121,11 @@ impl AppView {
                 this.move_cluster(&dragged.name, &target, cx);
             }))
             .context_menu(move |menu, _, _| {
+                // Read the folder only now that the menu opens: a tile is drawn
+                // on every frame, and this parses the imported kubeconfigs.
+                let removable = cluster_ops::managed()
+                    .into_iter()
+                    .find(|file| file.contexts.iter().any(|c| *c == *name));
                 let owner_for =
                     |act: fn(&mut AppView, usize, &mut Window, &mut Context<AppView>)| {
                         let owner = owner.clone();
