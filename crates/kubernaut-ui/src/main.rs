@@ -48,6 +48,7 @@ mod ui;
 mod upgrade;
 mod usage;
 mod validation;
+mod window_controls;
 mod yaml;
 
 use std::{cell::Cell, process::ExitCode, rc::Rc, sync::Arc};

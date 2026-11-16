@@ -289,6 +289,24 @@ pub fn download(release: &Release, directory: &Path) -> Result<PathBuf, String> 
 }
 
 /// A fresh folder to work in, which the swap helper removes.
+/// Download, verify and stage a release, then hand the swap to a helper that
+/// runs once this process exits. The caller quits on `Ok`. A failure leaves the
+/// running install untouched and removes what was downloaded.
+pub fn download_and_install(release: &Release) -> Result<(), String> {
+    let install_dir = current_install()
+        .ok_or("this copy is not running from an installed package, so it cannot replace itself")?;
+    let directory = staging_directory()?;
+    let outcome = (|| {
+        let package = download(release, &directory)?;
+        let staged = stage(&package, &directory, &release.version)?;
+        install(&staged, &install_dir)
+    })();
+    if outcome.is_err() {
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+    outcome
+}
+
 pub fn staging_directory() -> Result<PathBuf, String> {
     tempfile::Builder::new()
         .prefix("kubernaut-update-")

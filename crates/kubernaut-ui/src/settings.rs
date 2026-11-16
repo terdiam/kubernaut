@@ -176,6 +176,7 @@ pub struct SettingsView {
     runtime: Handle,
     tail: i64,
     check_on_startup: bool,
+    auto_install: bool,
     update: UpdateState,
     /// The cluster whose card is marked, because it was sent here to be edited.
     highlighted: Option<usize>,
@@ -259,6 +260,7 @@ impl SettingsView {
             runtime: runtime.clone(),
             tail: preferences.log_tail_lines,
             check_on_startup: preferences.check_updates_on_startup,
+            auto_install: preferences.auto_install_updates,
             update: UpdateState::Idle,
             highlighted: None,
             rows,
@@ -315,6 +317,18 @@ impl SettingsView {
         cx.notify();
     }
 
+    fn set_auto_install(&mut self, on: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.auto_install = on;
+        self.persist(
+            "the update setting",
+            move |p| p.auto_install_updates = on,
+            false,
+            window,
+            cx,
+        );
+        cx.notify();
+    }
+
     /// Mark a cluster's card and put the cursor in its name, which is what a
     /// person coming to edit it types first.
     pub fn show_cluster(&mut self, name: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -359,21 +373,9 @@ impl SettingsView {
     fn install_update(&mut self, release: Release, cx: &mut Context<Self>) {
         self.update = UpdateState::Working("Downloading and checking the signature…");
         cx.notify();
-        let task = self.runtime.spawn_blocking(move || -> Result<(), String> {
-            let bundle = updates::current_install().ok_or(
-                "this copy is not running from an installed package, so it cannot replace itself",
-            )?;
-            let directory = updates::staging_directory()?;
-            let outcome = (|| {
-                let zip = updates::download(&release, &directory)?;
-                let staged = updates::stage(&zip, &directory, &release.version)?;
-                updates::install(&staged, &bundle)
-            })();
-            if outcome.is_err() {
-                let _ = std::fs::remove_dir_all(&directory);
-            }
-            outcome
-        });
+        let task = self
+            .runtime
+            .spawn_blocking(move || updates::download_and_install(&release));
         cx.spawn(async move |this, cx| {
             let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
             this.update(cx, |this, cx| match result {
@@ -633,6 +635,17 @@ impl Render for SettingsView {
                 )
                 .on_click(
                     cx.listener(|this, _, window, cx| this.set_check_on_startup(false, window, cx)),
+                ),
+            );
+        let automatic = segmented_bar(cx.theme())
+            .child(
+                segment("settings-auto-on", "On", self.auto_install, cx.theme()).on_click(
+                    cx.listener(|this, _, window, cx| this.set_auto_install(true, window, cx)),
+                ),
+            )
+            .child(
+                segment("settings-auto-off", "Off", !self.auto_install, cx.theme()).on_click(
+                    cx.listener(|this, _, window, cx| this.set_auto_install(false, window, cx)),
                 ),
             );
         let busy = matches!(self.update, UpdateState::Checking | UpdateState::Working(_));
@@ -898,9 +911,17 @@ impl Render for SettingsView {
                                 .child(line(
                                     "Check on startup",
                                     "Asks GitHub for the latest release and sends nothing about \
-                                         this machine. It never installs by itself.",
+                                         this machine.",
                                     startup.into_any_element(),
                                 ))
+                                .child(div().border_t_1().border_color(border).child(line(
+                                    "Install automatically",
+                                    "When the check finds a newer version, download it, \
+                                         check its signature and restart into it. Needs the \
+                                         check on startup, and does nothing for an install the \
+                                         app cannot replace itself, such as a .deb.",
+                                    automatic.into_any_element(),
+                                )))
                                 .child(
                                     v_flex()
                                         .px_4()

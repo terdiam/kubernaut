@@ -156,6 +156,13 @@ pub struct Preferences {
     /// checking is never installing: nothing downloads without an explicit click.
     pub check_updates_on_startup: bool,
 
+    /// Install a signed update found at startup, and restart into it. Only an
+    /// install the app can replace by itself takes part (not a root-owned
+    /// `.deb`, nor a build run from `target/`), and only the same signature
+    /// check as Settings → Updates lets it through. Off leaves the choice to
+    /// that page. Needs the startup check, which is what finds the update.
+    pub auto_install_updates: bool,
+
     /// Per-cluster settings, keyed by context name.
     pub cluster_profiles: std::collections::BTreeMap<String, ClusterProfile>,
 
@@ -195,6 +202,7 @@ impl Default for Preferences {
             show_absolute_times: false,
             protected_contexts: Vec::new(),
             check_updates_on_startup: true,
+            auto_install_updates: true,
             cluster_profiles: std::collections::BTreeMap::new(),
             namespace_scopes: std::collections::BTreeMap::new(),
             cluster_order: Vec::new(),
@@ -423,6 +431,14 @@ mod tests {
         assert!(!move_to(&mut names, "a", "zzz"));
         assert!(!move_to(&mut names, "zzz", "a"));
         assert_eq!(names, ["a", "b"]);
+    }
+
+    #[test]
+    fn automatic_updates_are_on_for_a_file_that_never_mentioned_them() {
+        let preferences: Preferences = serde_json::from_str(r#"{"theme":"dark"}"#).unwrap();
+        assert!(preferences.auto_install_updates);
+        let off: Preferences = serde_json::from_str(r#"{"autoInstallUpdates":false}"#).unwrap();
+        assert!(!off.auto_install_updates);
     }
 
     #[test]

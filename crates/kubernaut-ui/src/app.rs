@@ -60,6 +60,7 @@ use crate::{
     topology::{TopologyEvent, TopologyView},
     ui::{Emphasis, button_icon, chip, pill, toast_error, toast_success},
     usage::{UsageEvent, UsageView},
+    window_controls::{leaves_room_for_traffic_lights, window_controls},
     yaml::fetch_yaml,
 };
 
@@ -569,22 +570,62 @@ impl AppView {
 
         // The one thing the app asks the network for unprompted, and only when
         // the person has left it on. A failure is silent: being offline is normal.
-        if core.preferences().check_updates_on_startup {
+        let preferences = core.preferences();
+        if preferences.check_updates_on_startup {
+            let install_here = preferences.auto_install_updates;
+            let runtime = runtime.clone();
             let task = runtime.spawn_blocking(|| updates::check(env!("CARGO_PKG_VERSION")));
             cx.spawn_in(window, async move |_, cx| {
-                if let Ok(Ok(Some(release))) = task.await {
+                let Ok(Ok(Some(release))) = task.await else {
+                    return;
+                };
+                // Nothing is in progress yet, so this is the one moment a restart
+                // costs nothing. It takes the same signature and version checks as
+                // Settings → Updates, and an install that cannot replace itself
+                // (a .deb, a build run from `target/`) only gets the notice.
+                if install_here && release.installable() && updates::current_install().is_some() {
+                    let version = release.version.clone();
                     cx.update(|window, cx| {
                         toast_success(
                             window,
                             cx,
-                            format!(
-                                "Kubernaut {} is available. See Settings → Updates.",
-                                release.version
-                            ),
+                            format!("Installing Kubernaut {version}; it restarts in a moment."),
                         );
                     })
                     .ok();
+                    let outcome = runtime
+                        .spawn_blocking(move || updates::download_and_install(&release))
+                        .await
+                        .unwrap_or_else(|err| Err(err.to_string()));
+                    match outcome {
+                        Ok(()) => {
+                            cx.update(|_, cx| cx.quit()).ok();
+                        }
+                        Err(reason) => {
+                            cx.update(|window, cx| {
+                                toast_error(
+                                    window,
+                                    cx,
+                                    format!("Could not install Kubernaut {version}"),
+                                    format!("{reason} See Settings → Updates."),
+                                );
+                            })
+                            .ok();
+                        }
+                    }
+                    return;
                 }
+                cx.update(|window, cx| {
+                    toast_success(
+                        window,
+                        cx,
+                        format!(
+                            "Kubernaut {} is available. See Settings → Updates.",
+                            release.version
+                        ),
+                    );
+                })
+                .ok();
             })
             .detach();
         }
@@ -3425,15 +3466,22 @@ impl AppView {
 
     /// The toolbar across the top. It doubles as the window's drag handle, and
     /// leaves room on the left for the traffic lights.
-    fn render_titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_titlebar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let controls = window_controls(window, cx);
         let theme = cx.theme();
         let bar = h_flex()
             .window_control_area(WindowControlArea::Drag)
             .h(px(48.))
             .w_full()
             .flex_none()
-            .pl(px(84.))
-            .pr_4()
+            // Room for macOS's traffic lights; elsewhere the buttons sit flush
+            // against the right edge, so the bar keeps no padding there.
+            .pl(if leaves_room_for_traffic_lights() {
+                px(84.)
+            } else {
+                px(16.)
+            })
+            .pr(if controls.is_some() { px(0.) } else { px(16.) })
             .gap_3()
             .items_center()
             .bg(theme.title_bar)
@@ -3473,7 +3521,8 @@ impl AppView {
                 .child(div().font_semibold().text_color(muted).child("Kubernaut"))
                 .child(titlebar_gap("titlebar-gap-a"))
                 .child(search)
-                .child(titlebar_gap("titlebar-gap-b"));
+                .child(titlebar_gap("titlebar-gap-b"))
+                .children(controls);
         };
         let tile = &self.tiles[index];
         let tone = match state.status {
@@ -3592,6 +3641,10 @@ impl AppView {
             chip("disconnect", "Disconnect", true, false, theme)
                 .on_click(cx.listener(move |this, _, _, cx| this.disconnect(index, cx))),
         )
+        .when(controls.is_some(), |bar| {
+            bar.child(div().w(px(8.)).flex_none())
+        })
+        .children(controls)
     }
 
     /// One line along the bottom: what is connected, and how much is shown.
@@ -3808,7 +3861,7 @@ impl AppView {
 }
 
 impl Render for AppView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         v_flex()
             .size_full()
             .relative()
@@ -3819,7 +3872,7 @@ impl Render for AppView {
             }))
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
-            .child(self.render_titlebar(cx))
+            .child(self.render_titlebar(window, cx))
             .child(
                 // A plain flex row so the three columns stretch to full height.
                 div()

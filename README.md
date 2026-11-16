@@ -316,6 +316,12 @@ and the running app is left as it was. Until a key is set up (below), or for a
 release that is not signed, the app only tells you a version exists and links its
 notes.
 
+**Install automatically** (on by default, and it needs the check on startup): when
+the startup check finds a newer version, the app downloads it, runs the same
+checks and restarts into it, before you have started anything. Switch it off and
+the app only tells you, leaving the choice to this page. It does nothing for an
+install that cannot replace itself, such as a `.deb` or a build run from `target/`.
+
 What gets replaced depends on the system. On macOS it is the `.app`. On Linux and
 Windows it is the install folder, found by the `kubernaut.package` file beside the
 executable, so a build run from `target/` never replaces itself, and neither does
@@ -372,7 +378,8 @@ takes the update keeps its settings, since the data folder is the same.
 - **No telemetry.** The app talks only to clusters you added. The one exception
   is the update check: at startup, unless you turn it off in Settings → Updates,
   it asks GitHub for the latest release version. That request carries nothing
-  about you or this machine, and it never installs anything by itself.
+  about you or this machine. A newer version is installed by itself only while
+  Install automatically is on (the default), and only if its signature verifies.
 
 ### Not yet in the native app
 
