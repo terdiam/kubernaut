@@ -267,7 +267,11 @@ pub fn install(staged: &Path, target: &Path) -> Result<(), String> {
         check_writable(target.parent(), "drag the new app over it yourself")?;
         spawn_detached(swap_command(SWAP_APP, process_id, target, staged, staging))
     } else if cfg!(windows) {
-        check_writable(Some(target), "run the setup program of the new version")?;
+        check_writable(
+            Some(target),
+            "close Kubernaut and start it again with right-click, Run as administrator, \
+             or run the setup program of the new version",
+        )?;
         // The script goes in the staging folder, which it removes last.
         let script = staging.join("swap.ps1");
         std::fs::write(&script, SWAP_WINDOWS).map_err(|e| e.to_string())?;
