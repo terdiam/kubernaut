@@ -41,6 +41,7 @@ if (-not $Binary) {
   $Binary = Join-Path $targetDir "release\kubernaut-ui.exe"
 }
 if (-not (Test-Path $Binary)) { throw "no executable at $Binary" }
+& (Join-Path $PSScriptRoot "check-windows-crt.ps1") -Binary $Binary
 
 $stage = "dist\Kubernaut"
 if (Test-Path $stage) { Remove-Item -Recurse -Force $stage }

@@ -1,0 +1,5 @@
+# Link the C runtime into the executable on Windows. Without this the app needs
+# VCRUNTIME140.dll (the Visual C++ Redistributable), which a clean Windows install
+# does not have, and it fails to start with "VCRUNTIME140.dll was not found".
+[target.'cfg(all(windows, target_env = "msvc"))']
+rustflags = ["-C", "target-feature=+crt-static"]

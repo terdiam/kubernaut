@@ -37,3 +37,13 @@ jobs:
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+
+      # A clean Windows install has no Visual C++ runtime, so the executable must
+      # carry its own: see .cargo/config.toml.
+      - name: The Windows executable does not need the Visual C++ runtime
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build -p kubernaut-ui
+          if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
+          scripts/check-windows-crt.ps1 -Binary target/debug/kubernaut-ui.exe
