@@ -89,12 +89,32 @@ actions!(
 
 /// Empty space in the title bar. Double-clicking it maximises the window, as it
 /// does on a native title bar; the bar is drawn by the app, so that is done here.
+///
+/// Off macOS this is also what drags the window. GPUI answers the system's
+/// hit-test with the first window-control area under the pointer, parents before
+/// children, so the drag area must not contain the minimise, maximise and close
+/// buttons: marking the whole bar as the drag area made every click on them read
+/// as a drag, and they did nothing.
 fn titlebar_gap(id: &'static str) -> Stateful<Div> {
-    div().id(id).flex_1().h_full().on_click(|event, window, _| {
-        if event.click_count() == 2 {
-            window.zoom_window();
-        }
-    })
+    div()
+        .id(id)
+        .flex_1()
+        .h_full()
+        .when(!cfg!(target_os = "macos"), |gap| {
+            gap.window_control_area(WindowControlArea::Drag)
+        })
+        .when(cfg!(target_os = "linux"), |gap| {
+            gap.on_mouse_down(MouseButton::Left, |event, window, _| {
+                if event.click_count == 1 {
+                    window.start_window_move();
+                }
+            })
+        })
+        .on_click(|event, window, _| {
+            if event.click_count() == 2 {
+                window.zoom_window();
+            }
+        })
 }
 
 /// The key context the app's shortcuts are bound under.
@@ -3473,7 +3493,11 @@ impl AppView {
         let controls = window_controls(window, cx);
         let theme = cx.theme();
         let bar = h_flex()
-            .window_control_area(WindowControlArea::Drag)
+            // On macOS the whole bar drags, since nothing on it needs the pointer
+            // for anything else. Elsewhere only the gaps do: see `titlebar_gap`.
+            .when(cfg!(target_os = "macos"), |bar| {
+                bar.window_control_area(WindowControlArea::Drag)
+            })
             .h(px(48.))
             .w_full()
             .flex_none()
