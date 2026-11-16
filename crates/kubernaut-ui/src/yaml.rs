@@ -16,7 +16,7 @@ use gpui_kit::{
     prelude::FluentBuilder,
     *,
 };
-use k8s_app::{AppCore, forms};
+use k8s_app::{AppCore, forms, object_ops};
 use k8s_core::objects;
 use k8s_ops::apply::{self, ApplyOutcome, DiffResult, EditRequest, FieldConflict};
 use tokio::runtime::Handle;
@@ -253,12 +253,6 @@ impl YamlView {
         if self.busy.is_some() || !can_apply(&yaml, self.previewed.as_ref()) {
             return;
         }
-        // Protected contexts refuse every change, not just destructive ones.
-        if let Err(message) = self.core.ensure_writable(&self.target.cluster) {
-            self.notice = Some(Notice::Error(message.into()));
-            cx.notify();
-            return;
-        }
         let force = self.previewed.as_ref().is_some_and(|p| p.force);
         self.busy = Some("Applying…");
         self.notice = None;
@@ -266,15 +260,11 @@ impl YamlView {
 
         let request = self.request(&yaml, force);
         let (core, cluster) = (Arc::clone(&self.core), self.target.cluster.clone());
-        let task = self.runtime.spawn(async move {
-            let handle = core
-                .clusters
-                .require(&cluster)
-                .map_err(|err| err.to_string())?;
-            apply::apply(&handle, &request)
-                .await
-                .map_err(|err| err.to_string())
-        });
+        // Protection and the audit entry live in `object_ops`, shared with every
+        // other change, so this view cannot forget either.
+        let task = self
+            .runtime
+            .spawn(async move { object_ops::apply_edit(&core, &cluster, request).await });
         cx.spawn_in(window, async move |this, cx| {
             let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
             this.update_in(cx, |this, window, cx| {

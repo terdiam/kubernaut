@@ -10,6 +10,8 @@ use k8s_ops::{
     actions::{
         self, BulkOutcome, DeleteRequest, DrainOptions, DrainReport, ExportResult, TargetRef,
     },
+    apply::{self, ApplyOutcome, EditRequest},
+    error::OpsError,
     node_edit::{self, NodeTags, Taint},
 };
 
@@ -19,6 +21,44 @@ fn label(target: &TargetRef) -> String {
     match &target.namespace {
         Some(namespace) => format!("{}/{namespace}/{}", target.resource, target.name),
         None => format!("{}/{}", target.resource, target.name),
+    }
+}
+
+/// Apply an object edited as YAML. A protected cluster refuses it, and every
+/// attempt is audited, including the one the cluster turned away because another
+/// field manager owns what was changed: that changed nothing, and the entry says so.
+pub async fn apply_edit(
+    core: &AppCore,
+    cluster: &str,
+    request: EditRequest,
+) -> Result<ApplyOutcome, String> {
+    core.ensure_writable(cluster)?;
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let target = label(&TargetRef {
+        resource: request.resource.clone(),
+        namespace: request.namespace.clone(),
+        name: request.name.clone(),
+    });
+    let result = apply::apply(&handle, &request).await;
+    let action = if request.force {
+        "editObject (forced)"
+    } else {
+        "editObject"
+    };
+    core.record_audit(cluster, action, &target, &apply_audit(&result));
+    result.map_err(|e| e.to_string())
+}
+
+/// What the audit log should say about an apply. Only `Applied` changed the
+/// cluster; a field-manager conflict came back as a normal answer but did not.
+fn apply_audit(result: &Result<ApplyOutcome, OpsError>) -> Result<(), String> {
+    match result {
+        Ok(ApplyOutcome::Applied { .. }) => Ok(()),
+        Ok(ApplyOutcome::Conflict { conflicts }) => Err(format!(
+            "refused: {} field(s) are owned by another manager",
+            conflicts.len()
+        )),
+        Err(err) => Err(err.to_string()),
     }
 }
 
@@ -344,8 +384,23 @@ pub async fn export_archive(
 
 #[cfg(test)]
 mod tests {
-    use super::{BulkOutcome, bulk_label, bulk_result, failed, parse_replicas};
-    use k8s_ops::actions::TargetRef;
+    use super::{BulkOutcome, apply_audit, bulk_label, bulk_result, failed, parse_replicas};
+    use k8s_ops::{actions::TargetRef, apply::ApplyOutcome, error::OpsError};
+
+    #[test]
+    fn only_an_applied_edit_is_audited_as_a_success() {
+        let applied = Ok(ApplyOutcome::Applied {
+            yaml: String::new(),
+            resource_version: None,
+        });
+        assert_eq!(apply_audit(&applied), Ok(()));
+
+        let conflict = Ok(ApplyOutcome::Conflict { conflicts: vec![] });
+        assert!(apply_audit(&conflict).unwrap_err().starts_with("refused"));
+
+        let failed: Result<ApplyOutcome, OpsError> = Err(OpsError::other("forbidden"));
+        assert!(apply_audit(&failed).unwrap_err().contains("forbidden"));
+    }
 
     fn outcome(ok: bool) -> BulkOutcome {
         BulkOutcome {
