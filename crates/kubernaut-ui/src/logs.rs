@@ -292,9 +292,25 @@ impl LogView {
                 },
             )))
             .child(
+                self.chip("copy", "Copy", false, cx)
+                    .on_click(cx.listener(|this, _, window, cx| this.copy_all(window, cx))),
+            )
+            .child(
                 self.chip("save", "Save…", false, cx)
                     .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
             )
+    }
+
+    /// Put the lines on screen (those matching the filter, if there is one) on
+    /// the clipboard.
+    fn copy_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let count = self.buffer.visible_len();
+        if count == 0 {
+            toast_error(window, cx, "Nothing to copy", "No log lines are shown.");
+            return;
+        }
+        cx.write_to_clipboard(ClipboardItem::new_string(self.buffer.to_text()));
+        toast_success(window, cx, format!("Copied {count} lines"));
     }
 
     /// Write the lines on screen (those matching the filter, if there is one) to
@@ -305,7 +321,9 @@ impl LogView {
             return;
         }
         let text = self.buffer.to_text();
+        // Windows has no HOME; without this the dialog opened at the drive root.
         let directory = std::env::var_os("HOME")
+            .or_else(|| std::env::var_os("USERPROFILE"))
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from("/"));
         let chosen = cx.prompt_for_new_path(&directory, Some(&format!("{}.log", self.name)));
@@ -347,7 +365,7 @@ impl Render for LogView {
             _ => uniform_list(
                 "log-lines",
                 self.buffer.visible_len(),
-                cx.processor(move |this, range: Range<usize>, _window, _cx| {
+                cx.processor(move |this, range: Range<usize>, _window, cx| {
                     range
                         .filter_map(|index| {
                             let line = this.buffer.visible(index)?;
@@ -356,10 +374,21 @@ impl Render for LogView {
                                 LineKind::Notice => Some(muted),
                                 LineKind::Error => Some(danger),
                             };
+                            let copy = match &line.pod {
+                                Some(pod) => format!("{pod} {}", line.text),
+                                None => line.text.to_string(),
+                            };
                             Some(
                                 h_flex()
                                     .id(("line", index))
                                     .w_full()
+                                    .cursor_pointer()
+                                    .on_click(cx.listener(move |_, _, window, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(
+                                            copy.clone(),
+                                        ));
+                                        toast_success(window, cx, "Copied the line");
+                                    }))
                                     .h(ROW_HEIGHT)
                                     .px_3()
                                     .gap_2()
