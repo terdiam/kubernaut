@@ -65,6 +65,12 @@ anyway**. The app asks to **run as administrator** each time it starts (its
 manifest says so), so that the self-update can replace its own files wherever it
 was put; the setup program itself needs no administrator rights.
 
+On Windows the setup program also offers (ticked by default) to install `kubectl`
+and the `kubectl oidc-login` plugin if they are missing, so an OIDC kubeconfig works
+on first start. They go to `%LOCALAPPDATA%\Kubernaut\bin`, each download checked
+against its published SHA-256, with no administrator rights. Run
+`install-prerequisites.ps1` from the install folder to do it again.
+
 Or build from source — see [Build](#build).
 
 ## Why

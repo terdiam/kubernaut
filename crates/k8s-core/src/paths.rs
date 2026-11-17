@@ -136,6 +136,18 @@ fn fallback_dirs() -> Vec<PathBuf> {
         dirs.push(home.join(".local/bin"));
         dirs.push(home.join("bin"));
         dirs.push(home.join("google-cloud-sdk/bin"));
+        // Where krew puts kubectl plugins such as `oidc-login`; a GUI launch
+        // often lacks it even when the user's terminal has it.
+        dirs.push(home.join(".krew/bin"));
+    }
+    // Where scripts/install-prerequisites.ps1 puts kubectl and the oidc-login
+    // plugin. The setup program starts the app before the new PATH reaches it.
+    #[cfg(windows)]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        dirs.push(PathBuf::from(local).join("Kubernaut").join("bin"));
+    }
+    if let Some(root) = std::env::var_os("KREW_ROOT") {
+        dirs.push(PathBuf::from(root).join("bin"));
     }
     dirs.into_iter().filter(|p| p.is_dir()).collect()
 }

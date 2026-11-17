@@ -31,6 +31,7 @@ CloseApplications=yes
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop shortcut"; Flags: unchecked
+Name: "prerequisites"; Description: "Install &kubectl and the OIDC login plugin if missing (downloads about 70 MB)"
 
 [Files]
 Source: "..\dist\Kubernaut\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs
@@ -40,4 +41,6 @@ Name: "{autoprograms}\Kubernaut"; Filename: "{app}\kubernaut-ui.exe"
 Name: "{autodesktop}\Kubernaut"; Filename: "{app}\kubernaut-ui.exe"; Tasks: desktopicon
 
 [Run]
+; Before the app starts, so a kubeconfig that logs in through OIDC works the first time.
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -File ""{app}\install-prerequisites.ps1"""; StatusMsg: "Installing kubectl and the OIDC login plugin..."; Flags: runhidden waituntilterminated; Tasks: prerequisites
 Filename: "{app}\kubernaut-ui.exe"; Description: "Start Kubernaut"; Flags: nowait postinstall skipifsilent shellexec

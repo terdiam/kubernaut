@@ -51,6 +51,8 @@ Copy-Item $Binary (Join-Path $stage "kubernaut-ui.exe")
 # own files; the build in target\ is left as it is.
 & (Join-Path $PSScriptRoot "set-windows-manifest.ps1") -Binary (Join-Path $stage "kubernaut-ui.exe")
 & (Join-Path $PSScriptRoot "check-windows-crt.ps1") -Binary (Join-Path $stage "kubernaut-ui.exe") -RequireAdministrator
+# Run by the setup program, and by hand to repair a machine missing kubectl or oidc-login.
+Copy-Item (Join-Path $PSScriptRoot "install-prerequisites.ps1") (Join-Path $stage "install-prerequisites.ps1")
 # Marks the folder as an install, and names the version, for the in-app updater.
 "dev.kubernaut.app $version" | Set-Content -Encoding ascii (Join-Path $stage "kubernaut.package")
 

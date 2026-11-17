@@ -108,6 +108,23 @@ impl CoreError {
     }
 }
 
+/// A credential plugin that exited with an error. Its own message went to the
+/// console the app does not have, so say what to try instead of echoing the
+/// empty output twice.
+fn exec_failed_hint(chain: &str) -> String {
+    let command = chain
+        .split(" failed with status")
+        .next()
+        .unwrap_or(chain)
+        .trim_start_matches("auth error: ");
+    format!(
+        "the login plugin failed and its message is not shown here: {command}. Run that same \
+         command in a terminal to see why. For `kubectl oidc-login`, `unknown command` means \
+         the plugin is not installed (`kubectl krew install oidc-login`) or its folder \
+         (`%USERPROFILE%\\.krew\\bin` on Windows) is not on PATH"
+    )
+}
+
 /// An error and everything beneath it, joined, so the cause is not lost behind
 /// a one-line summary such as `client error (Connect)`.
 fn error_chain(err: &dyn std::error::Error) -> String {
@@ -125,6 +142,9 @@ fn error_chain(err: &dyn std::error::Error) -> String {
 /// causes. `None` when it is not one of the failures people hit and can fix.
 fn transport_hint(chain: &str) -> Option<String> {
     let lower = chain.to_ascii_lowercase();
+    if lower.contains("auth exec command") && lower.contains("failed with status") {
+        return Some(exec_failed_hint(chain));
+    }
     if lower.contains("invalid peer certificate") {
         return Some(certificate_hint(chain, &lower));
     }
@@ -411,6 +431,14 @@ mod tests {
             text.contains("client error (Connect): something new: deep cause"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn a_failed_login_plugin_points_at_running_it_in_a_terminal() {
+        let chain = "auth error: auth exec command '\"kubectl\" \"oidc-login\"' failed with status exit code: 1";
+        let hint = transport_hint(chain).unwrap_or_default();
+        assert!(hint.contains("krew install oidc-login"), "{hint}");
+        assert!(hint.contains("\"kubectl\" \"oidc-login\""), "{hint}");
     }
 
     #[test]
