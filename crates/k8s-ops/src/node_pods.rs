@@ -220,18 +220,7 @@ async fn run_to_end(pods: &Api<Pod>, name: &str) -> Result<()> {
         let status = pod.status.as_ref();
         match status.and_then(|s| s.phase.as_deref()).unwrap_or("") {
             "Succeeded" => return Ok(()),
-            "Failed" => {
-                let log = pods
-                    .logs(name, &LogParams::default())
-                    .await
-                    .unwrap_or_default();
-                let reason = log
-                    .trim()
-                    .lines()
-                    .last()
-                    .unwrap_or("it exited with an error");
-                return Err(OpsError::other(reason.trim_start_matches("kubernaut: ")));
-            }
+            "Failed" => return Err(failure(pods, name, &pod).await),
             _ => {}
         }
         if let Some(reason) = status
@@ -250,6 +239,36 @@ async fn run_to_end(pods: &Api<Pod>, name: &str) -> Result<()> {
             )));
         }
         tokio::time::sleep(POLL).await;
+    }
+}
+
+/// Say why the edit pod failed: its own message if it printed one, else the exit
+/// code, and why its log could not be read if that is the reason.
+async fn failure(pods: &Api<Pod>, name: &str, pod: &Pod) -> OpsError {
+    let ended = pod
+        .status
+        .as_ref()
+        .and_then(|s| s.container_statuses.as_ref())
+        .and_then(|list| list.first())
+        .and_then(|c| c.state.as_ref())
+        .and_then(|s| s.terminated.as_ref());
+    let code = ended.map_or_else(
+        || "an unknown code".to_string(),
+        |t| match t.reason.as_deref() {
+            Some(reason) => format!("code {} ({reason})", t.exit_code),
+            None => format!("code {}", t.exit_code),
+        },
+    );
+    match pods.logs(name, &LogParams::default()).await {
+        Ok(log) => match log.trim().lines().last() {
+            Some(line) => OpsError::other(line.trim_start_matches("kubernaut: ")),
+            None => OpsError::other(format!(
+                "the edit pod exited with {code} and printed nothing"
+            )),
+        },
+        Err(err) => OpsError::other(format!(
+            "the edit pod exited with {code}, and its log could not be read: {err}"
+        )),
     }
 }
 
