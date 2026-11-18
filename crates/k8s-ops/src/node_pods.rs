@@ -18,6 +18,11 @@ use crate::{
     exec::{DEFAULT_DEBUG_IMAGE, short_suffix},
 };
 
+/// Where the edit pod runs. It is privileged, which the PodSecurity admission
+/// of an ordinary namespace refuses; `kube-system` is the one clusters leave
+/// open for node agents.
+pub const POD_NAMESPACE: &str = "kube-system";
+
 /// Most pods the kubelet accepts a limit for.
 pub const MAX_LIMIT: u32 = 65_535;
 
@@ -105,7 +110,18 @@ pub async fn set(
     let pods: Api<Pod> = Api::namespaced(cluster.client.clone(), namespace);
     let name = format!("kubernaut-max-pods-{}", short_suffix());
     pods.create(&PostParams::default(), &pod(&name, namespace, node, limit)?)
-        .await?;
+        .await
+        .map_err(|err| {
+            let text = err.to_string();
+            if text.contains("PodSecurity") {
+                OpsError::other(format!(
+                    "namespace `{namespace}` does not allow privileged pods, which this needs \
+                     to edit the kubelet: {text}"
+                ))
+            } else {
+                err.into()
+            }
+        })?;
 
     let ran = run_to_end(&pods, &name).await;
     // The pod is privileged: it must not outlive the edit, whatever happened.

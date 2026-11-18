@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("before: {:?}", node_pods::read(&cluster, &node).await?);
     if let Some(limit) = limit {
-        match node_pods::set(&cluster, &node, limit, "default", &node).await {
+        match node_pods::set(&cluster, &node, limit, node_pods::POD_NAMESPACE, &node).await {
             Ok(()) => println!("applied {limit}"),
             Err(err) => println!("refused: {err}"),
         }

@@ -268,7 +268,7 @@ pub async fn set_pod_limit(
 ) -> Result<(), String> {
     core.ensure_writable(cluster)?;
     let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
-    let result = node_pods::set(&handle, node, limit, "default", node).await;
+    let result = node_pods::set(&handle, node, limit, node_pods::POD_NAMESPACE, node).await;
     core.record_audit(cluster, "setMaxPods", &format!("nodes/{node}"), &result);
     result.map_err(|e| e.to_string())
 }
