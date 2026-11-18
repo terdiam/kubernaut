@@ -228,7 +228,13 @@ impl NodeEditView {
                         .child(div().text_color(warning).child(
                             "The node's pod CIDR must hold that many addresses, or pods will \
                              fail to get an IP.",
-                        )),
+                        ))
+                        .when(current.used >= current.capacity, |column| {
+                            column.child(div().text_color(warning).child(
+                                "The node is full. The pod that makes the change needs one free \
+                                 slot: delete or evict a pod from the node first.",
+                            ))
+                        }),
                 )
                 .ok_text("Apply")
                 .show_cancel(true)

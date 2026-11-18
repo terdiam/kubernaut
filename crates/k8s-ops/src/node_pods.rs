@@ -247,6 +247,20 @@ async fn run_to_end(pods: &Api<Pod>, name: &str) -> Result<Option<String>> {
 /// went through, so the node decides: the note says what was seen, for the
 /// error if the node does not report the new limit.
 async fn failure(pods: &Api<Pod>, name: &str, pod: &Pod) -> Result<Option<String>> {
+    // A full node refuses the pod before it starts, and nothing here can free a
+    // slot without choosing a pod to evict, which is the person's call.
+    if let Some(status) = pod.status.as_ref()
+        && (status.reason.as_deref() == Some("OutOfpods")
+            || status
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("OutOfpods")))
+    {
+        return Err(OpsError::other(
+            "the node is full, so it refused the pod that makes the change. Delete or evict \
+             one pod from the node to free a slot, then apply again",
+        ));
+    }
     let code = pod
         .status
         .as_ref()
