@@ -21,7 +21,10 @@ use gpui_kit::{
     *,
 };
 use k8s_app::{AppCore, object_ops};
-use k8s_ops::node_edit::{self, EFFECTS, NodeTags, Taint};
+use k8s_ops::{
+    node_edit::{self, EFFECTS, NodeTags, Taint},
+    node_pods::{self, PodLimit},
+};
 use tokio::runtime::Handle;
 
 use crate::ui::{
@@ -48,6 +51,11 @@ pub struct NodeEditView {
     label_value: Entity<InputState>,
     taint_key: Entity<InputState>,
     taint_value: Entity<InputState>,
+    /// What the node allows and runs, as last read.
+    pod_limit: PodLimit,
+    pod_limit_input: Entity<InputState>,
+    /// The kubelet is being reconfigured; this takes a while.
+    applying_limit: bool,
     /// Index into [`EFFECTS`] for the taint being added.
     effect: usize,
     /// Why the last Add or Save did not go through.
@@ -72,6 +80,7 @@ impl NodeEditView {
         let label_value = input("value", window, cx);
         let taint_key = input("key", window, cx);
         let taint_value = input("value (optional)", window, cx);
+        let pod_limit_input = input("max pods", window, cx);
 
         let on_enter = |target: fn(&mut Self, &mut Window, &mut Context<Self>)| {
             move |this: &mut Self,
@@ -89,6 +98,7 @@ impl NodeEditView {
             cx.subscribe_in(&label_value, window, on_enter(Self::add_label)),
             cx.subscribe_in(&taint_key, window, on_enter(Self::add_taint)),
             cx.subscribe_in(&taint_value, window, on_enter(Self::add_taint)),
+            cx.subscribe_in(&pod_limit_input, window, on_enter(Self::confirm_limit)),
         ];
 
         let mut view = Self {
@@ -104,12 +114,16 @@ impl NodeEditView {
             label_value,
             taint_key,
             taint_value,
+            pod_limit: PodLimit::default(),
+            pod_limit_input,
+            applying_limit: false,
             effect: 0,
             problem: None,
             saving: false,
             _subscriptions: subscriptions,
         };
         view.reload(cx);
+        view.reload_limit(cx);
         view
     }
 
@@ -135,6 +149,122 @@ impl NodeEditView {
                     }
                     Err(reason) => this.load = Load::Failed(reason.into()),
                 }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Read the node's pod limit and count. Kept apart from the tags: it is
+    /// not part of the draft, and listing pods is the slower call.
+    fn reload_limit(&mut self, cx: &mut Context<Self>) {
+        let (core, cluster, node) = (
+            Arc::clone(&self.core),
+            self.cluster.to_string(),
+            self.node.to_string(),
+        );
+        let task = self
+            .runtime
+            .spawn(async move { object_ops::read_pod_limit(&core, &cluster, &node).await });
+        cx.spawn(async move |this, cx| {
+            if let Ok(Ok(limit)) = task.await {
+                this.update(cx, |this, cx| {
+                    this.pod_limit = limit;
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Ask before restarting the node's kubelet, then do it.
+    fn confirm_limit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.applying_limit {
+            return;
+        }
+        let text = self.pod_limit_input.read(cx).value().trim().to_string();
+        let limit = match text
+            .parse::<u32>()
+            .map_err(|_| "enter a whole number".to_string())
+            .and_then(|n| {
+                node_pods::check_limit(n)
+                    .map(|()| n)
+                    .map_err(|e| e.to_string())
+            }) {
+            Ok(limit) => limit,
+            Err(reason) => {
+                self.problem = Some(reason.into());
+                cx.notify();
+                return;
+            }
+        };
+        if limit == self.pod_limit.capacity {
+            self.problem = Some(format!("the limit is already {limit}").into());
+            cx.notify();
+            return;
+        }
+        self.problem = None;
+        let (node, current) = (self.node.clone(), self.pod_limit);
+        let owner = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |dialog, _, cx| {
+            let owner = owner.clone();
+            let warning = cx.theme().warning;
+            dialog
+                .title(format!("Set the pod limit of {node} to {limit}?"))
+                .description(
+                    v_flex()
+                        .gap_1()
+                        .child(format!(
+                            "Now {} ({} pods scheduled).",
+                            current.capacity, current.used
+                        ))
+                        .child(
+                            "This runs a privileged pod on the node, edits the kubelet's \
+                             maxPods and restarts the kubelet. Running pods are not stopped, \
+                             but the node is NotReady for a few seconds.",
+                        )
+                        .child(div().text_color(warning).child(
+                            "The node's pod CIDR must hold that many addresses, or pods will \
+                             fail to get an IP.",
+                        )),
+                )
+                .ok_text("Apply")
+                .show_cancel(true)
+                .ok_variant(ButtonVariant::Danger)
+                .on_ok(move |_, window, cx| {
+                    owner
+                        .update(cx, |this, cx| this.apply_limit(limit, window, cx))
+                        .ok();
+                    true
+                })
+        });
+    }
+
+    fn apply_limit(&mut self, limit: u32, window: &mut Window, cx: &mut Context<Self>) {
+        self.applying_limit = true;
+        cx.notify();
+        let (core, cluster, node) = (
+            Arc::clone(&self.core),
+            self.cluster.to_string(),
+            self.node.to_string(),
+        );
+        let task = self
+            .runtime
+            .spawn(async move { object_ops::set_pod_limit(&core, &cluster, &node, limit).await });
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            this.update_in(cx, |this, window, cx| {
+                this.applying_limit = false;
+                match result {
+                    Ok(()) => {
+                        toast_success(window, cx, format!("{} now allows {limit} pods", this.node));
+                        this.problem = None;
+                    }
+                    Err(reason) => toast_error(window, cx, "Could not set the pod limit", reason),
+                }
+                this.reload_limit(cx);
                 cx.notify();
             })
             .ok();
@@ -270,6 +400,48 @@ impl NodeEditView {
             .ok();
         })
         .detach();
+    }
+
+    fn render_pod_limit(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        let busy = self.applying_limit;
+        v_flex()
+            .gap_1()
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_baseline()
+                    .child(div().text_sm().font_semibold().child("Pod limit"))
+                    .child(div().text_xs().text_color(muted).child(format!(
+                        "{} allowed · {} scheduled",
+                        self.pod_limit.capacity, self.pod_limit.used
+                    ))),
+            )
+            .child(
+                h_flex()
+                    .gap_2()
+                    .child(div().w_40().child(Input::new(&self.pod_limit_input)))
+                    .child(
+                        button(
+                            "apply-pod-limit",
+                            if busy { "Applying…" } else { "Apply…" },
+                            !busy,
+                            Emphasis::Plain,
+                            cx.theme(),
+                        )
+                        .when(!busy, |b| {
+                            b.on_click(
+                                cx.listener(|this, _, window, cx| this.confirm_limit(window, cx)),
+                            )
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted)
+                    .child("Sets the kubelet's maxPods on the node, and restarts the kubelet."),
+            )
     }
 
     fn render_labels(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -461,6 +633,7 @@ impl Render for NodeEditView {
                     .overflow_y_scroll()
                     .p_3()
                     .gap_4()
+                    .child(self.render_pod_limit(cx))
                     .child(self.render_labels(cx))
                     .child(self.render_taints(cx)),
             )

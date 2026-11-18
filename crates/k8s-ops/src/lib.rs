@@ -12,6 +12,7 @@ pub mod logs;
 pub mod lookup;
 pub mod manifest;
 pub mod node_edit;
+pub mod node_pods;
 pub mod related;
 mod ring;
 

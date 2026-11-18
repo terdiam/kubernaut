@@ -13,6 +13,7 @@ use k8s_ops::{
     apply::{self, ApplyOutcome, EditRequest},
     error::OpsError,
     node_edit::{self, NodeTags, Taint},
+    node_pods::{self, PodLimit},
 };
 
 use crate::state::AppCore;
@@ -247,6 +248,28 @@ pub async fn save_node_tags(
     let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
     let result = node_edit::apply(&handle, node, before, labels, taints).await;
     core.record_audit(cluster, "editNodeTags", &format!("nodes/{node}"), &result);
+    result.map_err(|e| e.to_string())
+}
+
+/// How many pods a node allows and runs.
+pub async fn read_pod_limit(core: &AppCore, cluster: &str, node: &str) -> Result<PodLimit, String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    node_pods::read(&handle, node)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Change a node's kubelet `maxPods`. Restarts the kubelet.
+pub async fn set_pod_limit(
+    core: &AppCore,
+    cluster: &str,
+    node: &str,
+    limit: u32,
+) -> Result<(), String> {
+    core.ensure_writable(cluster)?;
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let result = node_pods::set(&handle, node, limit, "default", node).await;
+    core.record_audit(cluster, "setMaxPods", &format!("nodes/{node}"), &result);
     result.map_err(|e| e.to_string())
 }
 
