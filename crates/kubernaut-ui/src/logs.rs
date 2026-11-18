@@ -7,7 +7,7 @@ use gpui_kit::{
     base::StyledExt,
     component::{
         ActiveTheme, h_flex,
-        input::{Input, InputEvent, InputState},
+        input::{Editor, EditorState, Input, InputEvent, InputState, Position},
         v_flex,
     },
     prelude::FluentBuilder,
@@ -60,6 +60,11 @@ pub struct LogView {
     name: SharedString,
     filter: Entity<InputState>,
     _filter_events: Subscription,
+    /// Read-only text of the lines as they were when Select was pressed, so
+    /// words can be marked and copied. A live list cannot hold a selection
+    /// while lines keep arriving.
+    viewer: Entity<EditorState>,
+    selecting: bool,
 }
 
 impl Drop for LogView {
@@ -88,6 +93,7 @@ impl LogView {
                     cx.notify();
                 }
             });
+        let viewer = cx.new(|cx| EditorState::new(window, cx).line_number(false));
         let (tx, mut rx) = mpsc::unbounded::<(u64, Message)>();
         cx.spawn(async move |this, cx| {
             while let Some((generation, message)) = rx.next().await {
@@ -121,6 +127,8 @@ impl LogView {
             name: target.name.clone(),
             filter,
             _filter_events: filter_events,
+            viewer,
+            selecting: false,
         };
         view.load_containers();
         view.restart(cx);
@@ -292,6 +300,15 @@ impl LogView {
                 },
             )))
             .child(
+                self.chip(
+                    "select",
+                    if self.selecting { "Live" } else { "Select" },
+                    self.selecting,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_select(window, cx))),
+            )
+            .child(
                 self.chip("copy", "Copy", false, cx)
                     .on_click(cx.listener(|this, _, window, cx| this.copy_all(window, cx))),
             )
@@ -299,6 +316,22 @@ impl LogView {
                 self.chip("save", "Save…", false, cx)
                     .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
             )
+    }
+
+    /// Freeze what is shown into text that can be selected with the mouse, or
+    /// go back to the live list.
+    fn toggle_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.selecting {
+            let text = self.buffer.to_text();
+            let last = u32::try_from(self.buffer.visible_len().saturating_sub(1)).unwrap_or(0);
+            self.viewer.update(cx, |viewer, cx| {
+                viewer.set_value(text, window, cx);
+                // The newest lines are at the bottom, where a tail is read.
+                viewer.set_cursor_position(Position::new(last, 0), window, cx);
+            });
+        }
+        self.selecting = !self.selecting;
+        cx.notify();
     }
 
     /// Put the lines on screen (those matching the filter, if there is one) on
@@ -356,6 +389,16 @@ impl Render for LogView {
         );
 
         let body = match &self.status {
+            _ if self.selecting => div()
+                .flex_1()
+                .min_h_0()
+                .child(
+                    Editor::new(&self.viewer)
+                        .appearance(false)
+                        .readonly(true)
+                        .h(relative(1.)),
+                )
+                .into_any_element(),
             Some(status) if self.buffer.is_empty() => div()
                 .p_4()
                 .text_sm()

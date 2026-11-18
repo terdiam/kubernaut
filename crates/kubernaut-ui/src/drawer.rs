@@ -646,7 +646,10 @@ impl Render for DrawerView {
             )
             .child(
                 div().flex_none().px_3().py_2().child(
+                    // Eight tabs do not fit in one row of the drawer, and the last
+                    // ones (Debug) were cut off; let them wrap onto a second row.
                     segmented_bar(cx.theme())
+                        .flex_wrap()
                         .child(self.render_tab(Tab::Details, IconName::Info, "Details", cx))
                         .child(self.render_tab(Tab::Yaml, IconName::FileCode, "YAML", cx))
                         .child(self.render_tab(Tab::Events, IconName::Activity, "Events", cx))
