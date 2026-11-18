@@ -128,9 +128,9 @@ pub async fn set(
     pods.delete(&name, &DeleteParams::default().grace_period(0))
         .await
         .ok();
-    ran?;
+    let note = ran?;
 
-    wait_for_limit(cluster, node, limit).await
+    wait_for_limit(cluster, node, limit, note.as_deref()).await
 }
 
 fn pod(name: &str, namespace: &str, node: &str, limit: u32) -> Result<Pod> {
@@ -207,7 +207,7 @@ fail "found no kubelet config file and no k3s or RKE2 install on this node"
 }
 
 /// Wait for the edit pod to finish; its last output is the reason if it fails.
-async fn run_to_end(pods: &Api<Pod>, name: &str) -> Result<()> {
+async fn run_to_end(pods: &Api<Pod>, name: &str) -> Result<Option<String>> {
     let deadline = tokio::time::Instant::now() + RUN_TIMEOUT;
     loop {
         if tokio::time::Instant::now() > deadline {
@@ -219,8 +219,8 @@ async fn run_to_end(pods: &Api<Pod>, name: &str) -> Result<()> {
         let pod = pods.get(name).await?;
         let status = pod.status.as_ref();
         match status.and_then(|s| s.phase.as_deref()).unwrap_or("") {
-            "Succeeded" => return Ok(()),
-            "Failed" => return Err(failure(pods, name, &pod).await),
+            "Succeeded" => return Ok(None),
+            "Failed" => return failure(pods, name, &pod).await,
             _ => {}
         }
         if let Some(reason) = status
@@ -242,39 +242,46 @@ async fn run_to_end(pods: &Api<Pod>, name: &str) -> Result<()> {
     }
 }
 
-/// Say why the edit pod failed: its own message if it printed one, else the exit
-/// code, and why its log could not be read if that is the reason.
-async fn failure(pods: &Api<Pod>, name: &str, pod: &Pod) -> OpsError {
-    let ended = pod
+/// An edit pod that failed. If it printed why, that is the error. If it printed
+/// nothing, the kubelet restart may have cut its status short after the edit
+/// went through, so the node decides: the note says what was seen, for the
+/// error if the node does not report the new limit.
+async fn failure(pods: &Api<Pod>, name: &str, pod: &Pod) -> Result<Option<String>> {
+    let code = pod
         .status
         .as_ref()
         .and_then(|s| s.container_statuses.as_ref())
         .and_then(|list| list.first())
         .and_then(|c| c.state.as_ref())
-        .and_then(|s| s.terminated.as_ref());
-    let code = ended.map_or_else(
-        || "an unknown code".to_string(),
-        |t| match t.reason.as_deref() {
-            Some(reason) => format!("code {} ({reason})", t.exit_code),
-            None => format!("code {}", t.exit_code),
-        },
-    );
+        .and_then(|s| s.terminated.as_ref())
+        .map_or_else(
+            || "an unknown code".to_string(),
+            |t| match t.reason.as_deref() {
+                Some(reason) => format!("code {} ({reason})", t.exit_code),
+                None => format!("code {}", t.exit_code),
+            },
+        );
     match pods.logs(name, &LogParams::default()).await {
         Ok(log) => match log.trim().lines().last() {
-            Some(line) => OpsError::other(line.trim_start_matches("kubernaut: ")),
-            None => OpsError::other(format!(
+            Some(line) => Err(OpsError::other(line.trim_start_matches("kubernaut: "))),
+            None => Ok(Some(format!(
                 "the edit pod exited with {code} and printed nothing"
-            )),
+            ))),
         },
-        Err(err) => OpsError::other(format!(
+        Err(err) => Ok(Some(format!(
             "the edit pod exited with {code}, and its log could not be read: {err}"
-        )),
+        ))),
     }
 }
 
 /// The restart is quick, but the node reports the new value only once the
 /// kubelet is back and has updated its status.
-async fn wait_for_limit(cluster: &Arc<ClusterHandle>, node: &str, limit: u32) -> Result<()> {
+async fn wait_for_limit(
+    cluster: &Arc<ClusterHandle>,
+    node: &str,
+    limit: u32,
+    note: Option<&str>,
+) -> Result<()> {
     let api: Api<Node> = Api::all(cluster.client.clone());
     let deadline = tokio::time::Instant::now() + RETURN_TIMEOUT;
     loop {
@@ -285,9 +292,10 @@ async fn wait_for_limit(cluster: &Arc<ClusterHandle>, node: &str, limit: u32) ->
             return Ok(());
         }
         if tokio::time::Instant::now() > deadline {
+            let seen = note.map(|n| format!(" ({n})")).unwrap_or_default();
             return Err(OpsError::other(format!(
-                "the kubelet was restarted but `{node}` does not report {limit} pods yet; \
-                 check that it is Ready and reload"
+                "`{node}` does not report {limit} pods yet{seen}; check that it is Ready and \
+                 reload"
             )));
         }
         tokio::time::sleep(POLL).await;
