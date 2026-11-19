@@ -21,6 +21,7 @@ pub mod preferences;
 pub mod present;
 pub mod scan_cache;
 pub mod security_ops;
+pub mod sources;
 mod state;
 pub mod templates;
 pub mod update_install;

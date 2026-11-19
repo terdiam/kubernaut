@@ -15,34 +15,22 @@ use k8s_metrics::{
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::state::AppCore;
+use crate::{sources::ClusterSource, state::AppCore};
 
-/// What the metrics reads need of the app: a cluster by id, and the sampler
-/// that watches it. Taking this instead of the whole [`AppCore`] says so in the
-/// signature, and lets a stand-in supply both.
-pub trait MetricsSource {
-    /// The cluster, or why it cannot be had.
-    fn handle(&self, cluster: &str) -> Result<Arc<ClusterHandle>, String>;
+/// What the metrics reads need of the app beyond a cluster: the sampler that
+/// watches it.
+pub trait MetricsSource: ClusterSource {
     /// The sampler for that cluster, started if it is not already running.
     fn sampler(&self, handle: &Arc<ClusterHandle>) -> Arc<ClusterSampler>;
 }
 
 impl MetricsSource for AppCore {
-    fn handle(&self, cluster: &str) -> Result<Arc<ClusterHandle>, String> {
-        self.clusters.require(cluster).map_err(|e| e.to_string())
-    }
-
     fn sampler(&self, handle: &Arc<ClusterHandle>) -> Arc<ClusterSampler> {
         self.metrics.ensure(handle)
     }
 }
 
-/// A shared `AppCore` is passed as it is held, so it is a source too.
 impl<T: MetricsSource + ?Sized> MetricsSource for Arc<T> {
-    fn handle(&self, cluster: &str) -> Result<Arc<ClusterHandle>, String> {
-        (**self).handle(cluster)
-    }
-
     fn sampler(&self, handle: &Arc<ClusterHandle>) -> Arc<ClusterSampler> {
         (**self).sampler(handle)
     }
@@ -291,16 +279,20 @@ mod tests {
     use k8s_core::cluster::ClusterHandle;
     use k8s_metrics::ClusterSampler;
 
+    use crate::sources::ClusterSource;
+
     use super::{MetricsSource, declared, namespace_usage, node_summaries, selector_of, sum_usage};
 
     /// An app with no clusters: what the reads need, without an `AppCore`.
     struct NoClusters;
 
-    impl MetricsSource for NoClusters {
+    impl ClusterSource for NoClusters {
         fn handle(&self, cluster: &str) -> Result<Arc<ClusterHandle>, String> {
             Err(format!("no cluster `{cluster}`"))
         }
+    }
 
+    impl MetricsSource for NoClusters {
         fn sampler(&self, _: &Arc<ClusterHandle>) -> Arc<ClusterSampler> {
             unreachable!("there is no cluster to sample")
         }
