@@ -90,6 +90,11 @@ impl AppCore {
         self.preferences.read().clone()
     }
 
+    /// The Details cards that start folded, without copying every preference.
+    pub fn details_folded(&self) -> Vec<String> {
+        self.preferences.read().details_folded()
+    }
+
     /// Whether an object is pinned, without copying every preference to ask:
     /// the drawer asks this on each frame it is drawn.
     pub fn is_pinned(&self, pin: &crate::preferences::PinnedObject) -> bool {

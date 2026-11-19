@@ -189,6 +189,10 @@ pub struct Preferences {
     pub custom_columns: std::collections::BTreeMap<String, Vec<ColumnDef>>,
     /// User-defined row actions (Settings → Actions).
     pub custom_actions: Vec<CustomAction>,
+
+    /// Cards of the Details tab the reader has folded, for every object. `None`
+    /// until a card is first folded or opened, so the defaults apply.
+    pub details_folded: Option<Vec<String>>,
 }
 
 impl Default for Preferences {
@@ -211,7 +215,21 @@ impl Default for Preferences {
             pinned: Vec::new(),
             custom_columns: std::collections::BTreeMap::new(),
             custom_actions: Vec::new(),
+            details_folded: None,
         }
+    }
+}
+
+/// Cards folded until the reader says otherwise: annotations run long and are
+/// rarely what the tab is opened for.
+pub const DEFAULT_FOLDED: &[&str] = &["annotations"];
+
+impl Preferences {
+    /// The Details cards that start folded.
+    pub fn details_folded(&self) -> Vec<String> {
+        self.details_folded
+            .clone()
+            .unwrap_or_else(|| DEFAULT_FOLDED.iter().map(|id| (*id).to_string()).collect())
     }
 }
 
@@ -398,6 +416,23 @@ mod tests {
 
     fn strings(items: &[&str]) -> Vec<String> {
         items.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn details_cards_start_folded_by_default_and_the_readers_choice_replaces_it() {
+        let mut preferences = Preferences::default();
+        assert_eq!(preferences.details_folded(), strings(&["annotations"]));
+        // Opening every card is a choice too: nothing folded, not the default.
+        preferences.details_folded = Some(Vec::new());
+        assert!(preferences.details_folded().is_empty());
+        // The field survives a save and a load.
+        preferences.details_folded = Some(strings(&["rollout", "labels"]));
+        let text = serde_json::to_string(&preferences).expect("serialises");
+        let back: Preferences = serde_json::from_str(&text).expect("parses");
+        assert_eq!(back.details_folded(), strings(&["rollout", "labels"]));
+        // A file written before this field existed gets the default.
+        let old: Preferences = serde_json::from_str("{}").expect("parses");
+        assert_eq!(old.details_folded(), strings(&["annotations"]));
     }
 
     #[test]

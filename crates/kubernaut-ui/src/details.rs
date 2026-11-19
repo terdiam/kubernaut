@@ -16,7 +16,7 @@ use gpui_kit::{
 };
 use k8s_app::{
     AppCore,
-    details::{Details, Group, Headline, condition_tone, describe, group_of},
+    details::{Details, Group, Headline, condition_tone, describe, group_of, pack},
     object_ops::{self, Connected},
     present::{self, Tone},
 };
@@ -56,9 +56,10 @@ pub struct DetailsView {
     /// pods behind them. Read on a slower beat than the object itself.
     connected: Option<Box<Connected>>,
     target: Target,
-    /// Cards the reader has folded. Annotations start folded: they run long and
-    /// are rarely what the tab is opened for.
-    collapsed: HashSet<&'static str>,
+    /// Cards the reader has folded, kept across objects in the preferences.
+    collapsed: HashSet<String>,
+    core: Arc<AppCore>,
+    runtime: Handle,
     /// When this was last drawn. A tab nobody is looking at is not drawn, and
     /// stops reading: with eight tabs open, only the one in view asks.
     drawn: Instant,
@@ -73,6 +74,7 @@ impl DetailsView {
         target: &Target,
         cx: &mut Context<Self>,
     ) -> Self {
+        let (shared, handle) = (Arc::clone(core), runtime.clone());
         let (core, runtime, own) = (Arc::clone(core), runtime.clone(), target.clone());
         let connects = connects(target);
         cx.spawn(async move |this, cx| {
@@ -115,7 +117,9 @@ impl DetailsView {
             state: State::Loading,
             connected: None,
             target: target.clone(),
-            collapsed: HashSet::from(["annotations"]),
+            collapsed: shared.details_folded().into_iter().collect(),
+            core: shared,
+            runtime: handle,
             drawn: Instant::now(),
         }
     }
@@ -306,9 +310,7 @@ impl DetailsView {
                     )
                     .children(badges)
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        if !this.collapsed.remove(id) {
-                            this.collapsed.insert(id);
-                        }
+                        this.fold(id);
                         cx.notify();
                     })),
             )
@@ -324,9 +326,33 @@ impl DetailsView {
             })
     }
 
+    /// Fold a card, or open it if it is folded, and remember the choice for the
+    /// next object opened. Saving happens off the UI thread.
+    fn fold(&mut self, id: &'static str) {
+        if !self.collapsed.remove(id) {
+            self.collapsed.insert(id.to_string());
+        }
+        let mut folded: Vec<String> = self.collapsed.iter().cloned().collect();
+        folded.sort();
+        let core = Arc::clone(&self.core);
+        self.runtime.spawn(async move {
+            if let Err(reason) = core.update_preferences(|p| p.details_folded = Some(folded)) {
+                tracing::warn!(%reason, "could not save which cards are folded");
+            }
+        });
+    }
+
     /// `label` and `value`, the value wrapping rather than being cut. A click
-    /// copies it: an IP, a UID or an image is usually wanted elsewhere.
-    fn field(&self, id: &str, label: &str, value: &str, cx: &mut Context<Self>) -> AnyElement {
+    /// copies it: an IP, a UID or an image is usually wanted elsewhere. `label`
+    /// is narrower when two fields share a line.
+    fn field(
+        &self,
+        id: &str,
+        label: &str,
+        value: &str,
+        label_width: f32,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let (muted, hover) = {
             let theme = cx.theme();
             (theme.muted_foreground, theme.secondary)
@@ -343,7 +369,7 @@ impl DetailsView {
             .tooltip(|window, cx| Tooltip::new("Click to copy").build(window, cx))
             .child(
                 div()
-                    .w(px(130.))
+                    .w(px(label_width))
                     .flex_none()
                     .text_color(muted)
                     .child(label.to_string()),
@@ -418,11 +444,41 @@ impl DetailsView {
         group: Group,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        details
+        let rows: Vec<&(String, String)> = details
             .summary
             .iter()
             .filter(|(label, _)| group_of(label) == group)
-            .map(|(label, value)| self.field("summary", label, value, cx))
+            .collect();
+        self.lines(&rows, cx)
+    }
+
+    /// Fields as lines: two to a line when both values are short, so a card of
+    /// small facts does not run to a screen.
+    fn lines(&self, rows: &[&(String, String)], cx: &mut Context<Self>) -> Vec<AnyElement> {
+        /// Longest value that still shares a line.
+        const SHORT: usize = 22;
+        pack(rows, |(_, value)| value.chars().count() <= SHORT)
+            .into_iter()
+            .map(|line| match line {
+                [(a_label, a_value), (b_label, b_value)] => h_flex()
+                    .gap_4()
+                    .items_start()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.field("pair", a_label, a_value, 130., cx)),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .child(self.field("pair", b_label, b_value, 104., cx)),
+                    )
+                    .into_any_element(),
+                [(label, value)] => self.field("summary", label, value, 130., cx),
+                _ => div().into_any_element(),
+            })
             .collect()
     }
 
@@ -661,7 +717,7 @@ impl Render for DetailsView {
 
         let mut overview = self.group_rows(details, Group::Overview, cx);
         for owner in &details.owners {
-            overview.push(self.field("owner", "Owner", owner, cx));
+            overview.push(self.field("owner", "Owner", owner, 130., cx));
         }
         body = body.child(self.card("overview", "Overview", Vec::new(), overview, cx));
 
@@ -679,7 +735,7 @@ impl Render for DetailsView {
             let rows = details
                 .containers
                 .iter()
-                .map(|(name, image)| self.field("container", name, image, cx))
+                .map(|(name, image)| self.field("container", name, image, 130., cx))
                 .collect();
             body = body.child(self.card(
                 "containers",

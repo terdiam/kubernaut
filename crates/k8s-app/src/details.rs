@@ -274,6 +274,20 @@ pub fn condition_tone(kind: &str, status: &str) -> Option<present::Tone> {
     }
 }
 
+/// Rows laid out for a card: two to a line when both are short, else one each.
+/// Short values pair up so a card of twelve small facts is six lines, not twelve.
+pub fn pack<T>(rows: &[T], is_short: impl Fn(&T) -> bool) -> Vec<&[T]> {
+    let mut lines = Vec::with_capacity(rows.len());
+    let mut at = 0;
+    while at < rows.len() {
+        let pair = at + 1 < rows.len() && is_short(&rows[at]) && is_short(&rows[at + 1]);
+        let end = if pair { at + 2 } else { at + 1 };
+        lines.push(&rows[at..end]);
+        at = end;
+    }
+    lines
+}
+
 /// Which card a summary row belongs in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Group {
@@ -950,6 +964,15 @@ mod tests {
         let h = headline(&pod("Running", true, None)).expect("headline");
         assert_eq!(h.detail, "1 of 1 containers ready · 4 restarts");
         assert!(headline(&json!({"kind": "ConfigMap", "metadata": {"name": "c"}})).is_none());
+    }
+
+    #[test]
+    fn short_rows_pair_up_and_a_long_one_stands_alone() {
+        let rows = ["a", "b", "long long long", "c", "d", "e"];
+        let lines = pack(&rows, |row| row.len() <= 3);
+        let shape: Vec<usize> = lines.iter().map(|line| line.len()).collect();
+        assert_eq!(shape, [2, 1, 2, 1], "a+b, the long one, c+d, e alone");
+        assert!(pack::<&str>(&[], |_| true).is_empty());
     }
 
     #[test]
