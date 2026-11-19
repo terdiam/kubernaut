@@ -17,11 +17,12 @@ use gpui_kit::{
     prelude::FluentBuilder,
     *,
 };
-use k8s_app::{AppCore, metrics_ops};
+use k8s_app::{AppCore, metrics_ops, present::Tone};
 use k8s_metrics::{Topology, TopologyNode};
 use tokio::runtime::Handle;
 
 use crate::{
+    cards,
     drawer::Target,
     ui::{Emphasis, Palette, button, message, page_title, pill},
 };
@@ -207,6 +208,34 @@ struct Drawn {
     width: f32,
     height: f32,
     truncated: bool,
+}
+
+/// How the drawn objects are doing, for the card above the graph: the worst
+/// state first, and how many are healthy out of all of them.
+fn graph_status(drawn: &Drawn) -> (Tone, String, String, (i64, i64)) {
+    let count = |wanted: &str| {
+        drawn
+            .cards
+            .iter()
+            .filter(|card| &*card.health == wanted)
+            .count()
+    };
+    let (ok, errors) = (count("ok"), count("error"));
+    let total = drawn.cards.len();
+    let waiting = total - ok - errors;
+    let (tone, label) = if errors > 0 {
+        (Tone::Error, format!("{errors} unhealthy"))
+    } else if waiting > 0 {
+        (Tone::Warn, format!("{waiting} not ready"))
+    } else {
+        (Tone::Ok, "All healthy".to_string())
+    };
+    let links = drawn.links.len();
+    let detail = format!(
+        "{ok} of {total} objects healthy · {links} link{}",
+        if links == 1 { "" } else { "s" }
+    );
+    (tone, label, detail, (ok as i64, total as i64))
 }
 
 fn drawn(topology: &Topology, cluster: &SharedString) -> Drawn {
@@ -710,6 +739,16 @@ impl Render for TopologyView {
                             ),
                     )
                 })
+                .child({
+                    let (tone, label, detail, progress) = graph_status(drawn);
+                    div().px_4().pb_2().child(cards::status_card(
+                        tone,
+                        label,
+                        detail,
+                        Some(progress),
+                        cx.theme(),
+                    ))
+                })
                 .child(self.render_graph(drawn, cx))
                 .into_any_element(),
         };
@@ -750,7 +789,8 @@ impl Render for TopologyView {
 #[cfg(test)]
 mod tests {
     use super::{
-        CARD_H, CARD_W, COLUMN_GAP, DOT_SPACING, PAD, ROW_GAP, bezier, flow, followed, layout,
+        CARD_H, CARD_W, COLUMN_GAP, Card, DOT_SPACING, Drawn, PAD, ROW_GAP, bezier, flow, followed,
+        graph_status, layout,
     };
     use k8s_metrics::{TopologyEdge, TopologyNode};
 
@@ -773,6 +813,39 @@ mod tests {
             to: to.into(),
             kind: "x".into(),
         }
+    }
+
+    #[test]
+    fn the_graph_status_counts_what_is_healthy_and_names_the_worst() {
+        use k8s_app::present::Tone;
+        let drawn = |health: &[&str]| Drawn {
+            cards: health
+                .iter()
+                .map(|h| Card {
+                    x: 0.,
+                    y: 0.,
+                    home: (0., 0.),
+                    name: "n".into(),
+                    detail: "".into(),
+                    health: (*h).to_string().into(),
+                    target: None,
+                })
+                .collect(),
+            links: vec![(0, 1)],
+            headings: Vec::new(),
+            width: 0.,
+            height: 0.,
+            truncated: false,
+        };
+        let (tone, label, detail, progress) = graph_status(&drawn(&["ok", "ok", "ok"]));
+        assert_eq!((tone, label.as_str()), (Tone::Ok, "All healthy"));
+        assert_eq!(detail, "3 of 3 objects healthy · 1 link");
+        assert_eq!(progress, (3, 3));
+        let (tone, label, _, _) = graph_status(&drawn(&["ok", "pending", "unknown"]));
+        assert_eq!((tone, label.as_str()), (Tone::Warn, "2 not ready"));
+        let (tone, label, _, progress) = graph_status(&drawn(&["ok", "error", "pending"]));
+        assert_eq!((tone, label.as_str()), (Tone::Error, "1 unhealthy"));
+        assert_eq!(progress, (1, 3));
     }
 
     #[test]
