@@ -13,7 +13,17 @@ use k8s_helm::{
     store,
 };
 
-use crate::{audit::AuditEntry, state::AppCore};
+use crate::{
+    audit::AuditEntry,
+    sources::{ClusterSource, HelmSource, KubeconfigSource, WriteHost},
+    state::AppCore,
+};
+
+/// Everything a helm command that changes a release needs of the app: it may
+/// write, it can build a kubeconfig for one cluster, and it can find helm.
+pub trait HelmHost: WriteHost + KubeconfigSource + HelmSource {}
+
+impl<T: WriteHost + KubeconfigSource + HelmSource + ?Sized> HelmHost for T {}
 
 impl AppCore {
     /// Append an action and its outcome to the audit log.
@@ -44,13 +54,12 @@ struct Prepared {
     kubeconfig: String,
 }
 
-fn prepare(core: &AppCore, cluster: &str, namespace: &str) -> Result<Prepared, String> {
+fn prepare(core: &impl HelmHost, cluster: &str, namespace: &str) -> Result<Prepared, String> {
     core.ensure_writable(cluster)?;
     Ok(Prepared {
-        handle: core.clusters.require(cluster).map_err(|e| e.to_string())?,
+        handle: core.handle(cluster)?,
         helm: core.helm().map_err(|e| e.to_string())?,
         kubeconfig: core
-            .clusters
             .minified_kubeconfig(cluster, Some(namespace))
             .map_err(|e| e.to_string())?,
     })
@@ -58,7 +67,7 @@ fn prepare(core: &AppCore, cluster: &str, namespace: &str) -> Result<Prepared, S
 
 /// Roll a release back to an earlier revision. Returns helm's output.
 pub async fn rollback(
-    core: &AppCore,
+    core: &impl HelmHost,
     cluster: &str,
     namespace: &str,
     release: &str,
@@ -75,7 +84,7 @@ pub async fn rollback(
             revision,
         )
         .await;
-    core.record_audit(
+    core.audit(
         cluster,
         "helmRollback",
         &format!("{namespace}/{release}"),
@@ -86,7 +95,7 @@ pub async fn rollback(
 
 /// Remove a release and the objects it installed. Returns helm's output.
 pub async fn uninstall(
-    core: &AppCore,
+    core: &impl HelmHost,
     cluster: &str,
     namespace: &str,
     release: &str,
@@ -102,7 +111,7 @@ pub async fn uninstall(
             false,
         )
         .await;
-    core.record_audit(
+    core.audit(
         cluster,
         "helmUninstall",
         &format!("{namespace}/{release}"),
@@ -147,14 +156,13 @@ impl UpgradeRequest {
 /// makes, without needing the plugin. It writes nothing, so a protected
 /// cluster may still be previewed.
 pub async fn preview_upgrade(
-    core: &AppCore,
+    core: &(impl KubeconfigSource + HelmSource),
     cluster: &str,
     request: &UpgradeRequest,
 ) -> Result<UpgradeDiff, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let helm = core.helm().map_err(|e| e.to_string())?;
     let kubeconfig = core
-        .clusters
         .minified_kubeconfig(cluster, Some(&request.namespace))
         .map_err(|e| e.to_string())?;
 
@@ -181,7 +189,7 @@ pub async fn preview_upgrade(
 
 /// Upgrade a release, installing it if it does not exist. Returns helm's output.
 pub async fn upgrade(
-    core: &AppCore,
+    core: &impl HelmHost,
     cluster: &str,
     request: &UpgradeRequest,
 ) -> Result<String, String> {
@@ -189,7 +197,7 @@ pub async fn upgrade(
 }
 
 async fn run_upgrade(
-    core: &AppCore,
+    core: &impl HelmHost,
     cluster: &str,
     request: &UpgradeRequest,
     action: &str,
@@ -206,7 +214,7 @@ async fn run_upgrade(
             &request.options,
         )
         .await;
-    core.record_audit(
+    core.audit(
         cluster,
         action,
         &format!("{}/{}", request.namespace, request.release),
@@ -259,11 +267,11 @@ pub fn check_namespace(namespace: &str) -> Result<(), &'static str> {
 /// what someone installing a new chart meant, and could replace a running
 /// application with another chart.
 async fn ensure_new_release(
-    core: &AppCore,
+    core: &impl ClusterSource,
     cluster: &str,
     request: &UpgradeRequest,
 ) -> Result<(), String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let existing = store::list(&handle, Some(&request.namespace))
         .await
         .map_err(|e| e.to_string())?;
@@ -282,7 +290,7 @@ async fn ensure_new_release(
 
 /// What installing a chart would create, without creating anything.
 pub async fn preview_install(
-    core: &AppCore,
+    core: &(impl KubeconfigSource + HelmSource),
     cluster: &str,
     request: &UpgradeRequest,
 ) -> Result<UpgradeDiff, String> {
@@ -292,7 +300,7 @@ pub async fn preview_install(
 
 /// Install a chart as a new release. Returns helm's output.
 pub async fn install(
-    core: &AppCore,
+    core: &impl HelmHost,
     cluster: &str,
     request: &UpgradeRequest,
 ) -> Result<String, String> {
@@ -303,7 +311,7 @@ pub async fn install(
 
 /// A chart's default values, as YAML: what an install starts from.
 pub async fn chart_values(
-    core: &AppCore,
+    core: &impl HelmSource,
     chart: &str,
     version: Option<&str>,
 ) -> Result<String, String> {
@@ -319,30 +327,33 @@ pub async fn chart_values(
 // removed here is also what the `helm` command line sees. None of this touches
 // a cluster, so none of it is audited or refused for a protected context.
 
-pub async fn list_repos(core: &AppCore) -> Result<Vec<Repository>, String> {
+pub async fn list_repos(core: &impl HelmSource) -> Result<Vec<Repository>, String> {
     let helm = core.helm().map_err(|e| e.to_string())?;
     helm.repo_list().await.map_err(|e| e.to_string())
 }
 
 /// Add a repository and fetch its index, so its charts are searchable at once.
-pub async fn add_repo(core: &AppCore, name: &str, url: &str) -> Result<(), String> {
+pub async fn add_repo(core: &impl HelmSource, name: &str, url: &str) -> Result<(), String> {
     let helm = core.helm().map_err(|e| e.to_string())?;
     helm.repo_add(name, url).await.map_err(|e| e.to_string())
 }
 
-pub async fn remove_repo(core: &AppCore, name: &str) -> Result<(), String> {
+pub async fn remove_repo(core: &impl HelmSource, name: &str) -> Result<(), String> {
     let helm = core.helm().map_err(|e| e.to_string())?;
     helm.repo_remove(name).await.map_err(|e| e.to_string())
 }
 
 /// Refresh every repository's index.
-pub async fn update_repos(core: &AppCore) -> Result<String, String> {
+pub async fn update_repos(core: &impl HelmSource) -> Result<String, String> {
     let helm = core.helm().map_err(|e| e.to_string())?;
     helm.repo_update().await.map_err(|e| e.to_string())
 }
 
 /// Charts across all repositories; an empty query lists them all.
-pub async fn search_charts(core: &AppCore, query: &str) -> Result<Vec<ChartResult>, String> {
+pub async fn search_charts(
+    core: &impl HelmSource,
+    query: &str,
+) -> Result<Vec<ChartResult>, String> {
     let helm = core.helm().map_err(|e| e.to_string())?;
     helm.search(query).await.map_err(|e| e.to_string())
 }

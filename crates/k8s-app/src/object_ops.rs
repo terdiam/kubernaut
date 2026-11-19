@@ -17,7 +17,7 @@ use k8s_ops::{
     related::{self, EventRow, Related},
 };
 
-use crate::state::AppCore;
+use crate::sources::WriteHost;
 
 fn label(target: &TargetRef) -> String {
     match &target.namespace {
@@ -30,12 +30,12 @@ fn label(target: &TargetRef) -> String {
 /// attempt is audited, including the one the cluster turned away because another
 /// field manager owns what was changed: that changed nothing, and the entry says so.
 pub async fn apply_edit(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     request: EditRequest,
 ) -> Result<ApplyOutcome, String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let target = label(&TargetRef {
         resource: request.resource.clone(),
         namespace: request.namespace.clone(),
@@ -47,7 +47,7 @@ pub async fn apply_edit(
     } else {
         "editObject"
     };
-    core.record_audit(cluster, action, &target, &apply_audit(&result));
+    core.audit(cluster, action, &target, &apply_audit(&result));
     result.map_err(|e| e.to_string())
 }
 
@@ -65,9 +65,9 @@ fn apply_audit(result: &Result<ApplyOutcome, OpsError>) -> Result<(), String> {
 }
 
 /// Delete an object with the default (background) propagation.
-pub async fn delete(core: &AppCore, cluster: &str, target: TargetRef) -> Result<(), String> {
+pub async fn delete(core: &impl WriteHost, cluster: &str, target: TargetRef) -> Result<(), String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let audit_label = label(&target);
     let request = DeleteRequest {
         confirmation: target.name.clone(),
@@ -76,27 +76,31 @@ pub async fn delete(core: &AppCore, cluster: &str, target: TargetRef) -> Result<
         grace_period_seconds: None,
     };
     let result = actions::delete(&handle, &request).await;
-    core.record_audit(cluster, "delete", &audit_label, &result);
+    core.audit(cluster, "delete", &audit_label, &result);
     result.map_err(|e| e.to_string())
 }
 
 /// Roll a workload's pods, as `kubectl rollout restart` does.
-pub async fn restart(core: &AppCore, cluster: &str, target: TargetRef) -> Result<(), String> {
+pub async fn restart(
+    core: &impl WriteHost,
+    cluster: &str,
+    target: TargetRef,
+) -> Result<(), String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let result = actions::restart(&handle, &target).await;
-    core.record_audit(cluster, "restart", &label(&target), &result);
+    core.audit(cluster, "restart", &label(&target), &result);
     result.map_err(|e| e.to_string())
 }
 
 /// Replicas as the scale subresource reports them, for the Scale dialog.
 /// Reading only, so a protected cluster may be asked.
 pub async fn current_scale(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     target: TargetRef,
 ) -> Result<i32, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     actions::current_scale(&handle, &target)
         .await
         .map_err(|e| e.to_string())
@@ -104,15 +108,15 @@ pub async fn current_scale(
 
 /// Set a workload's replica count through its scale subresource.
 pub async fn scale(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     target: TargetRef,
     replicas: i32,
 ) -> Result<(), String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let result = actions::scale(&handle, &target, replicas).await;
-    core.record_audit(
+    core.audit(
         cluster,
         &format!("scale to {replicas}"),
         &label(&target),
@@ -137,56 +141,56 @@ pub fn parse_replicas(text: &str) -> Result<i32, String> {
 
 /// Start a CronJob's Job now. Returns the new Job's name.
 pub async fn trigger_cronjob(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     target: TargetRef,
 ) -> Result<String, String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let result = actions::trigger_cronjob(&handle, &target).await;
-    core.record_audit(cluster, "trigger", &label(&target), &result);
+    core.audit(cluster, "trigger", &label(&target), &result);
     result.map_err(|e| e.to_string())
 }
 
 /// Pause or resume a CronJob's schedule.
 pub async fn set_suspended(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     target: TargetRef,
     suspended: bool,
 ) -> Result<(), String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let result = actions::set_suspended(&handle, &target, suspended).await;
     let action = if suspended { "suspend" } else { "resume" };
-    core.record_audit(cluster, action, &label(&target), &result);
+    core.audit(cluster, action, &label(&target), &result);
     result.map_err(|e| e.to_string())
 }
 
 /// Mark a node (un)schedulable.
 pub async fn set_cordoned(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     node: &str,
     cordoned: bool,
 ) -> Result<(), String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let result = actions::set_cordoned(&handle, node, cordoned).await;
     let action = if cordoned { "cordon" } else { "uncordon" };
-    core.record_audit(cluster, action, &format!("nodes/{node}"), &result);
+    core.audit(cluster, action, &format!("nodes/{node}"), &result);
     result.map_err(|e| e.to_string())
 }
 
 /// What draining a node would do, without cordoning it or evicting anything.
 /// Reading only, so a protected cluster may be previewed.
 pub async fn drain_preview(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     node: &str,
     delete_standalone_pods: bool,
 ) -> Result<DrainReport, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let options = DrainOptions {
         confirmation: node.to_string(),
         delete_standalone_pods,
@@ -200,13 +204,13 @@ pub async fn drain_preview(
 /// Cordon a node and evict its pods through the eviction API, which respects
 /// PodDisruptionBudgets. A pod the budget refuses is reported, not forced.
 pub async fn drain(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     node: &str,
     delete_standalone_pods: bool,
 ) -> Result<DrainReport, String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let options = DrainOptions {
         confirmation: node.to_string(),
         delete_standalone_pods,
@@ -223,13 +227,17 @@ pub async fn drain(
         )),
         Err(err) => Err(err.to_string()),
     };
-    core.record_audit(cluster, "drain", &format!("nodes/{node}"), &outcome);
+    core.audit(cluster, "drain", &format!("nodes/{node}"), &outcome);
     result.map_err(|e| e.to_string())
 }
 
 /// A node's labels and taints, to edit.
-pub async fn read_node_tags(core: &AppCore, cluster: &str, node: &str) -> Result<NodeTags, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+pub async fn read_node_tags(
+    core: &impl WriteHost,
+    cluster: &str,
+    node: &str,
+) -> Result<NodeTags, String> {
+    let handle = core.handle(cluster)?;
     node_edit::read(&handle, node)
         .await
         .map_err(|e| e.to_string())
@@ -238,7 +246,7 @@ pub async fn read_node_tags(core: &AppCore, cluster: &str, node: &str) -> Result
 /// Save a node's labels and taints, refusing if the node changed since `before`
 /// was read.
 pub async fn save_node_tags(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     node: &str,
     before: &NodeTags,
@@ -246,9 +254,9 @@ pub async fn save_node_tags(
     taints: &[Taint],
 ) -> Result<(), String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let result = node_edit::apply(&handle, node, before, labels, taints).await;
-    core.record_audit(cluster, "editNodeTags", &format!("nodes/{node}"), &result);
+    core.audit(cluster, "editNodeTags", &format!("nodes/{node}"), &result);
     result.map_err(|e| e.to_string())
 }
 
@@ -265,13 +273,13 @@ pub struct Connected {
 /// A workload's events include those of its pods; any other kind shows only its
 /// own, so a pod's events are not listed twice.
 pub async fn read_connected(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     resource: &str,
     namespace: Option<&str>,
     name: &str,
 ) -> Result<Connected, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let related = related::related(&handle, resource, namespace, name)
         .await
         .map_err(|e| e.to_string())?;
@@ -295,8 +303,12 @@ pub async fn read_connected(
 }
 
 /// How many pods a node allows and runs.
-pub async fn read_pod_limit(core: &AppCore, cluster: &str, node: &str) -> Result<PodLimit, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+pub async fn read_pod_limit(
+    core: &impl WriteHost,
+    cluster: &str,
+    node: &str,
+) -> Result<PodLimit, String> {
+    let handle = core.handle(cluster)?;
     node_pods::read(&handle, node)
         .await
         .map_err(|e| e.to_string())
@@ -304,40 +316,40 @@ pub async fn read_pod_limit(core: &AppCore, cluster: &str, node: &str) -> Result
 
 /// Change a node's kubelet `maxPods`. Restarts the kubelet.
 pub async fn set_pod_limit(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     node: &str,
     limit: u32,
 ) -> Result<(), String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let result = node_pods::set(&handle, node, limit, node_pods::POD_NAMESPACE, node).await;
-    core.record_audit(cluster, "setMaxPods", &format!("nodes/{node}"), &result);
+    core.audit(cluster, "setMaxPods", &format!("nodes/{node}"), &result);
     result.map_err(|e| e.to_string())
 }
 
 /// Ask a GitOps controller to reconcile an object now. Writes an annotation.
 pub async fn gitops_reconcile(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     resource: &str,
     namespace: Option<&str>,
     name: &str,
 ) -> Result<(), String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let result = k8s_ops::gitops::reconcile(&handle, resource, namespace, name).await;
     let target = match namespace {
         Some(namespace) => format!("{resource}/{namespace}/{name}"),
         None => format!("{resource}/{name}"),
     };
-    core.record_audit(cluster, "gitopsReconcile", &target, &result);
+    core.audit(cluster, "gitopsReconcile", &target, &result);
     result.map_err(|e| e.to_string())
 }
 
 /// Pause or resume a Flux object's reconciliation.
 pub async fn gitops_set_suspended(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     resource: &str,
     namespace: Option<&str>,
@@ -345,7 +357,7 @@ pub async fn gitops_set_suspended(
     suspended: bool,
 ) -> Result<(), String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let result =
         k8s_ops::gitops::set_suspended(&handle, resource, namespace, name, suspended).await;
     let action = if suspended {
@@ -357,17 +369,17 @@ pub async fn gitops_set_suspended(
         Some(namespace) => format!("{resource}/{namespace}/{name}"),
         None => format!("{resource}/{name}"),
     };
-    core.record_audit(cluster, action, &target, &result);
+    core.audit(cluster, action, &target, &result);
     result.map_err(|e| e.to_string())
 }
 
 /// What the installed GitOps controllers manage, optionally in one namespace.
 pub async fn gitops_survey(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     namespace: Option<&str>,
 ) -> Result<k8s_ops::gitops::GitOpsSummary, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     k8s_ops::gitops::survey(&handle, namespace)
         .await
         .map_err(|e| e.to_string())
@@ -399,12 +411,12 @@ fn bulk_label(targets: &[TargetRef]) -> String {
 /// Delete several objects. One that fails does not stop the rest, and each
 /// one's outcome is returned.
 pub async fn delete_many(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     targets: Vec<TargetRef>,
 ) -> Result<Vec<BulkOutcome>, String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     // The count is the guard the backend asks for. The front end has already
     // shown what is about to go and asked, so it is supplied here.
     let confirmation = targets.len().to_string();
@@ -413,36 +425,36 @@ pub async fn delete_many(
         Ok(outcomes) => bulk_result(outcomes),
         Err(err) => Err(err.to_string()),
     };
-    core.record_audit(cluster, "bulkDelete", &bulk_label(&targets), &audited);
+    core.audit(cluster, "bulkDelete", &bulk_label(&targets), &audited);
     result.map_err(|e| e.to_string())
 }
 
 /// Roll several workloads, as `kubectl rollout restart` does.
 pub async fn restart_many(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     targets: Vec<TargetRef>,
 ) -> Result<Vec<BulkOutcome>, String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let result = actions::restart_many(&handle, &targets).await;
     let audited = match &result {
         Ok(outcomes) => bulk_result(outcomes),
         Err(err) => Err(err.to_string()),
     };
-    core.record_audit(cluster, "bulkRestart", &bulk_label(&targets), &audited);
+    core.audit(cluster, "bulkRestart", &bulk_label(&targets), &audited);
     result.map_err(|e| e.to_string())
 }
 
 /// Write the objects to a zip, one YAML file per object. It only reads the
 /// cluster, so a protected one may be exported.
 pub async fn export_archive(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     targets: Vec<TargetRef>,
     path: std::path::PathBuf,
 ) -> Result<ExportResult, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     actions::export_archive(&handle, &targets, &path)
         .await
         .map_err(|e| e.to_string())
@@ -450,8 +462,68 @@ pub async fn export_archive(
 
 #[cfg(test)]
 mod tests {
-    use super::{BulkOutcome, apply_audit, bulk_label, bulk_result, failed, parse_replicas};
-    use k8s_ops::{actions::TargetRef, apply::ApplyOutcome, error::OpsError};
+    use std::{
+        collections::BTreeMap,
+        fmt::Display,
+        sync::{Arc, Mutex},
+    };
+
+    use super::{
+        BulkOutcome, apply_audit, bulk_label, bulk_result, failed, parse_replicas, save_node_tags,
+    };
+    use crate::sources::{Audited, ClusterSource, WriteHost};
+    use k8s_core::cluster::ClusterHandle;
+    use k8s_ops::{actions::TargetRef, apply::ApplyOutcome, error::OpsError, node_edit::NodeTags};
+
+    /// An app that refuses every change, as one with a protected cluster does.
+    /// Reaching the cluster or the audit log would be a bug, so both are noted.
+    #[derive(Default)]
+    struct Protected {
+        touched: Mutex<Vec<&'static str>>,
+    }
+
+    impl ClusterSource for Protected {
+        fn handle(&self, _: &str) -> Result<Arc<ClusterHandle>, String> {
+            if let Ok(mut touched) = self.touched.lock() {
+                touched.push("cluster");
+            }
+            Err("the cluster was reached".into())
+        }
+    }
+
+    impl Audited for Protected {
+        fn audit<T, E: Display>(&self, _: &str, _: &str, _: &str, _: &Result<T, E>) {
+            if let Ok(mut touched) = self.touched.lock() {
+                touched.push("audit");
+            }
+        }
+    }
+
+    impl WriteHost for Protected {
+        fn ensure_writable(&self, cluster: &str) -> Result<(), String> {
+            Err(format!("`{cluster}` is protected"))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_protected_cluster_refuses_a_change_before_reaching_it_or_auditing_it() {
+        let app = Protected::default();
+        let error = save_node_tags(
+            &app,
+            "prod",
+            "node-1",
+            &NodeTags::default(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .await
+        .expect_err("refused");
+        assert_eq!(error, "`prod` is protected");
+        assert!(
+            app.touched.lock().expect("lock").is_empty(),
+            "a refused change leaves no trace in the cluster or the log"
+        );
+    }
 
     #[test]
     fn only_an_applied_edit_is_audited_as_a_success() {

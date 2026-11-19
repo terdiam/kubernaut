@@ -8,18 +8,18 @@ use std::path::Path;
 
 use k8s_ops::manifest::{self, DocResult, ManifestPlan, PruneRequest};
 
-use crate::state::AppCore;
+use crate::sources::{ClusterSource, KustomizeSource, WriteHost};
 
 /// What applying a manifest would do to each document, without doing it.
 pub async fn plan(
-    core: &AppCore,
+    core: &impl ClusterSource,
     cluster: &str,
     yaml: &str,
     namespace: Option<&str>,
     force: bool,
     prune_selector: Option<&str>,
 ) -> Result<ManifestPlan, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     manifest::plan(&handle, yaml, namespace, force, prune_selector)
         .await
         .map_err(|e| e.to_string())
@@ -28,7 +28,7 @@ pub async fn plan(
 /// Apply every document, reporting each one. A document that fails does not
 /// stop the rest, because stopping halfway leaves a worse state than finishing.
 pub async fn apply(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     yaml: &str,
     namespace: Option<&str>,
@@ -36,7 +36,7 @@ pub async fn apply(
     prune: Option<&PruneRequest<'_>>,
 ) -> Result<Vec<DocResult>, String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let result = manifest::apply(&handle, yaml, namespace, force, prune)
         .await
         .map_err(|e| e.to_string());
@@ -69,12 +69,15 @@ pub async fn apply(
         }
         Err(_) => "manifest".to_string(),
     };
-    core.record_audit(cluster, "applyManifest", &target, &outcome);
+    core.audit(cluster, "applyManifest", &target, &outcome);
     result
 }
 
 /// Build a local kustomize directory into plain YAML. Touches no cluster.
-pub async fn kustomize_build(core: &AppCore, directory: &Path) -> Result<String, String> {
+pub async fn kustomize_build(
+    core: &impl KustomizeSource,
+    directory: &Path,
+) -> Result<String, String> {
     let kustomize = core.kustomize().map_err(|e| e.to_string())?;
     kustomize.build(directory).await.map_err(|e| e.to_string())
 }
@@ -86,13 +89,13 @@ pub async fn kustomize_build(core: &AppCore, directory: &Path) -> Result<String,
 /// A cluster that cannot answer is not an error to the form, which falls back
 /// to the field being typed, so failures give an empty list.
 pub async fn lookup_options(
-    core: &AppCore,
+    core: &impl ClusterSource,
     cluster: &str,
     source: &str,
     namespace: Option<&str>,
     param: Option<&str>,
 ) -> Vec<k8s_ops::lookup::LookupOption> {
-    let Ok(handle) = core.clusters.require(cluster) else {
+    let Ok(handle) = core.handle(cluster) else {
         return Vec::new();
     };
     k8s_ops::lookup::lookup(&handle, source, namespace, param)

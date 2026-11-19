@@ -4,58 +4,32 @@
 //! protected context may still have one. Starting one is audited, because it
 //! puts an in-cluster service on this machine, and on the network when asked.
 
-use std::{fmt::Display, sync::Arc};
+use std::sync::Arc;
 
 use k8s_ops::forward::{
     ForwardId, ForwardManager, ForwardSpec, ForwardStatus, PortOption, target_ports,
 };
 
-use crate::{sources::ClusterSource, state::AppCore};
+use crate::{
+    sources::{Audited, ClusterSource},
+    state::AppCore,
+};
 
-/// What port forwarding needs of the app beyond a cluster: the manager that
-/// holds the running forwards, and the audit log a start is written to.
-pub trait ForwardHost: ClusterSource {
+/// What port forwarding needs of the app beyond a cluster and the audit log:
+/// the manager that holds the running forwards.
+pub trait ForwardHost: ClusterSource + Audited {
     fn forwards(&self) -> &ForwardManager;
-
-    /// Append an action and its outcome to the audit log.
-    fn audit<T, E: Display>(
-        &self,
-        cluster: &str,
-        action: &str,
-        target: &str,
-        result: &Result<T, E>,
-    );
 }
 
 impl ForwardHost for AppCore {
     fn forwards(&self) -> &ForwardManager {
         &self.forwards
     }
-
-    fn audit<T, E: Display>(
-        &self,
-        cluster: &str,
-        action: &str,
-        target: &str,
-        result: &Result<T, E>,
-    ) {
-        self.record_audit(cluster, action, target, result);
-    }
 }
 
 impl<H: ForwardHost + ?Sized> ForwardHost for Arc<H> {
     fn forwards(&self) -> &ForwardManager {
         (**self).forwards()
-    }
-
-    fn audit<T, E: Display>(
-        &self,
-        cluster: &str,
-        action: &str,
-        target: &str,
-        result: &Result<T, E>,
-    ) {
-        (**self).audit(cluster, action, target, result);
     }
 }
 
@@ -113,7 +87,7 @@ mod tests {
     use k8s_ops::forward::{ForwardManager, ForwardSpec};
 
     use super::{ForwardHost, list, start};
-    use crate::sources::ClusterSource;
+    use crate::sources::{Audited, ClusterSource};
 
     /// An app with no clusters that remembers what was audited.
     #[derive(Default)]
@@ -132,7 +106,9 @@ mod tests {
         fn forwards(&self) -> &ForwardManager {
             &self.forwards
         }
+    }
 
+    impl Audited for NoClusters {
         fn audit<T, E: std::fmt::Display>(
             &self,
             cluster: &str,

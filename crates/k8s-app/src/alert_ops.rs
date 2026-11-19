@@ -9,7 +9,7 @@ use std::time::Duration;
 use k8s_metrics::{Alert, AlertmanagerTarget, SilenceRequest, alertmanager};
 use k8s_openapi::jiff::{SignedDuration, Timestamp};
 
-use crate::state::AppCore;
+use crate::sources::WriteHost;
 
 /// Who a silence says made it, so an on-call engineer can tell where it came from.
 const CREATED_BY: &str = "Kubernaut";
@@ -25,11 +25,11 @@ pub struct AlertSurvey {
 /// Finding the Alertmanager lists every Service, so a caller that polls passes
 /// back the target it already has.
 pub async fn survey(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     known: Option<AlertmanagerTarget>,
 ) -> Result<Option<AlertSurvey>, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let target = match known {
         Some(target) => target,
         None => match alertmanager::discover(&handle).await {
@@ -43,14 +43,14 @@ pub async fn survey(
 
 /// Silence every alert with this name for `duration`. Returns the silence's id.
 pub async fn silence(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     target: &AlertmanagerTarget,
     alertname: &str,
     duration: Duration,
 ) -> Result<String, String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let ends_at = SignedDuration::try_from(duration)
         .ok()
         .and_then(|duration| Timestamp::now().checked_add(duration).ok())
@@ -63,20 +63,20 @@ pub async fn silence(
         comment: "Silenced from Kubernaut".into(),
     };
     let result = alertmanager::post_silence(&handle, target, &request).await;
-    core.record_audit(cluster, "silenceAlert", alertname, &result);
+    core.audit(cluster, "silenceAlert", alertname, &result);
     result
 }
 
 /// End silences early, so their alerts notify again. Returns how many ended.
 pub async fn expire(
-    core: &AppCore,
+    core: &impl WriteHost,
     cluster: &str,
     target: &AlertmanagerTarget,
     alertname: &str,
     silences: &[String],
 ) -> Result<usize, String> {
     core.ensure_writable(cluster)?;
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     let mut ended = 0;
     let mut result = Ok(());
     for id in silences {
@@ -88,6 +88,6 @@ pub async fn expire(
             }
         }
     }
-    core.record_audit(cluster, "expireSilence", alertname, &result);
+    core.audit(cluster, "expireSilence", alertname, &result);
     result.map(|()| ended)
 }
