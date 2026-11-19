@@ -27,6 +27,7 @@ use k8s_app::{
 use tokio::runtime::Handle;
 
 use crate::{
+    cards::{self, Folds},
     drawer::Target,
     namespaces,
     rows::contains_ignore_case,
@@ -197,6 +198,28 @@ fn tally(entries: &[Entry], shown: &[usize]) -> [usize; 3] {
     counts
 }
 
+/// What the shown findings add up to, for the card above the list. `None` while
+/// there is nothing to say yet: not scanned, or nothing matches.
+fn security_status(counts: [usize; 3], shown: usize) -> Option<(Tone, String, String)> {
+    let [critical, high, medium] = counts;
+    if shown == 0 {
+        return None;
+    }
+    let detail = format!("{shown} shown");
+    let part = |n: usize, word: &str| (n > 0).then(|| format!("{n} {word}"));
+    let serious: Vec<String> = [part(critical, "critical"), part(high, "high")]
+        .into_iter()
+        .flatten()
+        .collect();
+    Some(if !serious.is_empty() {
+        (Tone::Error, serious.join(", "), detail)
+    } else if medium > 0 {
+        (Tone::Warn, format!("{medium} medium"), detail)
+    } else {
+        (Tone::Ok, "Nothing serious".to_string(), detail)
+    })
+}
+
 enum Load {
     /// Nothing asked for yet.
     Idle,
@@ -252,6 +275,7 @@ pub struct SecurityView {
     busy: Option<&'static str>,
     filter: Entity<InputState>,
     _filter: Subscription,
+    folds: Folds,
 }
 
 impl EventEmitter<SecurityEvent> for SecurityView {}
@@ -286,6 +310,7 @@ impl SecurityView {
             busy: None,
             filter,
             _filter: subscription,
+            folds: Folds::load(core, runtime),
         };
         view.scan_configuration(cx);
         view
@@ -521,32 +546,45 @@ impl SecurityView {
 
     fn render_detail(&self, entry: &Entry, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (background, border, muted, secondary) = (
-            theme.background,
-            theme.border,
-            theme.muted_foreground,
-            theme.secondary,
-        );
+        let (background, border, muted) = (theme.background, theme.border, theme.muted_foreground);
         let color = tone_of(entry.severity).map_or(muted, |tone| tone_color(tone, theme));
         let openable = entry.open.is_some();
         let open = cx.listener(|this, _, _, cx| this.open_selected(cx));
-        let field = |label: &'static str, value: SharedString| {
-            h_flex()
-                .gap_3()
-                .items_start()
-                .text_sm()
-                .child(div().w(px(90.)).flex_none().text_color(muted).child(label))
-                .child(div().flex_1().min_w_0().child(value))
+        let card = |id: &'static str,
+                    title: &'static str,
+                    rows: Vec<AnyElement>,
+                    cx: &mut Context<Self>| {
+            let folded = self.folds.is_folded(id);
+            let toggle = cx.listener(move |this, _, _, cx| {
+                this.folds.toggle(id);
+                cx.notify();
+            });
+            cards::card(id, title, Vec::new(), folded, toggle, rows, cx.theme())
         };
-        let block = |label: &'static str, text: SharedString| {
-            v_flex()
-                .gap_1()
-                .p_2()
-                .rounded_md()
-                .bg(secondary)
-                .child(div().text_xs().text_color(muted).child(label))
-                .child(div().text_sm().child(text))
-        };
+        let text_row = |text: SharedString| div().text_sm().child(text).into_any_element();
+        let mut cards_column = v_flex().gap_3();
+        if !entry.message.is_empty() {
+            cards_column = cards_column.child(card(
+                "security-problem",
+                "What is wrong",
+                vec![text_row(entry.message.clone())],
+                cx,
+            ));
+        }
+        cards_column = cards_column.child(card(
+            "security-fix",
+            "How to fix it",
+            vec![text_row(entry.remediation.clone())],
+            cx,
+        ));
+        if !entry.fields.is_empty() {
+            let rows = entry
+                .fields
+                .iter()
+                .map(|(label, value)| cards::field("security", label, value, 90., cx.theme()))
+                .collect();
+            cards_column = cards_column.child(card("security-where", "Where", rows, cx));
+        }
 
         v_flex()
             .w(px(460.))
@@ -579,19 +617,7 @@ impl SecurityView {
                     .min_h_0()
                     .overflow_y_scroll()
                     .p_4()
-                    .gap_3()
-                    .when(!entry.message.is_empty(), |column| {
-                        column.child(block("What is wrong", entry.message.clone()))
-                    })
-                    .child(block("How to fix it", entry.remediation.clone()))
-                    .child(
-                        v_flex().gap_2().children(
-                            entry
-                                .fields
-                                .iter()
-                                .map(|(label, value)| field(label, value.clone())),
-                        ),
-                    ),
+                    .child(cards_column),
             )
             .when(openable, |column| {
                 column.child(
@@ -912,6 +938,19 @@ impl Render for SecurityView {
                             .child(div().w(px(220.)).child(Input::new(&self.filter))),
                     )
                     .child(toolbar)
+                    .children(
+                        security_status([critical, high, medium], self.pane().shown.len()).map(
+                            |(tone, label, detail)| {
+                                div().px_4().pb_2().child(cards::status_card(
+                                    tone,
+                                    label,
+                                    detail,
+                                    None,
+                                    cx.theme(),
+                                ))
+                            },
+                        ),
+                    )
                     .children(self.pane().limitations.iter().take(3).map(|text| {
                         div()
                             .px_4()
@@ -928,11 +967,26 @@ impl Render for SecurityView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Severity, entry_of_finding, entry_of_vulnerability, matching, tally, tone_of};
+    use super::{
+        Severity, entry_of_finding, entry_of_vulnerability, matching, security_status, tally,
+        tone_of,
+    };
     use k8s_app::{
         present::Tone,
         security::{Finding, Source, Vulnerability},
     };
+
+    #[test]
+    fn the_status_names_what_is_serious_and_says_nothing_when_nothing_is_shown() {
+        assert!(security_status([0, 0, 0], 0).is_none());
+        let (tone, label, _) = security_status([2, 3, 9], 40).expect("status");
+        assert_eq!((tone, label.as_str()), (Tone::Error, "2 critical, 3 high"));
+        let (tone, label, _) = security_status([0, 0, 4], 40).expect("status");
+        assert_eq!((tone, label.as_str()), (Tone::Warn, "4 medium"));
+        let (tone, label, detail) = security_status([0, 0, 0], 12).expect("status");
+        assert_eq!((tone, label.as_str()), (Tone::Ok, "Nothing serious"));
+        assert_eq!(detail, "12 shown");
+    }
 
     fn finding(name: &str, severity: Severity, builtin: bool) -> Finding {
         Finding {
