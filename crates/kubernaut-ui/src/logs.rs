@@ -4,6 +4,7 @@ use std::{ops::Range, sync::Arc};
 
 use futures::{StreamExt, channel::mpsc};
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
     component::{
         ActiveTheme, h_flex,
@@ -20,10 +21,13 @@ use tokio::{runtime::Handle, task::JoinHandle};
 use crate::{
     drawer::Target,
     log_buffer::{LineKind, LogBuffer},
-    ui::{toast_error, toast_success},
+    ui::{icon_button, toast_error, toast_success},
 };
 
 const ROW_HEIGHT: Pixels = px(20.);
+/// How often the selectable text catches up with new lines. Replacing it drops
+/// a selection, so it is no faster than a reader can follow.
+const SYNC: std::time::Duration = std::time::Duration::from_millis(800);
 /// Lines kept. About a megabyte of text at typical line lengths.
 const CAPACITY: usize = 10_000;
 /// A generation no stream ever has, for messages about the pod, not a stream.
@@ -60,11 +64,14 @@ pub struct LogView {
     name: SharedString,
     filter: Entity<InputState>,
     _filter_events: Subscription,
-    /// Read-only text of the lines as they were when Select was pressed, so
-    /// words can be marked and copied. A live list cannot hold a selection
-    /// while lines keep arriving.
+    /// The lines as text a mouse can mark and copy, which is how they are shown
+    /// by default. It follows the stream in steps, and waits while words are
+    /// marked or following is off, since replacing the text would drop them.
     viewer: Entity<EditorState>,
+    /// Whether the viewer is shown, rather than the coloured list.
     selecting: bool,
+    /// Lines arrived since the viewer's text was last set.
+    viewer_dirty: bool,
 }
 
 impl Drop for LogView {
@@ -90,6 +97,7 @@ impl LogView {
                 if matches!(event, InputEvent::Change) {
                     let text = input.read(cx).value().to_string();
                     this.buffer.set_filter(&text);
+                    this.viewer_dirty = true;
                     cx.notify();
                 }
             });
@@ -128,10 +136,23 @@ impl LogView {
             filter,
             _filter_events: filter_events,
             viewer,
-            selecting: false,
+            selecting: true,
+            viewer_dirty: false,
         };
         view.load_containers();
         view.restart(cx);
+        cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(SYNC).await;
+                if this
+                    .update_in(cx, |this, window, cx| this.sync_viewer(false, window, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         view
     }
 
@@ -168,6 +189,7 @@ impl LogView {
         }
         self.generation += 1;
         self.buffer.clear();
+        self.viewer_dirty = true;
         self.status = Some("Starting…".into());
 
         let options = LogOptions {
@@ -202,6 +224,7 @@ impl LogView {
             _ if generation != self.generation => return,
             Message::Batch(events) => {
                 self.buffer.push_all(&events);
+                self.viewer_dirty = true;
                 self.status = None;
                 if self.follow && self.buffer.visible_len() > 0 {
                     self.scroll
@@ -272,66 +295,127 @@ impl LogView {
             })
             .when(is_pod, |bar| {
                 bar.child(
-                    self.chip("previous", "Previous", self.previous, cx)
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.previous = !this.previous;
-                            this.restart(cx);
-                        })),
+                    icon_button(
+                        "previous",
+                        IconName::Rewind,
+                        "Logs of the previous run",
+                        self.previous,
+                        cx.theme(),
+                    )
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.previous = !this.previous;
+                        this.restart(cx);
+                    })),
                 )
             })
             .child(
-                self.chip("timestamps", "Timestamps", self.timestamps, cx)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.timestamps = !this.timestamps;
-                        this.restart(cx);
-                    })),
+                icon_button(
+                    "timestamps",
+                    IconName::Clock,
+                    "Show timestamps",
+                    self.timestamps,
+                    cx.theme(),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.timestamps = !this.timestamps;
+                    this.restart(cx);
+                })),
             )
             .child(
-                self.chip("follow", "Follow", self.follow, cx)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.follow = !this.follow;
-                        cx.notify();
-                    })),
-            )
-            .child(self.chip("clear", "Clear", false, cx).on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.buffer.clear();
+                icon_button(
+                    "follow",
+                    IconName::ArrowDownToLine,
+                    "Follow new lines",
+                    self.follow,
+                    cx.theme(),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.follow = !this.follow;
                     cx.notify();
-                },
-            )))
+                })),
+            )
             .child(
-                self.chip(
+                icon_button(
+                    "clear",
+                    IconName::Eraser,
+                    "Clear the lines",
+                    false,
+                    cx.theme(),
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.buffer.clear();
+                    this.viewer_dirty = true;
+                    cx.notify();
+                })),
+            )
+            .child(
+                icon_button(
                     "select",
-                    if self.selecting { "Live" } else { "Select" },
+                    if self.selecting {
+                        IconName::Palette
+                    } else {
+                        IconName::TextCursorInput
+                    },
+                    if self.selecting {
+                        "Switch to the coloured list"
+                    } else {
+                        "Select text to copy"
+                    },
                     self.selecting,
-                    cx,
+                    cx.theme(),
                 )
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_select(window, cx))),
             )
             .child(
-                self.chip("copy", "Copy", false, cx)
-                    .on_click(cx.listener(|this, _, window, cx| this.copy_all(window, cx))),
+                icon_button(
+                    "copy",
+                    IconName::Copy,
+                    "Copy every line shown",
+                    false,
+                    cx.theme(),
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.copy_all(window, cx))),
             )
             .child(
-                self.chip("save", "Save…", false, cx)
-                    .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
+                icon_button(
+                    "save",
+                    IconName::Download,
+                    "Save to a file",
+                    false,
+                    cx.theme(),
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.save(window, cx))),
             )
     }
 
-    /// Freeze what is shown into text that can be selected with the mouse, or
-    /// go back to the live list.
+    /// Show the lines as selectable text, or as the coloured list.
     fn toggle_select(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.selecting {
-            let text = self.buffer.to_text();
-            let last = u32::try_from(self.buffer.visible_len().saturating_sub(1)).unwrap_or(0);
-            self.viewer.update(cx, |viewer, cx| {
-                viewer.set_value(text, window, cx);
-                // The newest lines are at the bottom, where a tail is read.
-                viewer.set_cursor_position(Position::new(last, 0), window, cx);
-            });
-        }
         self.selecting = !self.selecting;
+        if self.selecting {
+            self.viewer_dirty = true;
+            self.sync_viewer(true, window, cx);
+        }
         cx.notify();
+    }
+
+    /// Bring the viewer's text up to date, at the newest lines. Unless `force`d,
+    /// it waits while following is off (the reader paused it to look) and while
+    /// words are marked: replacing the text would drop the selection.
+    fn sync_viewer(&mut self, force: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.selecting || !self.viewer_dirty {
+            return;
+        }
+        if !force && (!self.follow || !self.viewer.read(cx).selected_range().is_empty()) {
+            return;
+        }
+        let text = self.buffer.to_text();
+        let last = u32::try_from(self.buffer.visible_len().saturating_sub(1)).unwrap_or(0);
+        self.viewer.update(cx, |viewer, cx| {
+            viewer.set_value(text, window, cx);
+            // The newest lines are at the bottom, where a tail is read.
+            viewer.set_cursor_position(Position::new(last, 0), window, cx);
+        });
+        self.viewer_dirty = false;
     }
 
     /// Put the lines on screen (those matching the filter, if there is one) on
@@ -389,6 +473,12 @@ impl Render for LogView {
         );
 
         let body = match &self.status {
+            Some(status) if self.buffer.is_empty() => div()
+                .p_4()
+                .text_sm()
+                .text_color(muted)
+                .child(status.clone())
+                .into_any_element(),
             _ if self.selecting => div()
                 .flex_1()
                 .min_h_0()
@@ -398,12 +488,6 @@ impl Render for LogView {
                         .readonly(true)
                         .h(relative(1.)),
                 )
-                .into_any_element(),
-            Some(status) if self.buffer.is_empty() => div()
-                .p_4()
-                .text_sm()
-                .text_color(muted)
-                .child(status.clone())
                 .into_any_element(),
             _ => uniform_list(
                 "log-lines",

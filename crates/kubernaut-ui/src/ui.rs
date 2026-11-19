@@ -172,6 +172,42 @@ pub fn segment_icon(
         .child(label.into())
 }
 
+/// A toolbar button drawn as an icon alone, with its action in a tooltip. A
+/// toggle that is on takes the accent colour and a tinted background. The
+/// caller attaches `on_click`.
+pub fn icon_button(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    tip: impl Into<SharedString>,
+    active: bool,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let tip: SharedString = tip.into();
+    div()
+        .id(id)
+        .size(px(28.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .border_1()
+        .border_color(theme.border)
+        .cursor_pointer()
+        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+        .when(active, |button| {
+            button
+                .bg(theme.secondary)
+                .border_color(theme.primary.opacity(0.6))
+                .text_color(theme.primary)
+        })
+        .when(!active, |button| {
+            button
+                .text_color(theme.muted_foreground)
+                .hover(|button| button.bg(theme.secondary).text_color(theme.foreground))
+        })
+        .child(Icon::new(icon).size(px(16.)))
+}
+
 /// A tab drawn as an icon alone, with its name in a tooltip. Larger than the
 /// icon of a labelled segment, because the shape is all there is to go by; the
 /// open one is lifted and takes the foreground colour.

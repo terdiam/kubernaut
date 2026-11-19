@@ -10,6 +10,7 @@ assets::icon_assets!(
     ExtraIcons,
     [
         Activity,
+        ArrowDownToLine,
         ArrowLeftRight,
         BellOff,
         Box,
@@ -21,6 +22,7 @@ assets::icon_assets!(
         Container,
         Database,
         Download,
+        Eraser,
         FileCode,
         FolderTree,
         Gauge,
@@ -36,6 +38,7 @@ assets::icon_assets!(
         Pin,
         PinOff,
         Puzzle,
+        Rewind,
         Route,
         Ruler,
         ScanSearch,
@@ -50,6 +53,7 @@ assets::icon_assets!(
         Stethoscope,
         Tag,
         Tags,
+        TextCursorInput,
         Timer,
         Upload,
         UserCog,
@@ -144,6 +148,15 @@ mod tests {
             IconName::Bug,
             IconName::Tags,
             IconName::ServerCog,
+            // The log toolbar.
+            IconName::Rewind,
+            IconName::Clock,
+            IconName::ArrowDownToLine,
+            IconName::Eraser,
+            IconName::TextCursorInput,
+            IconName::Palette,
+            IconName::Copy,
+            IconName::Download,
         ] {
             let path = IconName::path(icon);
             assert!(
