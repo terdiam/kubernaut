@@ -88,6 +88,102 @@ fn selector(value: &Value, pointer: &str) -> Option<String> {
     )
 }
 
+/// A count the object reports, or `None` when it leaves the field out.
+fn count(value: &Value, pointer: &str) -> Option<String> {
+    value.pointer(pointer)?.as_i64().map(|n| n.to_string())
+}
+
+/// `key=value:Effect` for each toleration, as `kubectl taint` writes taints.
+fn tolerations(value: &Value, pointer: &str) -> Option<String> {
+    join(value.pointer(pointer)?.as_array()?.iter().map(|t| {
+        let key = t.get("key").and_then(Value::as_str).unwrap_or("*");
+        let effect = t.get("effect").and_then(Value::as_str);
+        let mut out = match t.get("value").and_then(Value::as_str) {
+            Some(v) if !v.is_empty() => format!("{key}={v}"),
+            _ => key.to_string(),
+        };
+        if let Some(effect) = effect {
+            out.push(':');
+            out.push_str(effect);
+        }
+        if let Some(seconds) = t.get("tolerationSeconds").and_then(Value::as_i64) {
+            out.push_str(&format!(" for {seconds}s"));
+        }
+        out
+    }))
+}
+
+/// `key In [a, b]` for one node-selector requirement.
+fn requirement(expr: &Value) -> String {
+    let key = expr.get("key").and_then(Value::as_str).unwrap_or("?");
+    let op = expr.get("operator").and_then(Value::as_str).unwrap_or("?");
+    let values: Vec<&str> = expr
+        .get("values")
+        .and_then(Value::as_array)
+        .map(|list| list.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if values.is_empty() {
+        format!("{key} {op}")
+    } else {
+        format!("{key} {op} [{}]", values.join(", "))
+    }
+}
+
+/// What a pod template asks of where it runs: required and preferred node
+/// affinity, and the topology its pod (anti-)affinity spreads or packs over.
+fn affinities(value: &Value, pointer: &str) -> Option<String> {
+    let affinity = value.pointer(pointer)?.as_object()?;
+    let mut parts: Vec<String> = Vec::new();
+    for (kind, label) in [
+        ("nodeAffinity", "node"),
+        ("podAffinity", "pod"),
+        ("podAntiAffinity", "pod anti"),
+    ] {
+        let Some(block) = affinity.get(kind) else {
+            continue;
+        };
+        let required = block.get("requiredDuringSchedulingIgnoredDuringExecution");
+        let preferred = block
+            .get("preferredDuringSchedulingIgnoredDuringExecution")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        if kind == "nodeAffinity" {
+            let terms: Vec<String> = required
+                .and_then(|r| r.get("nodeSelectorTerms"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(|term| {
+                    term.get("matchExpressions")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .map(requirement)
+                        .collect::<Vec<_>>()
+                        .join(" and ")
+                })
+                .collect();
+            if !terms.is_empty() {
+                parts.push(format!("{label} affinity required: {}", terms.join(" or ")));
+            }
+        } else {
+            let keys: Vec<&str> = required
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|term| term.get("topologyKey").and_then(Value::as_str))
+                .collect();
+            if !keys.is_empty() {
+                parts.push(format!("{label} affinity required on {}", keys.join(", ")));
+            }
+        }
+        if preferred > 0 {
+            parts.push(format!("{label} affinity preferred ({preferred})"));
+        }
+    }
+    join(parts)
+}
+
 fn age_of(object: &Value) -> Option<String> {
     let created = text(object, "/metadata/creationTimestamp")?;
     let seconds = present::now() - present::parse_timestamp(&created)?;
@@ -215,6 +311,49 @@ pub fn describe(object: &Value) -> Details {
                         .or_else(|| text(object, "/spec/updateStrategy/type")),
                 ),
                 ("Selector", selector(object, "/spec/selector/matchLabels")),
+            ]);
+            rows.extend([
+                ("Total", count(object, "/status/replicas")),
+                ("Available", count(object, "/status/availableReplicas")),
+                (
+                    "Unavailable",
+                    // Left out of a healthy Deployment's status; a reader wants 0.
+                    (kind == "Deployment")
+                        .then(|| number(object, "/status/unavailableReplicas").to_string()),
+                ),
+                (
+                    "Max surge",
+                    text(object, "/spec/strategy/rollingUpdate/maxSurge"),
+                ),
+                (
+                    "Max unavailable",
+                    text(object, "/spec/strategy/rollingUpdate/maxUnavailable"),
+                ),
+                (
+                    "Partition",
+                    text(object, "/spec/updateStrategy/rollingUpdate/partition"),
+                ),
+                ("Min ready seconds", count(object, "/spec/minReadySeconds")),
+                (
+                    "Revision history",
+                    count(object, "/spec/revisionHistoryLimit"),
+                ),
+                (
+                    "Progress deadline",
+                    count(object, "/spec/progressDeadlineSeconds").map(|n| format!("{n}s")),
+                ),
+                (
+                    "Paused",
+                    (object.pointer("/spec/paused").and_then(Value::as_bool) == Some(true))
+                        .then(|| "true".to_string()),
+                ),
+                (
+                    "Revision",
+                    text(
+                        object,
+                        "/metadata/annotations/deployment.kubernetes.io~1revision",
+                    ),
+                ),
             ]);
         }
         "DaemonSet" => rows.extend([
@@ -362,6 +501,35 @@ pub fn describe(object: &Value) -> Details {
         _ => {}
     }
 
+    if matches!(
+        kind.as_str(),
+        "Deployment" | "StatefulSet" | "ReplicaSet" | "ReplicationController" | "DaemonSet"
+    ) {
+        let spec = "/spec/template/spec";
+        rows.extend([
+            (
+                "Node selector",
+                selector(object, &format!("{spec}/nodeSelector")),
+            ),
+            (
+                "Tolerations",
+                tolerations(object, &format!("{spec}/tolerations")),
+            ),
+            (
+                "Affinities",
+                affinities(object, &format!("{spec}/affinity")),
+            ),
+            (
+                "Service account",
+                text(object, &format!("{spec}/serviceAccountName")),
+            ),
+            (
+                "Priority class",
+                text(object, &format!("{spec}/priorityClassName")),
+            ),
+        ]);
+    }
+
     let conditions = object
         .pointer("/status/conditions")
         .and_then(Value::as_array)
@@ -457,6 +625,92 @@ mod tests {
         assert_eq!(summary(&details, "Replicas"), Some("2 ready of 3 desired"));
         assert_eq!(summary(&details, "Selector"), Some("app=web"));
         assert_eq!(details.containers.len(), 1);
+    }
+
+    #[test]
+    fn a_deployment_shows_its_rollout_settings_and_where_it_may_run() {
+        let deployment = json!({
+            "kind": "Deployment",
+            "metadata": {
+                "name": "web",
+                "annotations": {"deployment.kubernetes.io/revision": "7"},
+            },
+            "spec": {
+                "replicas": 3, "minReadySeconds": 5, "revisionHistoryLimit": 10,
+                "progressDeadlineSeconds": 600,
+                "strategy": {"type": "RollingUpdate",
+                    "rollingUpdate": {"maxSurge": "25%", "maxUnavailable": 1}},
+                "template": {"spec": {
+                    "serviceAccountName": "web", "priorityClassName": "high",
+                    "nodeSelector": {"disk": "ssd"},
+                    "tolerations": [
+                        {"key": "dedicated", "operator": "Equal", "value": "web", "effect": "NoSchedule"},
+                        {"operator": "Exists"},
+                        {"key": "node.kubernetes.io/unreachable", "operator": "Exists",
+                         "effect": "NoExecute", "tolerationSeconds": 300},
+                    ],
+                    "affinity": {
+                        "nodeAffinity": {"requiredDuringSchedulingIgnoredDuringExecution": {
+                            "nodeSelectorTerms": [{"matchExpressions": [
+                                {"key": "zone", "operator": "In", "values": ["a", "b"]}]}]}},
+                        "podAntiAffinity": {
+                            "requiredDuringSchedulingIgnoredDuringExecution": [
+                                {"topologyKey": "kubernetes.io/hostname"}],
+                            "preferredDuringSchedulingIgnoredDuringExecution": [{}, {}],
+                        },
+                    },
+                    "containers": [{"name": "c", "image": "i"}],
+                }},
+            },
+            "status": {"replicas": 4, "readyReplicas": 3, "updatedReplicas": 3,
+                "availableReplicas": 3, "unavailableReplicas": 1},
+        });
+        let d = describe(&deployment);
+        assert_eq!(summary(&d, "Total"), Some("4"));
+        assert_eq!(summary(&d, "Available"), Some("3"));
+        assert_eq!(summary(&d, "Unavailable"), Some("1"));
+        assert_eq!(summary(&d, "Max surge"), Some("25%"));
+        assert_eq!(summary(&d, "Max unavailable"), Some("1"));
+        assert_eq!(summary(&d, "Min ready seconds"), Some("5"));
+        assert_eq!(summary(&d, "Revision history"), Some("10"));
+        assert_eq!(summary(&d, "Progress deadline"), Some("600s"));
+        assert_eq!(summary(&d, "Revision"), Some("7"));
+        assert_eq!(summary(&d, "Paused"), None);
+        assert_eq!(summary(&d, "Node selector"), Some("disk=ssd"));
+        assert_eq!(
+            summary(&d, "Tolerations"),
+            Some("dedicated=web:NoSchedule, *, node.kubernetes.io/unreachable:NoExecute for 300s")
+        );
+        assert_eq!(
+            summary(&d, "Affinities"),
+            Some(
+                "node affinity required: zone In [a, b], \
+                 pod anti affinity required on kubernetes.io/hostname, \
+                 pod anti affinity preferred (2)"
+            )
+        );
+        assert_eq!(summary(&d, "Service account"), Some("web"));
+        assert_eq!(summary(&d, "Priority class"), Some("high"));
+    }
+
+    #[test]
+    fn a_healthy_deployment_reports_zero_unavailable_and_omits_what_it_lacks() {
+        let deployment = json!({
+            "kind": "Deployment", "metadata": {"name": "web"},
+            "spec": {"replicas": 1, "template": {"spec": {"containers": []}}},
+            "status": {"replicas": 1, "readyReplicas": 1, "availableReplicas": 1},
+        });
+        let d = describe(&deployment);
+        assert_eq!(summary(&d, "Unavailable"), Some("0"));
+        for absent in [
+            "Tolerations",
+            "Affinities",
+            "Node selector",
+            "Max surge",
+            "Paused",
+        ] {
+            assert_eq!(summary(&d, absent), None, "{absent}");
+        }
     }
 
     #[test]
