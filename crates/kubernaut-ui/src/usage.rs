@@ -14,11 +14,12 @@ use gpui_kit::{
     prelude::FluentBuilder,
     *,
 };
-use k8s_app::{AppCore, metrics_ops};
+use k8s_app::{AppCore, metrics_ops, present::Tone};
 use k8s_metrics::NamespaceUsage;
 use tokio::runtime::Handle;
 
 use crate::{
+    cards::{self, Folds, badge},
     drawer::Target,
     metrics::{bytes, cores},
     namespaces,
@@ -67,6 +68,47 @@ fn heat(usage: f64, request: f64, unset: bool) -> Heat {
     }
 }
 
+/// Worst first: what a person scanning for trouble wants at the top.
+const HEAT_ORDER: [Heat; 5] = [
+    Heat::Over,
+    Heat::Busy,
+    Heat::Fair,
+    Heat::Idle,
+    Heat::Unknown,
+];
+
+/// The id a heat group is folded under.
+fn heat_id(heat: Heat) -> &'static str {
+    match heat {
+        Heat::Over => "usage-over",
+        Heat::Busy => "usage-busy",
+        Heat::Fair => "usage-fair",
+        Heat::Idle => "usage-idle",
+        Heat::Unknown => "usage-unknown",
+    }
+}
+
+/// How the namespaces stand against their requests, in one line.
+fn usage_status(tiles: &[Tile]) -> (Tone, String, String) {
+    let count = |wanted: Heat| tiles.iter().filter(|tile| tile.heat == wanted).count();
+    let (over, busy) = (count(Heat::Over), count(Heat::Busy));
+    let (tone, label) = if over > 0 {
+        (Tone::Error, format!("{over} over request"))
+    } else if busy > 0 {
+        (Tone::Warn, format!("{busy} near request"))
+    } else {
+        (Tone::Ok, "Within requests".to_string())
+    };
+    let detail = format!(
+        "of {} namespaces · {} comfortable, {} mostly idle, {} without a request",
+        tiles.len(),
+        count(Heat::Fair),
+        count(Heat::Idle),
+        count(Heat::Unknown),
+    );
+    (tone, label, detail)
+}
+
 fn heat_color(heat: Heat, theme: &Theme) -> Hsla {
     match heat {
         Heat::Unknown => theme.muted_foreground,
@@ -98,6 +140,8 @@ struct Tile {
     pods: SharedString,
     /// For ordering: the most used first.
     weight: f64,
+    /// Use as a share of the request, for the bar; never past full.
+    fraction: f32,
 }
 
 fn tile(entry: &NamespaceUsage, measure: Measure) -> Tile {
@@ -137,6 +181,11 @@ fn tile(entry: &NamespaceUsage, measure: Measure) -> Tile {
         }
         .into(),
         weight: usage,
+        fraction: if request > 0.0 {
+            (usage / request).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        },
     }
 }
 
@@ -171,6 +220,7 @@ pub struct UsageView {
     load: Load,
     entries: Vec<NamespaceUsage>,
     tiles: Vec<Tile>,
+    folds: Folds,
 }
 
 impl EventEmitter<UsageEvent> for UsageView {}
@@ -178,7 +228,7 @@ impl EventEmitter<UsageEvent> for UsageView {}
 impl UsageView {
     pub fn new(
         core: &Arc<AppCore>,
-        _runtime: &Handle,
+        runtime: &Handle,
         cluster: SharedString,
         scope: Vec<SharedString>,
         cx: &mut Context<Self>,
@@ -191,6 +241,7 @@ impl UsageView {
             load: Load::Loading,
             entries: Vec::new(),
             tiles: Vec::new(),
+            folds: Folds::load(core, runtime),
         };
         view.refresh(cx);
         cx.spawn(async move |this, cx| {
@@ -293,73 +344,125 @@ impl Render for UsageView {
             )
             .into_any_element(),
             Load::Ready => {
-                let mut grid = h_flex().flex_wrap().gap_3().p_4();
-                for (index, tile) in self.tiles.iter().enumerate() {
-                    let color = heat_color(tile.heat, cx.theme());
-                    let namespace = tile.namespace.clone();
-                    let cluster = self.cluster.clone();
-                    grid = grid.child(
-                        v_flex()
-                            .id(("usage-tile", index))
-                            .w(px(230.))
-                            .h(px(104.))
-                            .p_3()
-                            .gap_1()
-                            .rounded_lg()
-                            .border_1()
-                            .border_color(color.opacity(0.6))
-                            .bg(color.opacity(0.14))
-                            .cursor_pointer()
-                            .hover(|tile| tile.bg(color.opacity(0.24)))
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_baseline()
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .font_semibold()
-                                            .child(tile.namespace.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .text_lg()
-                                            .font_semibold()
-                                            .text_color(color)
-                                            .child(tile.percent.clone()),
-                                    ),
-                            )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(palette.muted)
-                                    .child(tile.detail.clone()),
-                            )
-                            .child(div().flex_1())
-                            .child(div().text_xs().text_color(palette.muted).child(format!(
-                                "{} · {}",
-                                tile.pods,
-                                heat_label(tile.heat)
-                            )))
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(UsageEvent::Open(Target {
-                                    cluster: cluster.clone(),
-                                    resource: "core/v1/namespaces".into(),
-                                    kind: "Namespace".into(),
-                                    namespace: None,
-                                    name: namespace.clone(),
-                                }));
-                            })),
-                    );
+                let (tone, label, detail) = usage_status(&self.tiles);
+                let mut column = v_flex().p_4().gap_3().child(cards::status_card(
+                    tone,
+                    label,
+                    detail,
+                    None,
+                    cx.theme(),
+                ));
+                for group_heat in HEAT_ORDER {
+                    let group: Vec<(usize, &Tile)> = self
+                        .tiles
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, tile)| tile.heat == group_heat)
+                        .collect();
+                    if group.is_empty() {
+                        continue;
+                    }
+                    let mut grid = h_flex().flex_wrap().gap_3().py_1();
+                    for (index, tile) in &group {
+                        let color = heat_color(tile.heat, cx.theme());
+                        let namespace = tile.namespace.clone();
+                        let cluster = self.cluster.clone();
+                        grid = grid.child(
+                            v_flex()
+                                .id(("usage-tile", *index))
+                                .w(px(230.))
+                                .h(px(112.))
+                                .p_3()
+                                .gap_1()
+                                .rounded_lg()
+                                .border_1()
+                                .border_color(color.opacity(0.6))
+                                .bg(color.opacity(0.14))
+                                .cursor_pointer()
+                                .hover(|tile| tile.bg(color.opacity(0.24)))
+                                .child(
+                                    h_flex()
+                                        .gap_2()
+                                        .items_baseline()
+                                        .child(
+                                            div()
+                                                .flex_1()
+                                                .min_w_0()
+                                                .truncate()
+                                                .font_semibold()
+                                                .child(tile.namespace.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_lg()
+                                                .font_semibold()
+                                                .text_color(color)
+                                                .child(tile.percent.clone()),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .h(px(4.))
+                                        .w_full()
+                                        .rounded_full()
+                                        .bg(color.opacity(0.2))
+                                        .child(
+                                            div()
+                                                .h_full()
+                                                .rounded_full()
+                                                .bg(color)
+                                                .w(relative(tile.fraction)),
+                                        ),
+                                )
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted)
+                                        .child(tile.detail.clone()),
+                                )
+                                .child(div().flex_1())
+                                .child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(palette.muted)
+                                        .child(tile.pods.clone()),
+                                )
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    cx.emit(UsageEvent::Open(Target {
+                                        cluster: cluster.clone(),
+                                        resource: "core/v1/namespaces".into(),
+                                        kind: "Namespace".into(),
+                                        namespace: None,
+                                        name: namespace.clone(),
+                                    }));
+                                })),
+                        );
+                    }
+                    let id = heat_id(group_heat);
+                    let folded = self.folds.is_folded(id);
+                    let toggle = cx.listener(move |this, _, _, cx| {
+                        this.folds.toggle(id);
+                        cx.notify();
+                    });
+                    column = column.child(cards::card(
+                        id,
+                        heat_label(group_heat),
+                        vec![badge(
+                            group.len().to_string(),
+                            heat_color(group_heat, cx.theme()),
+                        )],
+                        folded,
+                        toggle,
+                        vec![grid.into_any_element()],
+                        cx.theme(),
+                    ));
                 }
                 div()
                     .id("usage-scroll")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(grid)
+                    .child(column)
                     .into_any_element()
             }
         };
@@ -400,7 +503,8 @@ impl Render for UsageView {
 
 #[cfg(test)]
 mod tests {
-    use super::{Heat, Measure, heat, tiles};
+    use super::{Heat, Measure, heat, tiles, usage_status};
+    use k8s_app::present::Tone;
     use k8s_metrics::NamespaceUsage;
 
     fn entry(name: &str, cpu: f64, request: f64, unset: bool) -> NamespaceUsage {
@@ -415,6 +519,25 @@ mod tests {
             memory_limits: 0.0,
             has_unset_requests: unset,
         }
+    }
+
+    #[test]
+    fn the_status_names_the_worst_namespaces_first() {
+        let list = |entries: &[(f64, f64)]| {
+            let rows: Vec<NamespaceUsage> = entries
+                .iter()
+                .enumerate()
+                .map(|(i, (usage, request))| entry(&format!("ns{i}"), *usage, *request, false))
+                .collect();
+            tiles(&rows, Measure::Cpu, &[])
+        };
+        let (tone, label, _) = usage_status(&list(&[(0.5, 1.0), (0.1, 1.0)]));
+        assert_eq!((tone, label.as_str()), (Tone::Ok, "Within requests"));
+        let (tone, label, _) = usage_status(&list(&[(0.9, 1.0), (0.1, 1.0)]));
+        assert_eq!((tone, label.as_str()), (Tone::Warn, "1 near request"));
+        let (tone, label, detail) = usage_status(&list(&[(2.0, 1.0), (0.9, 1.0), (0.1, 1.0)]));
+        assert_eq!((tone, label.as_str()), (Tone::Error, "1 over request"));
+        assert!(detail.starts_with("of 3 namespaces"), "{detail}");
     }
 
     #[test]
