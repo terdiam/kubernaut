@@ -17,12 +17,13 @@ use gpui_kit::{
 use k8s_app::{
     AppCore,
     metrics_ops::{self, SizingReport},
-    present,
+    present::{self, Tone},
 };
 use k8s_metrics::{Confidence, MetricSource, MetricTarget, ObjectMetrics, Recommendation};
 use tokio::runtime::Handle;
 
 use crate::{
+    cards::{self, Folds, badge},
     drawer::Target,
     row_actions,
     ui::{Palette, message, pill},
@@ -191,6 +192,8 @@ pub struct MetricsView {
     /// A workload's own history, one point per refresh: the sampler keeps none
     /// for a workload, so this tab does, for as long as it is open.
     workload_points: Vec<k8s_metrics::Point>,
+    /// Cards the reader has folded, shared with every other screen.
+    folds: Folds,
 }
 
 impl MetricsView {
@@ -219,6 +222,7 @@ impl MetricsView {
             metrics: None,
             sizing: None,
             workload_points: Vec::new(),
+            folds: Folds::load(core, runtime),
         };
         view.refresh(cx);
         cx.spawn(async move |this, cx| {
@@ -286,41 +290,52 @@ impl MetricsView {
         .detach();
     }
 
+    /// A foldable card of this tab. `value` is the figure now, shown by the title
+    /// so a folded card still says where it stands.
+    fn chart_card(
+        &self,
+        id: &'static str,
+        title: &'static str,
+        value: String,
+        rows: Vec<AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let folded = self.folds.is_folded(id);
+        let accent = cx.theme().foreground;
+        let toggle = cx.listener(move |this, _, _, cx| {
+            this.folds.toggle(id);
+            cx.notify();
+        });
+        cards::card(
+            id,
+            title,
+            vec![badge(value, accent)],
+            folded,
+            toggle,
+            rows,
+            cx.theme(),
+        )
+    }
+
     fn render_chart(
         &self,
-        title: &'static str,
+        (id, title): (&'static str, &'static str),
         now: String,
         declared: String,
         data: Vec<Pt>,
         color: Hsla,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let (border, muted) = {
-            let theme = cx.theme();
-            (theme.border, theme.muted_foreground)
-        };
-        v_flex()
-            .p_3()
-            .gap_1()
-            .rounded_lg()
-            .border_1()
-            .border_color(border)
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_baseline()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(muted)
-                            .child(title),
-                    )
-                    .child(div().text_lg().font_semibold().child(now)),
-            )
-            .child(div().text_xs().text_color(muted).child(declared))
-            .child(
-                div().h(px(110.)).child(
+    ) -> Div {
+        let muted = cx.theme().muted_foreground;
+        let rows = vec![
+            div()
+                .text_xs()
+                .text_color(muted)
+                .child(declared)
+                .into_any_element(),
+            div()
+                .h(px(110.))
+                .child(
                     AreaChart::new(data)
                         .x(|point: &Pt| point.label.clone())
                         .y(|point: &Pt| point.value)
@@ -329,51 +344,37 @@ impl MetricsView {
                         .fill(color.opacity(0.18))
                         .x_axis(false)
                         .grid(false),
-                ),
-            )
+                )
+                .into_any_element(),
+        ];
+        self.chart_card(id, title, now, rows, cx)
     }
 
     /// A chart of two series, with a key that names each.
     fn render_duo(
         &self,
+        id: &'static str,
         title: &'static str,
         now: String,
         key: [(&'static str, Hsla); 2],
         data: Vec<Duo>,
         cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let (border, muted) = {
-            let theme = cx.theme();
-            (theme.border, theme.muted_foreground)
-        };
-        v_flex()
-            .p_3()
-            .gap_1()
-            .rounded_lg()
-            .border_1()
-            .border_color(border)
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_baseline()
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(muted)
-                            .child(title),
-                    )
-                    .child(div().text_lg().font_semibold().child(now)),
-            )
-            .child(h_flex().gap_3().children(key.map(|(label, color)| {
-                h_flex()
-                    .gap_1p5()
-                    .items_center()
-                    .child(div().size(px(8.)).rounded_full().bg(color))
-                    .child(div().text_xs().text_color(muted).child(label))
-            })))
-            .child(
-                div().h(px(110.)).child(
+    ) -> Div {
+        let muted = cx.theme().muted_foreground;
+        let rows = vec![
+            h_flex()
+                .gap_3()
+                .children(key.map(|(label, color)| {
+                    h_flex()
+                        .gap_1p5()
+                        .items_center()
+                        .child(div().size(px(8.)).rounded_full().bg(color))
+                        .child(div().text_xs().text_color(muted).child(label))
+                }))
+                .into_any_element(),
+            div()
+                .h(px(110.))
+                .child(
                     AreaChart::new(data)
                         .x(|point: &Duo| point.label.clone())
                         .y(|point: &Duo| point.first)
@@ -386,19 +387,16 @@ impl MetricsView {
                         .fill(key[1].1.opacity(0.14))
                         .x_axis(false)
                         .grid(false),
-                ),
-            )
+                )
+                .into_any_element(),
+        ];
+        self.chart_card(id, title, now, rows, cx)
     }
 
-    fn render_sizing(&self, report: &SizingReport, cx: &mut Context<Self>) -> impl IntoElement {
-        let (border, muted, secondary, success) = {
+    fn render_sizing(&self, report: &SizingReport, cx: &mut Context<Self>) -> Div {
+        let (muted, secondary, success) = {
             let theme = cx.theme();
-            (
-                theme.border,
-                theme.muted_foreground,
-                theme.secondary,
-                theme.success,
-            )
+            (theme.muted_foreground, theme.secondary, theme.success)
         };
         let row = |label: &'static str, now: String, suggested: String| {
             h_flex()
@@ -408,40 +406,49 @@ impl MetricsView {
                 .child(div().w(px(90.)).flex_none().child(now))
                 .child(div().text_color(success).child(format!("→ {suggested}")))
         };
-        let mut column = v_flex().gap_3();
+        let mut rows: Vec<AnyElement> = Vec::new();
         if let Some(note) = &report.note {
-            column = column.child(div().text_sm().text_color(muted).child(note.clone()));
+            rows.push(
+                div()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(note.clone())
+                    .into_any_element(),
+            );
         }
         for rec in &report.recommendations {
-            column = column.child(self.render_recommendation(rec, border, muted, secondary, &row));
+            rows.push(
+                self.render_recommendation(rec, muted, secondary, &row)
+                    .into_any_element(),
+            );
         }
-        v_flex()
-            .gap_2()
-            .child(
-                div()
-                    .text_xs()
-                    .font_semibold()
-                    .text_color(muted)
-                    .child("SIZING SUGGESTIONS"),
-            )
-            .child(column)
+        let id = "sizing";
+        let folded = self.folds.is_folded(id);
+        let toggle = cx.listener(move |this, _, _, cx| {
+            this.folds.toggle(id);
+            cx.notify();
+        });
+        cards::card(
+            id,
+            "Sizing suggestions",
+            vec![badge(report.recommendations.len().to_string(), muted)],
+            folded,
+            toggle,
+            rows,
+            cx.theme(),
+        )
     }
 
     fn render_recommendation(
         &self,
         rec: &Recommendation,
-        border: Hsla,
         muted: Hsla,
         secondary: Hsla,
         row: &dyn Fn(&'static str, String, String) -> Div,
     ) -> impl IntoElement {
         let enough = rec.confidence != Confidence::Insufficient;
         v_flex()
-            .p_3()
             .gap_2()
-            .rounded_lg()
-            .border_1()
-            .border_color(border)
             .child(
                 h_flex()
                     .gap_2()
@@ -504,30 +511,35 @@ impl Render for MetricsView {
             }
             (Load::Ready, Some(metrics)) => {
                 let last = metrics.points.last().copied().unwrap_or_default();
-                let source = match metrics.source {
-                    MetricSource::Prometheus => "From Prometheus, with history.",
-                    MetricSource::MetricsServer => {
-                        "From metrics-server, which keeps no history: the chart fills while this \
-                         tab stays open."
+                let (tone, label, detail) = match metrics.source {
+                    MetricSource::Prometheus => (
+                        Tone::Ok,
+                        "Prometheus",
+                        "with history from before this tab opened".to_string(),
+                    ),
+                    MetricSource::MetricsServer => (
+                        Tone::Ok,
+                        "metrics-server",
+                        "keeps no history: the charts fill while this tab stays open".to_string(),
+                    ),
+                    MetricSource::None if metrics.note.is_some() => {
+                        (Tone::Pending, "No data yet", String::new())
                     }
-                    // The note says why, and "no source" would contradict it.
-                    MetricSource::None if metrics.note.is_some() => "",
-                    MetricSource::None => "No metrics source found in this cluster.",
+                    MetricSource::None => (
+                        Tone::Warn,
+                        "No metrics source",
+                        "none found in this cluster".to_string(),
+                    ),
+                };
+                let detail = if metrics.pod_count > 1 {
+                    format!("{detail} · {} pods", metrics.pod_count)
+                } else {
+                    detail
                 };
                 let cpu = series(&metrics.points, |p| p.cpu);
                 let memory = series(&metrics.points, |p| p.memory / (1024.0 * 1024.0));
                 let mut column = v_flex().p_3().gap_3();
-                column = column.child(
-                    h_flex()
-                        .gap_2()
-                        .items_center()
-                        .when(!source.is_empty(), |row| {
-                            row.child(div().text_xs().text_color(palette.muted).child(source))
-                        })
-                        .when(metrics.pod_count > 1, |row| {
-                            row.child(pill(format!("{} pods", metrics.pod_count), palette.muted))
-                        }),
-                );
+                column = column.child(cards::status_card(tone, label, detail, None, cx.theme()));
                 if let Some(note) = &metrics.note {
                     column = column.child(
                         div()
@@ -538,7 +550,7 @@ impl Render for MetricsView {
                 }
                 column = column
                     .child(self.render_chart(
-                        "CPU",
+                        ("metrics-cpu", "CPU"),
                         cores(last.cpu),
                         declared_line(metrics.cpu_requests, metrics.cpu_limits, cores),
                         cpu,
@@ -546,7 +558,7 @@ impl Render for MetricsView {
                         cx,
                     ))
                     .child(self.render_chart(
-                        "MEMORY",
+                        ("metrics-memory", "Memory"),
                         bytes(last.memory),
                         declared_line(metrics.memory_requests, metrics.memory_limits, bytes),
                         memory,
@@ -571,7 +583,8 @@ impl Render for MetricsView {
                         };
                         column = column
                             .child(self.render_duo(
-                                "NETWORK",
+                                "metrics-network",
+                                "Network",
                                 format!("↓ {} ↑ {}", rate(last.network_rx), rate(last.network_tx)),
                                 [("received", success), ("sent", info)],
                                 series_pair(
@@ -582,7 +595,8 @@ impl Render for MetricsView {
                                 cx,
                             ))
                             .child(self.render_duo(
-                                "DISK",
+                                "metrics-disk",
+                                "Disk",
                                 format!(
                                     "{} · volumes {}",
                                     bytes(last.fs_used),

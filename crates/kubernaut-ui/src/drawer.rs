@@ -28,6 +28,7 @@ use k8s_ops::{
 use tokio::runtime::Handle;
 
 use crate::{
+    cards,
     details::{DetailsEvent, DetailsView},
     diagnose::{DiagnoseEvent, DiagnoseView, kind_of},
     log_buffer::log_target,
@@ -37,7 +38,7 @@ use crate::{
     quota::QuotaView,
     row_actions::{self, RowAction},
     terminal::{Request, TerminalView},
-    ui::{Emphasis, button_icon, segment_icon, segmented_bar},
+    ui::{Emphasis, button_icon, chip, segment_icon, segmented_bar, toast_success},
     yaml::YamlView,
 };
 
@@ -140,6 +141,8 @@ pub struct DrawerView {
     yaml: Entity<YamlView>,
     events: Load<Vec<EventLine>>,
     events_scroll: UniformListScrollHandle,
+    /// Show only the events that warn, so a noisy object's problem is found.
+    warnings_only: bool,
 }
 
 impl EventEmitter<DrawerEvent> for DrawerView {}
@@ -191,6 +194,7 @@ impl DrawerView {
             yaml,
             events: Load::Loading,
             events_scroll: UniformListScrollHandle::new(),
+            warnings_only: false,
         }
     }
 
@@ -480,80 +484,154 @@ impl DrawerView {
                 .child(text)
                 .into_any_element()
         };
-        match &self.events {
-            Load::Loading => message("Loading events…".into(), theme.muted_foreground),
-            Load::Failed(error) => message(error.clone(), theme.danger),
+        let lines = match &self.events {
+            Load::Loading => return message("Loading events…".into(), theme.muted_foreground),
+            Load::Failed(error) => return message(error.clone(), theme.danger),
             Load::Ready(lines) if lines.is_empty() => {
-                message("No events.".into(), theme.muted_foreground)
+                return message("No events.".into(), theme.muted_foreground);
             }
-            Load::Ready(lines) => uniform_list(
-                "events",
-                lines.len(),
-                cx.processor(|this, range: Range<usize>, _window, cx| {
-                    let theme = cx.theme();
-                    let Load::Ready(lines) = &this.events else {
-                        return Vec::new();
-                    };
-                    lines
-                        .get(range.clone())
-                        .unwrap_or_default()
-                        .iter()
-                        .zip(range)
-                        .map(|(line, index)| {
-                            // `w_full`: without it the row is as wide as its
-                            // longest message, and `truncate` has nothing to cut.
-                            h_flex()
-                                .id(("event", index))
-                                .w_full()
-                                .h(ROW_HEIGHT)
-                                .px_3()
-                                .gap_3()
-                                .items_center()
-                                .text_sm()
-                                .child(div().size(px(8.)).flex_none().rounded_full().bg(
-                                    if line.warning {
-                                        theme.warning
-                                    } else {
-                                        theme.muted_foreground
-                                    },
-                                ))
-                                .child(
-                                    div()
-                                        .w(px(120.))
-                                        .flex_none()
-                                        .truncate()
-                                        .child(line.reason.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .child(line.message.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .child(line.count.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(56.))
-                                        .flex_none()
-                                        .text_xs()
-                                        .text_color(theme.muted_foreground)
-                                        .child(line.age.clone()),
-                                )
-                        })
-                        .collect::<Vec<_>>()
-                }),
+            Load::Ready(lines) => lines,
+        };
+
+        let warnings = lines.iter().filter(|line| line.warning).count();
+        let only = self.warnings_only && warnings > 0;
+        let shown = if only { warnings } else { lines.len() };
+        // Newest first, so the first warning is the latest one.
+        let latest = lines
+            .iter()
+            .find(|line| line.warning)
+            .map(|l| l.age.clone());
+        let status = if warnings == 0 {
+            cards::status_card(
+                present::Tone::Ok,
+                "No warnings",
+                format!("{} events", lines.len()),
+                None,
+                theme,
             )
-            .track_scroll(&self.events_scroll)
-            .flex_1()
-            .into_any_element(),
-        }
+        } else {
+            cards::status_card(
+                present::Tone::Warn,
+                format!("{warnings} warning{}", if warnings == 1 { "" } else { "s" }),
+                format!(
+                    "of {} events · the latest {} ago",
+                    lines.len(),
+                    latest.unwrap_or_default()
+                ),
+                None,
+                theme,
+            )
+        };
+
+        let filter = |id: &'static str, label: String, active: bool, cx: &mut Context<Self>| {
+            let target = id == "warnings";
+            chip(id, label, true, active, cx.theme()).on_click(cx.listener(
+                move |this, _, _, cx| {
+                    this.warnings_only = target;
+                    cx.notify();
+                },
+            ))
+        };
+
+        let list = uniform_list(
+            "events",
+            shown,
+            cx.processor(move |this, range: Range<usize>, _window, cx| {
+                let theme = cx.theme();
+                let Load::Ready(lines) = &this.events else {
+                    return Vec::new();
+                };
+                let only = this.warnings_only && lines.iter().any(|line| line.warning);
+                lines
+                    .iter()
+                    .filter(|line| !only || line.warning)
+                    .skip(range.start)
+                    .take(range.len())
+                    .zip(range)
+                    .map(|(line, index)| {
+                        let (reason, copy) = (line.reason.clone(), line.message.clone());
+                        let (dot, tint) = if line.warning {
+                            (theme.warning, theme.warning.opacity(0.07))
+                        } else {
+                            (theme.muted_foreground, theme.background.opacity(0.0))
+                        };
+                        let full = line.message.clone();
+                        // `w_full`: without it the row is as wide as its
+                        // longest message, and `truncate` has nothing to cut.
+                        h_flex()
+                            .id(("event", index))
+                            .w_full()
+                            .h(ROW_HEIGHT)
+                            .px_3()
+                            .gap_3()
+                            .items_center()
+                            .text_sm()
+                            .bg(tint)
+                            .cursor_pointer()
+                            .hover(|row| row.bg(theme.secondary))
+                            .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
+                            .child(div().size(px(8.)).flex_none().rounded_full().bg(dot))
+                            .child(
+                                div()
+                                    .w(px(120.))
+                                    .flex_none()
+                                    .truncate()
+                                    .font_semibold()
+                                    .when(line.warning, |name| name.text_color(theme.warning))
+                                    .child(line.reason.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .truncate()
+                                    .child(line.message.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(line.count.clone()),
+                            )
+                            .child(
+                                div()
+                                    .w(px(56.))
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(theme.muted_foreground)
+                                    .child(line.age.clone()),
+                            )
+                            .on_click(move |_, window, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(format!(
+                                    "{reason}: {copy}"
+                                )));
+                                toast_success(window, cx, "Copied the event");
+                            })
+                    })
+                    .collect::<Vec<_>>()
+            }),
+        )
+        .track_scroll(&self.events_scroll)
+        .flex_1();
+
+        v_flex()
+            .size_full()
+            .child(
+                v_flex().flex_none().gap_2().p_3().child(status).child(
+                    h_flex()
+                        .gap_1p5()
+                        .child(filter(
+                            "all-events",
+                            format!("All {}", lines.len()),
+                            !only,
+                            cx,
+                        ))
+                        .child(filter("warnings", format!("Warnings {warnings}"), only, cx)),
+                ),
+            )
+            .child(list)
+            .into_any_element()
     }
 }
 
