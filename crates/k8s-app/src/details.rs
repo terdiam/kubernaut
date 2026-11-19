@@ -16,8 +16,22 @@ pub struct Condition {
     pub message: String,
 }
 
+/// How the object is doing, in one line a person can take in at a glance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Headline {
+    pub tone: present::Tone,
+    /// `Healthy`, `Rolling out`, `Degraded`…
+    pub label: String,
+    /// What the label rests on: `2 of 3 replicas ready`.
+    pub detail: String,
+    /// Ready out of wanted, for a bar. `None` when the object has no such count.
+    pub progress: Option<(i64, i64)>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Details {
+    /// How it is doing, for the kinds that have a clear answer.
+    pub headline: Option<Headline>,
     /// Label and value, in the order to show them.
     pub summary: Vec<(String, String)>,
     /// A pod's containers, or a workload's: name and image.
@@ -256,6 +270,151 @@ pub fn condition_tone(kind: &str, status: &str) -> Option<present::Tone> {
         ("True", true, _) | ("False", _, true) => Some(Tone::Ok),
         ("False", true, _) | ("True", _, true) => Some(Tone::Error),
         ("Unknown", true, _) => Some(Tone::Pending),
+        _ => None,
+    }
+}
+
+/// Which card a summary row belongs in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Group {
+    Overview,
+    /// Replica counts and how a change is rolled out.
+    Rollout,
+    /// Where the pods may run and as whom.
+    Scheduling,
+}
+
+/// The card for a summary row, by its label. A label no card claims stays in the
+/// overview, so a kind this does not know still shows every row.
+pub fn group_of(label: &str) -> Group {
+    match label {
+        "Replicas" | "Updated" | "Total" | "Available" | "Unavailable" | "Strategy"
+        | "Max surge" | "Max unavailable" | "Partition" | "Min ready seconds"
+        | "Revision history" | "Progress deadline" | "Paused" | "Revision" | "Selector"
+        | "Desired" | "Ready" => Group::Rollout,
+        "Node selector" | "Tolerations" | "Affinities" | "Service account" | "Priority class" => {
+            Group::Scheduling
+        }
+        _ => Group::Overview,
+    }
+}
+
+fn condition_status<'a>(object: &'a Value, kind: &str) -> Option<(&'a str, &'a str)> {
+    object
+        .pointer("/status/conditions")?
+        .as_array()?
+        .iter()
+        .find(|c| c.get("type").and_then(Value::as_str) == Some(kind))
+        .map(|c| {
+            (
+                c.get("status").and_then(Value::as_str).unwrap_or(""),
+                c.get("reason").and_then(Value::as_str).unwrap_or(""),
+            )
+        })
+}
+
+/// The one-line state of a workload, pod or node, or `None` for a kind with no
+/// clear answer.
+pub fn headline(object: &Value) -> Option<Headline> {
+    use present::Tone;
+    let kind = text(object, "/kind")?;
+    let make = |tone, label: &str, detail: String, progress| Headline {
+        tone,
+        label: label.to_string(),
+        detail,
+        progress,
+    };
+    match kind.as_str() {
+        "Deployment" | "StatefulSet" | "ReplicaSet" | "ReplicationController" | "DaemonSet" => {
+            let daemon = kind == "DaemonSet";
+            let (wanted, ready, updated) = if daemon {
+                (
+                    number(object, "/status/desiredNumberScheduled"),
+                    number(object, "/status/numberReady"),
+                    number(object, "/status/updatedNumberScheduled"),
+                )
+            } else {
+                (
+                    number(object, "/spec/replicas"),
+                    number(object, "/status/readyReplicas"),
+                    number(object, "/status/updatedReplicas"),
+                )
+            };
+            let noun = if daemon { "pods" } else { "replicas" };
+            let detail = format!("{ready} of {wanted} {noun} ready");
+            let progress = Some((ready, wanted));
+            if let Some(("False", "ProgressDeadlineExceeded")) =
+                condition_status(object, "Progressing")
+            {
+                return Some(make(Tone::Error, "Rollout stalled", detail, progress));
+            }
+            Some(if wanted == 0 {
+                make(Tone::Pending, "Scaled to zero", detail, progress)
+            } else if ready >= wanted && updated >= wanted {
+                make(Tone::Ok, "Healthy", detail, progress)
+            } else if ready == 0 {
+                make(Tone::Error, "Unavailable", detail, progress)
+            } else if updated < wanted || ready >= wanted {
+                make(Tone::Pending, "Rolling out", detail, progress)
+            } else {
+                make(Tone::Warn, "Degraded", detail, progress)
+            })
+        }
+        "Pod" => {
+            let statuses = object
+                .pointer("/status/containerStatuses")
+                .and_then(Value::as_array);
+            let total = statuses.map_or(0, |list| list.len() as i64);
+            let ready = statuses.map_or(0, |list| {
+                list.iter()
+                    .filter(|c| c.get("ready").and_then(Value::as_bool) == Some(true))
+                    .count() as i64
+            });
+            let restarts: i64 = statuses.map_or(0, |list| {
+                list.iter()
+                    .map(|c| c.get("restartCount").and_then(Value::as_i64).unwrap_or(0))
+                    .sum()
+            });
+            let waiting = statuses.and_then(|list| {
+                list.iter().find_map(|c| {
+                    c.pointer("/state/waiting/reason")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+            });
+            let detail = format!(
+                "{ready} of {total} containers ready · {restarts} restart{}",
+                if restarts == 1 { "" } else { "s" }
+            );
+            let progress = (total > 0).then_some((ready, total));
+            let phase = text(object, "/status/phase").unwrap_or_default();
+            Some(match (phase.as_str(), waiting) {
+                (_, Some(reason)) => make(Tone::Error, &reason, detail, progress),
+                ("Succeeded", _) => make(Tone::Ok, "Completed", detail, progress),
+                ("Failed", _) => make(Tone::Error, "Failed", detail, progress),
+                ("Pending", _) => make(Tone::Pending, "Pending", detail, progress),
+                ("Running", _) if total > 0 && ready == total => {
+                    make(Tone::Ok, "Running", detail, progress)
+                }
+                ("Running", _) => make(Tone::Warn, "Not ready", detail, progress),
+                (other, _) => make(Tone::Pending, other, detail, progress),
+            })
+        }
+        "Node" => {
+            let version = text(object, "/status/nodeInfo/kubeletVersion").unwrap_or_default();
+            let cordoned = object
+                .pointer("/spec/unschedulable")
+                .and_then(Value::as_bool)
+                == Some(true);
+            Some(match condition_status(object, "Ready") {
+                Some(("True", _)) if cordoned => {
+                    make(Tone::Warn, "Cordoned", format!("Ready · {version}"), None)
+                }
+                Some(("True", _)) => make(Tone::Ok, "Ready", version, None),
+                Some(("False", _)) => make(Tone::Error, "Not ready", version, None),
+                _ => make(Tone::Pending, "Unknown", version, None),
+            })
+        }
         _ => None,
     }
 }
@@ -546,6 +705,7 @@ pub fn describe(object: &Value) -> Details {
         .unwrap_or_default();
 
     Details {
+        headline: headline(object),
         summary: rows
             .into_iter()
             .filter_map(|(label, value)| Some((label.to_string(), value?)))
@@ -711,6 +871,116 @@ mod tests {
         ] {
             assert_eq!(summary(&d, absent), None, "{absent}");
         }
+    }
+
+    fn tone_and_label(object: &Value) -> (present::Tone, String) {
+        let h = headline(object).expect("has a headline");
+        (h.tone, h.label)
+    }
+
+    #[test]
+    fn a_workload_headline_says_healthy_rolling_degraded_or_down() {
+        use present::Tone;
+        let deployment = |wanted: i64, ready: i64, updated: i64| {
+            json!({"kind": "Deployment", "metadata": {"name": "w"},
+                "spec": {"replicas": wanted},
+                "status": {"readyReplicas": ready, "updatedReplicas": updated}})
+        };
+        assert_eq!(
+            tone_and_label(&deployment(3, 3, 3)),
+            (Tone::Ok, "Healthy".into())
+        );
+        assert_eq!(
+            tone_and_label(&deployment(0, 0, 0)),
+            (Tone::Pending, "Scaled to zero".into())
+        );
+        assert_eq!(
+            tone_and_label(&deployment(3, 0, 3)),
+            (Tone::Error, "Unavailable".into())
+        );
+        assert_eq!(
+            tone_and_label(&deployment(3, 2, 1)),
+            (Tone::Pending, "Rolling out".into())
+        );
+        assert_eq!(
+            tone_and_label(&deployment(3, 2, 3)),
+            (Tone::Warn, "Degraded".into())
+        );
+        let stalled = json!({"kind": "Deployment", "metadata": {"name": "w"},
+            "spec": {"replicas": 2},
+            "status": {"readyReplicas": 1, "updatedReplicas": 1, "conditions": [
+                {"type": "Progressing", "status": "False", "reason": "ProgressDeadlineExceeded"}]}});
+        assert_eq!(
+            tone_and_label(&stalled),
+            (Tone::Error, "Rollout stalled".into())
+        );
+        let h = headline(&deployment(3, 2, 3)).expect("headline");
+        assert_eq!(h.progress, Some((2, 3)));
+        assert_eq!(h.detail, "2 of 3 replicas ready");
+    }
+
+    #[test]
+    fn a_pod_headline_names_the_reason_a_container_is_waiting() {
+        use present::Tone;
+        let pod = |phase: &str, ready: bool, waiting: Option<&str>| {
+            let state = match waiting {
+                Some(reason) => json!({"waiting": {"reason": reason}}),
+                None => json!({"running": {}}),
+            };
+            json!({"kind": "Pod", "metadata": {"name": "p"}, "status": {
+                "phase": phase,
+                "containerStatuses": [{"ready": ready, "restartCount": 4, "state": state}]}})
+        };
+        assert_eq!(
+            tone_and_label(&pod("Running", true, None)),
+            (Tone::Ok, "Running".into())
+        );
+        assert_eq!(
+            tone_and_label(&pod("Running", false, None)),
+            (Tone::Warn, "Not ready".into())
+        );
+        assert_eq!(
+            tone_and_label(&pod("Running", false, Some("CrashLoopBackOff"))),
+            (Tone::Error, "CrashLoopBackOff".into())
+        );
+        assert_eq!(
+            tone_and_label(&pod("Pending", false, None)),
+            (Tone::Pending, "Pending".into())
+        );
+        let h = headline(&pod("Running", true, None)).expect("headline");
+        assert_eq!(h.detail, "1 of 1 containers ready · 4 restarts");
+        assert!(headline(&json!({"kind": "ConfigMap", "metadata": {"name": "c"}})).is_none());
+    }
+
+    #[test]
+    fn rows_are_grouped_by_what_they_are_about_and_unknown_ones_stay_in_the_overview() {
+        assert_eq!(group_of("Name"), Group::Overview);
+        assert_eq!(group_of("Max surge"), Group::Rollout);
+        assert_eq!(group_of("Tolerations"), Group::Scheduling);
+        assert_eq!(group_of("Something new"), Group::Overview);
+    }
+
+    #[test]
+    fn a_node_headline_flags_a_cordoned_node() {
+        use present::Tone;
+        let node = |ready: &str, cordoned: bool| {
+            json!({"kind": "Node", "metadata": {"name": "n"},
+                "spec": {"unschedulable": cordoned},
+                "status": {"conditions": [{"type": "Ready", "status": ready}],
+                    "nodeInfo": {"kubeletVersion": "v1.35.0"}}})
+        };
+        assert_eq!(
+            tone_and_label(&node("True", false)),
+            (Tone::Ok, "Ready".into())
+        );
+        assert_eq!(
+            tone_and_label(&node("True", true)),
+            (Tone::Warn, "Cordoned".into())
+        );
+        assert_eq!(
+            tone_and_label(&node("False", false)),
+            (Tone::Error, "Not ready".into())
+        );
     }
 
     #[test]

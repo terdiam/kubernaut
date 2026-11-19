@@ -2,19 +2,21 @@
 //! read from the object itself by `k8s_app::details`.
 
 use std::{
+    collections::HashSet,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use gpui_kit::{
+    assets::IconName,
     base::StyledExt,
-    component::{ActiveTheme, h_flex, v_flex},
+    component::{ActiveTheme, Icon, h_flex, tooltip::Tooltip, v_flex},
     prelude::FluentBuilder,
     *,
 };
 use k8s_app::{
     AppCore,
-    details::{Details, condition_tone, describe},
+    details::{Details, Group, Headline, condition_tone, describe, group_of},
     object_ops::{self, Connected},
     present::{self, Tone},
 };
@@ -26,7 +28,7 @@ use crate::{
     diagnose::kind_of,
     drawer::Target,
     row_actions,
-    ui::{message, pill, tone_color},
+    ui::{message, pill, toast_success, tone_color},
 };
 
 /// Events listed here before pointing at the Events tab.
@@ -54,6 +56,9 @@ pub struct DetailsView {
     /// pods behind them. Read on a slower beat than the object itself.
     connected: Option<Box<Connected>>,
     target: Target,
+    /// Cards the reader has folded. Annotations start folded: they run long and
+    /// are rarely what the tab is opened for.
+    collapsed: HashSet<&'static str>,
     /// When this was last drawn. A tab nobody is looking at is not drawn, and
     /// stops reading: with eight tabs open, only the one in view asks.
     drawn: Instant,
@@ -110,6 +115,7 @@ impl DetailsView {
             state: State::Loading,
             connected: None,
             target: target.clone(),
+            collapsed: HashSet::from(["annotations"]),
             drawn: Instant::now(),
         }
     }
@@ -237,69 +243,229 @@ fn newest_events(rows: &[EventRow], limit: usize) -> Vec<(&EventRow, String)> {
         .collect()
 }
 
-fn section(title: &'static str, muted: Hsla) -> Div {
+/// A small count or status next to a card's title.
+fn badge(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
     div()
-        .mt_3()
-        .mb_1()
+        .px_1p5()
+        .rounded_full()
+        .bg(color.opacity(0.14))
         .text_xs()
-        .font_semibold()
-        .text_color(muted)
-        .child(title.to_uppercase())
-}
-
-/// `label` over `value`, the value wrapping rather than being cut: an
-/// annotation or a message is what someone opened this tab to read.
-fn row(label: impl Into<SharedString>, value: impl Into<SharedString>, muted: Hsla) -> Div {
-    h_flex()
-        .gap_3()
-        .items_start()
-        .py_0p5()
-        .text_sm()
-        .child(
-            div()
-                .w(px(130.))
-                .flex_none()
-                .text_color(muted)
-                .child(label.into()),
-        )
-        .child(div().flex_1().min_w_0().child(value.into()))
+        .text_color(color)
+        .child(text.into())
+        .into_any_element()
 }
 
 impl DetailsView {
-    /// Pods, services, ingress addresses and recent events, after the object's
-    /// own fields. A row opens the object it names; an address opens in the
-    /// browser.
-    fn render_connected(
+    /// A bordered card whose header folds it. The rows are separated by thin
+    /// lines, so a long list stays readable.
+    fn card(
         &self,
-        mut body: Div,
-        connected: &Connected,
+        id: &'static str,
+        title: &'static str,
+        badges: Vec<AnyElement>,
+        rows: Vec<AnyElement>,
         cx: &mut Context<Self>,
     ) -> Div {
-        let theme = cx.theme();
-        let (muted, link, warning) = (theme.muted_foreground, theme.info, theme.warning);
-        let related = &connected.related;
+        let (border, muted, hover) = {
+            let theme = cx.theme();
+            (theme.border, theme.muted_foreground, theme.secondary)
+        };
+        let folded = self.collapsed.contains(id);
+        v_flex()
+            .rounded_lg()
+            .border_1()
+            .border_color(border)
+            .overflow_hidden()
+            .child(
+                h_flex()
+                    .id(SharedString::from(format!("fold-{id}")))
+                    .gap_2()
+                    .items_center()
+                    .px_3()
+                    .py_2()
+                    .cursor_pointer()
+                    .hover(|header| header.bg(hover))
+                    .tooltip(move |window, cx| {
+                        Tooltip::new(if folded { "Show" } else { "Hide" }).build(window, cx)
+                    })
+                    .child(
+                        Icon::new(if folded {
+                            IconName::ChevronRight
+                        } else {
+                            IconName::ChevronDown
+                        })
+                        .size_3p5()
+                        .text_color(muted),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .font_semibold()
+                            .text_color(muted)
+                            .child(title.to_uppercase()),
+                    )
+                    .children(badges)
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if !this.collapsed.remove(id) {
+                            this.collapsed.insert(id);
+                        }
+                        cx.notify();
+                    })),
+            )
+            .when(!folded, |card| {
+                card.children(rows.into_iter().map(|row| {
+                    div()
+                        .border_t_1()
+                        .border_color(border)
+                        .px_3()
+                        .py_1p5()
+                        .child(row)
+                }))
+            })
+    }
 
-        let named = |id: String, row: &RelatedRef, cx: &mut Context<Self>| {
+    /// `label` and `value`, the value wrapping rather than being cut. A click
+    /// copies it: an IP, a UID or an image is usually wanted elsewhere.
+    fn field(&self, id: &str, label: &str, value: &str, cx: &mut Context<Self>) -> AnyElement {
+        let (muted, hover) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.secondary)
+        };
+        let (copy, name) = (value.to_string(), label.to_string());
+        h_flex()
+            .id(SharedString::from(format!("{id}-{label}")))
+            .gap_3()
+            .items_start()
+            .text_sm()
+            .cursor_pointer()
+            .rounded_sm()
+            .hover(|row| row.bg(hover))
+            .tooltip(|window, cx| Tooltip::new("Click to copy").build(window, cx))
+            .child(
+                div()
+                    .w(px(130.))
+                    .flex_none()
+                    .text_color(muted)
+                    .child(label.to_string()),
+            )
+            .child(div().flex_1().min_w_0().child(value.to_string()))
+            .on_click(cx.listener(move |_, _, window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                toast_success(window, cx, format!("Copied {name}"));
+            }))
+            .into_any_element()
+    }
+
+    /// How the object is doing, at the top: a state, the count it rests on, and
+    /// a bar for ready out of wanted.
+    fn headline(&self, headline: &Headline, cx: &mut Context<Self>) -> Div {
+        let (colour, muted) = {
+            let theme = cx.theme();
+            (tone_color(headline.tone, theme), theme.muted_foreground)
+        };
+        v_flex()
+            .gap_2()
+            .p_3()
+            .rounded_lg()
+            .border_1()
+            .border_color(colour.opacity(0.4))
+            .bg(colour.opacity(0.06))
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(div().size(px(10.)).rounded_full().bg(colour))
+                    .child(
+                        div()
+                            .text_base()
+                            .font_semibold()
+                            .text_color(colour)
+                            .child(headline.label.clone()),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(muted)
+                            .child(headline.detail.clone()),
+                    ),
+            )
+            .when_some(
+                headline.progress.filter(|&(_, wanted)| wanted > 0),
+                |card, (ready, wanted)| {
+                    let fraction = (ready as f32 / wanted as f32).clamp(0.0, 1.0);
+                    card.child(
+                        div()
+                            .h(px(6.))
+                            .w_full()
+                            .rounded_full()
+                            .bg(colour.opacity(0.18))
+                            .child(
+                                div()
+                                    .h_full()
+                                    .rounded_full()
+                                    .bg(colour)
+                                    .w(relative(fraction)),
+                            ),
+                    )
+                },
+            )
+    }
+
+    /// The summary rows that belong to `group`.
+    fn group_rows(
+        &self,
+        details: &Details,
+        group: Group,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        details
+            .summary
+            .iter()
+            .filter(|(label, _)| group_of(label) == group)
+            .map(|(label, value)| self.field("summary", label, value, cx))
+            .collect()
+    }
+
+    /// Pods, services, ingress addresses and recent events. A row opens the
+    /// object it names; an address opens in the browser.
+    fn connected_cards(&self, connected: &Connected, cx: &mut Context<Self>) -> Vec<Div> {
+        let (muted, link, warning, success, hover) = {
+            let theme = cx.theme();
+            (
+                theme.muted_foreground,
+                theme.info,
+                theme.warning,
+                theme.success,
+                theme.secondary,
+            )
+        };
+        let related = &connected.related;
+        let mut cards: Vec<Div> = Vec::new();
+
+        let open_row = |id: String, row: &RelatedRef, cx: &mut Context<Self>| {
             let target = row.clone();
             div()
                 .id(SharedString::from(id))
                 .cursor_pointer()
                 .text_color(link)
+                .hover(|name| name.underline())
                 .child(row.name.clone())
                 .on_click(cx.listener(move |this, _, _, cx| this.open(&target, cx)))
         };
 
         if !related.pods.is_empty() {
-            body = body
-                .child(section("Pods", muted))
-                .children(related.pods.iter().map(|pod| {
+            let ready = related.pods.iter().filter(|p| p.health == "ok").count();
+            let all_ready = ready == related.pods.len();
+            let rows = related
+                .pods
+                .iter()
+                .map(|pod| {
                     let tone = health_tone(&pod.health).map(|t| tone_color(t, cx.theme()));
                     h_flex()
                         .gap_3()
                         .items_center()
-                        .py_0p5()
                         .text_sm()
-                        .child(div().flex_1().min_w_0().child(named(
+                        .child(div().flex_1().min_w_0().child(open_row(
                             format!("pod-{}", pod.name),
                             pod,
                             cx,
@@ -307,17 +473,29 @@ impl DetailsView {
                         .when_some(pod.detail.clone(), |line, detail| {
                             line.child(pill(detail, tone.unwrap_or(muted)))
                         })
-                }));
+                        .into_any_element()
+                })
+                .collect();
+            cards.push(self.card(
+                "pods",
+                "Pods",
+                vec![badge(
+                    format!("{ready}/{} ready", related.pods.len()),
+                    if all_ready { success } else { warning },
+                )],
+                rows,
+                cx,
+            ));
         }
         if !related.services.is_empty() {
-            body = body
-                .child(section("Services", muted))
-                .children(related.services.iter().map(|service| {
+            let rows = related
+                .services
+                .iter()
+                .map(|service| {
                     h_flex()
                         .gap_3()
-                        .py_0p5()
                         .text_sm()
-                        .child(div().flex_1().min_w_0().child(named(
+                        .child(div().flex_1().min_w_0().child(open_row(
                             format!("svc-{}", service.name),
                             service,
                             cx,
@@ -325,32 +503,49 @@ impl DetailsView {
                         .when_some(service.detail.clone(), |line, kind| {
                             line.child(div().text_color(muted).child(kind))
                         })
-                }));
+                        .into_any_element()
+                })
+                .collect();
+            cards.push(self.card(
+                "services",
+                "Services",
+                vec![badge(related.services.len().to_string(), muted)],
+                rows,
+                cx,
+            ));
         }
         if !related.ingresses.is_empty() {
-            body = body.child(section("Ingress", muted));
+            let mut rows: Vec<AnyElement> = Vec::new();
             for route in &related.routes {
                 let url = route.url.clone();
-                body = body.child(
+                rows.push(
                     h_flex()
                         .gap_3()
-                        .py_0p5()
                         .text_sm()
                         .child(
-                            div()
+                            h_flex()
                                 .id(SharedString::from(format!("route-{}", route.url)))
                                 .flex_1()
                                 .min_w_0()
+                                .gap_1p5()
+                                .items_center()
                                 .cursor_pointer()
                                 .text_color(link)
+                                .hover(|row| row.underline())
+                                .tooltip(|window, cx| {
+                                    Tooltip::new("Open in the browser").build(window, cx)
+                                })
                                 .child(route.url.clone())
+                                .child(Icon::new(IconName::ExternalLink).size_3())
                                 .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
                         )
                         .child(
                             div()
+                                .text_xs()
                                 .text_color(muted)
                                 .child(format!("{} → {}", route.ingress, route.service)),
-                        ),
+                        )
+                        .into_any_element(),
                 );
             }
             // An ingress with no host has no address to link; name it.
@@ -360,41 +555,61 @@ impl DetailsView {
                 .iter()
                 .filter(|i| !linked.contains(&i.name.as_str()))
             {
-                body = body.child(
+                rows.push(
                     h_flex()
                         .gap_3()
-                        .py_0p5()
                         .text_sm()
-                        .child(div().flex_1().min_w_0().child(named(
+                        .child(div().flex_1().min_w_0().child(open_row(
                             format!("ing-{}", ingress.name),
                             ingress,
                             cx,
                         )))
                         .child(
                             div()
+                                .text_xs()
                                 .text_color(muted)
                                 .child(ingress.detail.clone().unwrap_or_default()),
-                        ),
+                        )
+                        .into_any_element(),
                 );
             }
+            cards.push(self.card(
+                "ingress",
+                "Ingress",
+                vec![badge(related.ingresses.len().to_string(), muted)],
+                rows,
+                cx,
+            ));
         }
         if !connected.events.is_empty() {
-            body = body.child(section("Events", muted));
-            for (row, age) in newest_events(&connected.events, EVENTS_SHOWN) {
-                let colour = if row.kind == "Warning" {
-                    warning
-                } else {
-                    muted
-                };
-                body = body.child(
+            let warnings = connected
+                .events
+                .iter()
+                .filter(|e| e.kind == "Warning")
+                .count();
+            let mut badges = vec![badge(connected.events.len().to_string(), muted)];
+            if warnings > 0 {
+                badges.push(badge(format!("{warnings} warning"), warning));
+            }
+            let mut rows: Vec<AnyElement> = newest_events(&connected.events, EVENTS_SHOWN)
+                .into_iter()
+                .map(|(row, age)| {
+                    let is_warning = row.kind == "Warning";
                     v_flex()
-                        .py_0p5()
                         .text_sm()
+                        .pl_2()
+                        .border_l_2()
+                        .border_color(if is_warning { warning } else { hover })
                         .child(
                             h_flex()
                                 .gap_2()
                                 .items_baseline()
-                                .child(div().text_color(colour).child(row.reason.clone()))
+                                .child(
+                                    div()
+                                        .font_semibold()
+                                        .text_color(if is_warning { warning } else { muted })
+                                        .child(row.reason.clone()),
+                                )
                                 .when(row.count > 1, |line| {
                                     line.child(
                                         div()
@@ -405,125 +620,185 @@ impl DetailsView {
                                 })
                                 .child(div().text_xs().text_color(muted).child(age)),
                         )
-                        .child(div().text_xs().text_color(muted).child(row.message.clone())),
-                );
-            }
+                        .child(div().text_xs().text_color(muted).child(row.message.clone()))
+                        .into_any_element()
+                })
+                .collect();
             let more = connected.events.len().saturating_sub(EVENTS_SHOWN);
             if more > 0 {
-                body = body.child(
+                rows.push(
                     div()
                         .text_xs()
                         .text_color(muted)
-                        .child(format!("and {more} older in the Events tab")),
+                        .child(format!("and {more} older in the Events tab"))
+                        .into_any_element(),
                 );
             }
+            cards.push(self.card("events", "Events", badges, rows, cx));
         }
-        body
+        cards
     }
 }
 
 impl Render for DetailsView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.drawn = Instant::now();
-        let theme = cx.theme();
-        let muted = theme.muted_foreground;
-        let details = match &self.state {
-            State::Loading => return message("Loading…", muted).into_any_element(),
-            State::Failed(reason) => {
-                return message(reason.clone(), theme.danger).into_any_element();
-            }
-            State::Ready(details) => details,
+        let (muted, danger, secondary) = {
+            let theme = cx.theme();
+            (theme.muted_foreground, theme.danger, theme.secondary)
+        };
+        let State::Ready(details) = &self.state else {
+            return match &self.state {
+                State::Failed(reason) => message(reason.clone(), danger).into_any_element(),
+                _ => message("Loading…", muted).into_any_element(),
+            };
         };
 
-        let mut body = v_flex().w_full().p_3().gap_0();
-        for (label, value) in &details.summary {
-            body = body.child(row(label.clone(), value.clone(), muted));
+        let mut body = v_flex().w_full().p_3().gap_3();
+        if let Some(headline) = &details.headline {
+            body = body.child(self.headline(headline, cx));
         }
-        if !details.owners.is_empty() {
-            body = body.child(section("Owners", muted)).children(
-                details
-                    .owners
-                    .iter()
-                    .map(|owner| div().text_sm().child(owner.clone())),
-            );
+
+        let mut overview = self.group_rows(details, Group::Overview, cx);
+        for owner in &details.owners {
+            overview.push(self.field("owner", "Owner", owner, cx));
         }
+        body = body.child(self.card("overview", "Overview", Vec::new(), overview, cx));
+
+        for (id, title, group) in [
+            ("rollout", "Rollout", Group::Rollout),
+            ("scheduling", "Scheduling", Group::Scheduling),
+        ] {
+            let rows = self.group_rows(details, group, cx);
+            if !rows.is_empty() {
+                body = body.child(self.card(id, title, Vec::new(), rows, cx));
+            }
+        }
+
         if !details.containers.is_empty() {
-            body = body.child(section("Containers", muted)).children(
-                details
-                    .containers
-                    .iter()
-                    .map(|(name, image)| row(name.clone(), image.clone(), muted)),
-            );
+            let rows = details
+                .containers
+                .iter()
+                .map(|(name, image)| self.field("container", name, image, cx))
+                .collect();
+            body = body.child(self.card(
+                "containers",
+                "Containers",
+                vec![badge(details.containers.len().to_string(), muted)],
+                rows,
+                cx,
+            ));
         }
+
         if !details.conditions.is_empty() {
-            body =
-                body.child(section("Conditions", muted))
-                    .children(details.conditions.iter().map(|condition| {
-                        let colour = condition_tone(&condition.kind, &condition.status)
-                            .map_or(muted, |tone| tone_color(tone, theme));
-                        v_flex()
-                            .py_0p5()
-                            .child(
-                                h_flex()
-                                    .gap_2()
-                                    .items_center()
-                                    .text_sm()
-                                    .child(
-                                        div().w(px(200.)).flex_none().child(condition.kind.clone()),
+            let failing = details
+                .conditions
+                .iter()
+                .filter(|c| {
+                    condition_tone(&c.kind, &c.status).is_some_and(|tone| tone == Tone::Error)
+                })
+                .count();
+            let rows = details
+                .conditions
+                .iter()
+                .map(|condition| {
+                    let colour = condition_tone(&condition.kind, &condition.status)
+                        .map_or(muted, |tone| tone_color(tone, cx.theme()));
+                    v_flex()
+                        .gap_0p5()
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_center()
+                                .text_sm()
+                                .child(div().w(px(180.)).flex_none().child(condition.kind.clone()))
+                                .child(pill(condition.status.clone(), colour))
+                                .when(!condition.reason.is_empty(), |line| {
+                                    line.child(
+                                        div().text_color(muted).child(condition.reason.clone()),
                                     )
-                                    .child(pill(condition.status.clone(), colour))
-                                    .when(!condition.reason.is_empty(), |line| {
-                                        line.child(
-                                            div().text_color(muted).child(condition.reason.clone()),
-                                        )
-                                    }),
-                            )
-                            .when(!condition.message.is_empty(), |item| {
-                                item.child(
-                                    div()
-                                        .pl(px(208.))
-                                        .text_xs()
-                                        .text_color(muted)
-                                        .child(condition.message.clone()),
-                                )
-                            })
-                    }));
-        }
-        if let Some(connected) = self.connected.as_deref() {
-            body = self.render_connected(body, connected, cx);
-        }
-        let theme = cx.theme();
-        if !details.labels.is_empty() {
-            body =
-                body.child(section("Labels", muted))
-                    .child(
-                        h_flex()
-                            .flex_wrap()
-                            .gap_1()
-                            .children(details.labels.iter().map(|(key, value)| {
+                                }),
+                        )
+                        .when(!condition.message.is_empty(), |item| {
+                            item.child(
                                 div()
-                                    .px_2()
-                                    .py_0p5()
-                                    .rounded_md()
-                                    .bg(theme.secondary)
                                     .text_xs()
-                                    .child(format!("{key}={value}"))
-                            })),
-                    );
+                                    .text_color(muted)
+                                    .child(condition.message.clone()),
+                            )
+                        })
+                        .into_any_element()
+                })
+                .collect();
+            let mut badges = vec![badge(details.conditions.len().to_string(), muted)];
+            if failing > 0 {
+                badges.push(badge(format!("{failing} failing"), danger));
+            }
+            body = body.child(self.card("conditions", "Conditions", badges, rows, cx));
         }
+
+        if let Some(connected) = self.connected.as_deref() {
+            for card in self.connected_cards(connected, cx) {
+                body = body.child(card);
+            }
+        }
+
+        if !details.labels.is_empty() {
+            let chips = h_flex()
+                .flex_wrap()
+                .gap_1()
+                .children(details.labels.iter().map(|(key, value)| {
+                    let text = format!("{key}={value}");
+                    let copy = text.clone();
+                    div()
+                        .id(SharedString::from(format!("label-{key}")))
+                        .px_2()
+                        .py_0p5()
+                        .rounded_md()
+                        .bg(secondary)
+                        .text_xs()
+                        .cursor_pointer()
+                        .hover(|chip| chip.opacity(0.7))
+                        .tooltip(|window, cx| Tooltip::new("Click to copy").build(window, cx))
+                        .child(text)
+                        .on_click(cx.listener(move |_, _, window, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
+                            toast_success(window, cx, "Copied the label");
+                        }))
+                }))
+                .into_any_element();
+            body = body.child(self.card(
+                "labels",
+                "Labels",
+                vec![badge(details.labels.len().to_string(), muted)],
+                vec![chips],
+                cx,
+            ));
+        }
+
         if !details.annotations.is_empty() {
             // Key over value: a key such as `deployment.kubernetes.io/revision`
             // does not fit the label column, and a value can run long.
-            body =
-                body.child(section("Annotations", muted))
-                    .children(details.annotations.iter().map(|(key, value)| {
-                        v_flex()
-                            .py_0p5()
-                            .text_sm()
-                            .child(div().text_color(muted).child(key.clone()))
-                            .child(div().pl_2().child(value.clone()))
-                    }));
+            let rows = details
+                .annotations
+                .iter()
+                .map(|(key, value)| {
+                    v_flex()
+                        .text_sm()
+                        .child(div().text_color(muted).child(key.clone()))
+                        .child(div().pl_2().child(value.clone()))
+                        .into_any_element()
+                })
+                .collect();
+            body = body.child(self.card(
+                "annotations",
+                "Annotations",
+                vec![badge(details.annotations.len().to_string(), muted)],
+                rows,
+                cx,
+            ));
         }
+
         div()
             .id("details")
             .flex_1()
