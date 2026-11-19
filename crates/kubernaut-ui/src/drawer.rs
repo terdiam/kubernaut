@@ -19,7 +19,7 @@ use gpui_kit::{
     prelude::FluentBuilder,
     *,
 };
-use k8s_app::{AppCore, present};
+use k8s_app::{AppCore, object_ops, present};
 use k8s_ops::{
     diagnose::StepAction,
     logs::LogTarget,
@@ -28,7 +28,7 @@ use k8s_ops::{
 use tokio::runtime::Handle;
 
 use crate::{
-    details::DetailsView,
+    details::{DetailsEvent, DetailsView},
     diagnose::{DiagnoseEvent, DiagnoseView, kind_of},
     log_buffer::log_target,
     logs::LogView,
@@ -136,6 +136,7 @@ pub struct DrawerView {
     node_edit: Option<Entity<NodeEditView>>,
     tab: Tab,
     details: Entity<DetailsView>,
+    _details_events: Subscription,
     yaml: Entity<YamlView>,
     events: Load<Vec<EventLine>>,
     events_scroll: UniformListScrollHandle,
@@ -153,6 +154,9 @@ impl DrawerView {
     ) -> Self {
         let yaml = cx.new(|cx| YamlView::new(core, runtime, &target, window, cx));
         let details = cx.new(|cx| DetailsView::new(core, runtime, &target, cx));
+        let details_events = cx.subscribe(&details, |_, _, event: &DetailsEvent, cx| match event {
+            DetailsEvent::Open(target) => cx.emit(DrawerEvent::Open(target.clone())),
+        });
 
         let events_task = runtime.spawn(fetch_events(Arc::clone(core), target.clone()));
         cx.spawn(async move |this, cx| {
@@ -183,6 +187,7 @@ impl DrawerView {
             target,
             tab: Tab::Details,
             details,
+            _details_events: details_events,
             yaml,
             events: Load::Loading,
             events_scroll: UniformListScrollHandle::new(),
@@ -757,9 +762,24 @@ async fn fetch_events(core: Arc<AppCore>, target: Target) -> Result<Vec<EventLin
         .clusters
         .require(&target.cluster)
         .map_err(|err| err.to_string())?;
-    let rows = related::events(&handle, target.namespace.as_deref(), &target.name)
-        .await
-        .map_err(|err| err.to_string())?;
+    // A workload's own events are mostly "scaled up"; what its replicas say
+    // (probe failures, image pulls, evictions) is what the tab is opened for.
+    let rows = match target.namespace.as_deref() {
+        Some(namespace) if row_actions::is_workload(&target.resource) => {
+            object_ops::read_connected(
+                &core,
+                &target.cluster,
+                &target.resource,
+                namespace,
+                &target.name,
+            )
+            .await?
+            .events
+        }
+        namespace => related::events(&handle, namespace, &target.name)
+            .await
+            .map_err(|err| err.to_string())?,
+    };
     Ok(event_lines(&rows, present::now()))
 }
 

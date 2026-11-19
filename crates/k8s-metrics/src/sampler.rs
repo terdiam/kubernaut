@@ -93,6 +93,10 @@ pub struct ClusterSampler {
     io_note: Mutex<Option<String>>,
     /// Latest differentiated I/O rates per pod.
     io_rates: Mutex<HashMap<String, IoRate>>,
+    /// The pods (`namespace/name`) behind each charted workload, kept current by
+    /// whoever asks for its metrics: a workload's pods come from its selector,
+    /// which only the caller reads.
+    workload_pods: Mutex<HashMap<String, Vec<String>>>,
     /// Fired when something asks for metrics that are not warm yet, so the
     /// first chart does not wait a whole sampling interval.
     wake: Arc<tokio::sync::Notify>,
@@ -295,6 +299,12 @@ impl ClusterSampler {
         points
     }
 
+    /// Say which pods make up a charted workload, so the next tick can add their
+    /// usage and traffic up. Call again as the set changes.
+    pub fn track_workload_pods(&self, key: &str, pods: Vec<String>) {
+        self.workload_pods.lock().insert(key.to_string(), pods);
+    }
+
     /// Explanation for missing network/disk series, if any.
     pub fn io_note(&self) -> Option<String> {
         self.io_note.lock().clone()
@@ -396,6 +406,7 @@ fn start(cluster: &Arc<ClusterHandle>) -> Arc<ClusterSampler> {
         pod_io: Mutex::new(HashMap::new()),
         io_note: Mutex::new(None),
         io_rates: Mutex::new(HashMap::new()),
+        workload_pods: Mutex::new(HashMap::new()),
         wake: Arc::new(tokio::sync::Notify::new()),
         namespace_usage: Mutex::new(Vec::new()),
         target_history: Mutex::new(HashMap::new()),
@@ -609,9 +620,14 @@ async fn sample_pod_metrics(
     history.retain(|_, (last_wanted, _)| now - *last_wanted < DEMAND_TTL_MS);
 
     let io = sampler.io_rates.lock().clone();
+    let workloads = {
+        let mut workloads = sampler.workload_pods.lock();
+        workloads.retain(|key, _| history.contains_key(key));
+        workloads.clone()
+    };
     let keys: Vec<String> = history.keys().cloned().collect();
     for key in keys {
-        let Some(point) = point_for_key(&key, pods, &usage, &io, now) else {
+        let Some(point) = point_for_key(&key, pods, &usage, &io, &workloads, now) else {
             continue;
         };
         if let Some((_, points)) = history.get_mut(&key) {
@@ -629,8 +645,39 @@ fn point_for_key(
     pods: &[Pod],
     usage: &HashMap<String, (f64, f64)>,
     io: &HashMap<String, IoRate>,
+    workloads: &HashMap<String, Vec<String>>,
     now: i64,
 ) -> Option<Point> {
+    // A workload's key holds a resource path, which has slashes of its own, so
+    // it is looked up whole rather than split.
+    if key.starts_with("workload/") {
+        let ids = workloads.get(key)?;
+        let mut io_rate = IoRate::default();
+        let (mut cpu, mut memory, mut measured) = (0.0, 0.0, false);
+        for id in ids {
+            if let Some(&(pod_cpu, pod_memory)) = usage.get(id) {
+                cpu += pod_cpu;
+                memory += pod_memory;
+                measured = true;
+            }
+            if let Some(rate) = io.get(id) {
+                io_rate.rx += rate.rx;
+                io_rate.tx += rate.tx;
+                io_rate.fs_used += rate.fs_used;
+                io_rate.volume_used += rate.volume_used;
+            }
+        }
+        return measured.then_some(Point {
+            at: now,
+            cpu,
+            memory,
+            network_rx: io_rate.rx,
+            network_tx: io_rate.tx,
+            fs_used: io_rate.fs_used,
+            volume_used: io_rate.volume_used,
+        });
+    }
+
     let mut parts = key.split('/');
     let kind = parts.next()?;
     let mut io_rate = IoRate::default();
@@ -713,6 +760,23 @@ async fn sample_pod_io(cluster: &Arc<ClusterHandle>, sampler: &Arc<ClusterSample
     }
 
     let mut nodes: std::collections::HashSet<String> = std::collections::HashSet::new();
+    {
+        let workloads = sampler.workload_pods.lock();
+        for ids in keys.iter().filter_map(|key| workloads.get(key)) {
+            for pod in pods {
+                let id = format!(
+                    "{}/{}",
+                    pod.metadata.namespace.as_deref().unwrap_or_default(),
+                    pod.metadata.name.as_deref().unwrap_or_default()
+                );
+                if ids.contains(&id)
+                    && let Some(node) = pod.spec.as_ref().and_then(|s| s.node_name.clone())
+                {
+                    nodes.insert(node);
+                }
+            }
+        }
+    }
     for key in &keys {
         let mut parts = key.split('/');
         match parts.next() {
@@ -985,4 +1049,62 @@ async fn sample_node_disk(
         }
     }
     *sampler.node_disk.lock() = fresh;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::{IoRate, point_for_key};
+
+    const KEY: &str = "workload/shop/apps/v1/deployments/web";
+
+    fn rate(rx: f64, fs: f64) -> IoRate {
+        IoRate {
+            rx,
+            tx: rx / 2.0,
+            fs_used: fs,
+            volume_used: 0.0,
+        }
+    }
+
+    #[test]
+    fn a_workload_adds_up_the_usage_and_traffic_of_its_pods_only() {
+        let usage: HashMap<String, (f64, f64)> = [
+            ("shop/web-1".to_string(), (0.2, 100.0)),
+            ("shop/web-2".to_string(), (0.3, 150.0)),
+            ("shop/other".to_string(), (9.0, 9000.0)),
+        ]
+        .into();
+        let io: HashMap<String, IoRate> = [
+            ("shop/web-1".to_string(), rate(1000.0, 10.0)),
+            ("shop/web-2".to_string(), rate(3000.0, 20.0)),
+            ("shop/other".to_string(), rate(99_999.0, 99.0)),
+        ]
+        .into();
+        let workloads: HashMap<String, Vec<String>> = [(
+            KEY.to_string(),
+            vec!["shop/web-1".into(), "shop/web-2".into()],
+        )]
+        .into();
+
+        let point = point_for_key(KEY, &[], &usage, &io, &workloads, 7).expect("measured");
+        assert_eq!(point.at, 7);
+        assert!((point.cpu - 0.5).abs() < 1e-9);
+        assert!((point.memory - 250.0).abs() < 1e-9);
+        assert!((point.network_rx - 4000.0).abs() < 1e-9);
+        assert!((point.network_tx - 2000.0).abs() < 1e-9);
+        assert!((point.fs_used - 30.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_workload_nobody_told_the_sampler_about_has_no_point() {
+        let no_usage: HashMap<String, (f64, f64)> = HashMap::new();
+        let no_io: HashMap<String, IoRate> = HashMap::new();
+        assert!(point_for_key(KEY, &[], &no_usage, &no_io, &HashMap::new(), 0).is_none());
+        // Pods known but none measured yet: no confident zero.
+        let workloads: HashMap<String, Vec<String>> =
+            [(KEY.to_string(), vec!["shop/web-1".into()])].into();
+        assert!(point_for_key(KEY, &[], &no_usage, &no_io, &workloads, 0).is_none());
+    }
 }

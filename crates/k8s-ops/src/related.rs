@@ -21,7 +21,7 @@ use serde_json::Value;
 use crate::error::Result;
 
 /// An event as the UI lists it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EventRow {
     /// `Normal` or `Warning`.
@@ -37,7 +37,7 @@ pub struct EventRow {
 }
 
 /// A pointer to another object, enough to render a row and navigate to it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RelatedRef {
     pub kind: String,
@@ -51,8 +51,79 @@ pub struct RelatedRef {
     pub health: String,
 }
 
+/// One address an Ingress serves for a service, ready to open in a browser.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Route {
+    pub ingress: String,
+    pub host: String,
+    pub path: String,
+    /// The service the rule sends traffic to.
+    pub service: String,
+    pub tls: bool,
+    /// `https://host/path`, or `http://` when the host has no TLS entry.
+    pub url: String,
+}
+
+/// Every address `ingress` serves that reaches one of `services`.
+///
+/// A rule with no host answers on whatever address the controller has, which is
+/// not something a link can name, so only rules with a host are listed.
+pub fn routes_of(ingress: &Ingress, services: &[String]) -> Vec<Route> {
+    let Some(spec) = ingress.spec.as_ref() else {
+        return Vec::new();
+    };
+    let secured: Vec<&str> = spec
+        .tls
+        .iter()
+        .flatten()
+        .flat_map(|tls| tls.hosts.iter().flatten().map(String::as_str))
+        .collect();
+    let mut routes: Vec<Route> = Vec::new();
+    for rule in spec.rules.iter().flatten() {
+        let Some(host) = rule.host.as_deref().filter(|h| !h.is_empty()) else {
+            continue;
+        };
+        for entry in rule.http.iter().flat_map(|http| http.paths.iter()) {
+            let Some(service) = entry
+                .backend
+                .service
+                .as_ref()
+                .map(|s| s.name.as_str())
+                .filter(|name| services.iter().any(|s| s == name))
+            else {
+                continue;
+            };
+            let path = entry.path.as_deref().unwrap_or("/");
+            // A regex or wildcard path is a pattern, not an address.
+            let path = if path
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "/-._~".contains(c))
+            {
+                path
+            } else {
+                "/"
+            };
+            let tls = secured.contains(&host);
+            let url = format!("{}://{host}{path}", if tls { "https" } else { "http" });
+            let route = Route {
+                ingress: ingress.name_any(),
+                host: host.to_string(),
+                path: path.to_string(),
+                service: service.to_string(),
+                tls,
+                url,
+            };
+            if !routes.contains(&route) {
+                routes.push(route);
+            }
+        }
+    }
+    routes
+}
+
 /// Everything connected to one object, grouped the way people look for it.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Related {
     /// Pods the object owns or is.
@@ -61,6 +132,8 @@ pub struct Related {
     pub services: Vec<RelatedRef>,
     /// Ingresses routing to those services.
     pub ingresses: Vec<RelatedRef>,
+    /// The addresses those ingresses serve, to open in a browser.
+    pub routes: Vec<Route>,
     /// Owners and controllers above this object.
     pub controllers: Vec<RelatedRef>,
     /// ConfigMaps and Secrets the pod template consumes.
@@ -117,6 +190,19 @@ pub async fn events_for_pods(
         }
     }
 
+    rows.sort_by(|a, b| a.last_seen.cmp(&b.last_seen));
+    Ok(rows)
+}
+
+/// What a workload and its replicas have said, newest last.
+pub async fn workload_events(
+    cluster: &Arc<ClusterHandle>,
+    namespace: &str,
+    name: &str,
+    pods: &[String],
+) -> Result<Vec<EventRow>> {
+    let mut rows = events(cluster, Some(namespace), name).await?;
+    rows.extend(events_for_pods(cluster, namespace, pods).await?);
     rows.sort_by(|a, b| a.last_seen.cmp(&b.last_seen));
     Ok(rows)
 }
@@ -448,6 +534,7 @@ pub async fn related(
                 .and_then(|s| s.rules.as_ref())
                 .map(|rules| rules.iter().filter_map(|r| r.host.clone()).collect())
                 .unwrap_or_default();
+            out.routes.extend(routes_of(&ingress, &service_names));
             out.ingresses.push(RelatedRef {
                 kind: "Ingress".into(),
                 name: ingress.name_any(),
@@ -567,6 +654,47 @@ fn resource_for_kind(kind: &str) -> Option<&'static str> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn ingress(value: serde_json::Value) -> Ingress {
+        serde_json::from_value(value).expect("ingress parses")
+    }
+
+    #[test]
+    fn an_ingress_gives_a_link_per_host_and_path_that_reaches_the_service() {
+        let ingress = ingress(json!({
+            "metadata": {"name": "shop"},
+            "spec": {
+                "tls": [{"hosts": ["shop.example.com"]}],
+                "rules": [
+                    {"host": "shop.example.com", "http": {"paths": [
+                        {"path": "/", "pathType": "Prefix",
+                         "backend": {"service": {"name": "web", "port": {"number": 80}}}},
+                        {"path": "/api", "pathType": "Prefix",
+                         "backend": {"service": {"name": "api", "port": {"number": 80}}}},
+                        {"path": "/", "pathType": "Prefix",
+                         "backend": {"service": {"name": "web", "port": {"number": 80}}}},
+                    ]}},
+                    {"host": "plain.example.com", "http": {"paths": [
+                        {"path": "/app(/|$)(.*)", "pathType": "ImplementationSpecific",
+                         "backend": {"service": {"name": "web", "port": {"number": 80}}}},
+                    ]}},
+                    {"http": {"paths": [
+                        {"path": "/", "pathType": "Prefix",
+                         "backend": {"service": {"name": "web", "port": {"number": 80}}}},
+                    ]}},
+                ],
+            },
+        }));
+        let urls: Vec<String> = routes_of(&ingress, &["web".to_string()])
+            .into_iter()
+            .map(|r| r.url)
+            .collect();
+        assert_eq!(
+            urls,
+            ["https://shop.example.com/", "http://plain.example.com/"],
+            "one link per distinct address; patterns and hostless rules do not make links"
+        );
+    }
 
     #[test]
     fn selector_reads_match_labels_or_flat_selector() {

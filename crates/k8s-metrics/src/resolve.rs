@@ -26,8 +26,21 @@ pub async fn fetch(
 
     let (cpu_requests, cpu_limits, memory_requests, memory_limits) = declared(&matching);
 
-    // Network and disk are only attributable for a single pod or a node.
-    let io_capable = matches!(target, MetricTarget::Pod { .. } | MetricTarget::Node { .. });
+    // Network and disk are attributable to a pod, a node, or the pods behind a
+    // workload. A namespace spans too many nodes to ask each kubelet for.
+    let io_capable = matches!(
+        target,
+        MetricTarget::Pod { .. } | MetricTarget::Node { .. } | MetricTarget::Workload { .. }
+    );
+    if matches!(target, MetricTarget::Workload { .. }) {
+        sampler.track_workload_pods(
+            &target.key(),
+            matching
+                .iter()
+                .map(|pod| format!("{}/{}", pod.namespace().unwrap_or_default(), pod.name_any()))
+                .collect(),
+        );
+    }
     // Registering the target here is also what starts kubelet sampling for it.
     let local = sampler.target_history(target);
     let io_points: Vec<Point> = if io_capable {
@@ -98,7 +111,7 @@ pub async fn fetch(
 
 fn io_note(sampler: &Arc<ClusterSampler>, io_capable: bool) -> Option<String> {
     if !io_capable {
-        return Some("Network and disk are reported per pod and per node only.".into());
+        return Some("Network and disk are reported per pod, per node and per workload.".into());
     }
     sampler.io_note()
 }

@@ -553,11 +553,9 @@ impl Render for MetricsView {
                         warning,
                         cx,
                     ));
-                // Network and disk are only attributable to one pod or one node.
-                if matches!(
-                    self.metric,
-                    MetricTarget::Pod { .. } | MetricTarget::Node { .. }
-                ) {
+                // Network and disk are attributable to a pod, a node, or the pods
+                // behind a workload; a namespace spans too many nodes.
+                if !matches!(self.metric, MetricTarget::Namespace { .. }) {
                     if metrics.io_points.is_empty() {
                         column = column.child(div().text_xs().text_color(palette.muted).child(
                             metrics.io_note.clone().unwrap_or_else(|| {

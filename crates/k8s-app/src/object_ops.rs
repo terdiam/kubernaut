@@ -14,6 +14,7 @@ use k8s_ops::{
     error::OpsError,
     node_edit::{self, NodeTags, Taint},
     node_pods::{self, PodLimit},
+    related::{self, EventRow, Related},
 };
 
 use crate::state::AppCore;
@@ -249,6 +250,33 @@ pub async fn save_node_tags(
     let result = node_edit::apply(&handle, node, before, labels, taints).await;
     core.record_audit(cluster, "editNodeTags", &format!("nodes/{node}"), &result);
     result.map_err(|e| e.to_string())
+}
+
+/// What a workload is connected to, and what it and its pods have recently said.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Connected {
+    pub related: Related,
+    /// Newest last.
+    pub events: Vec<EventRow>,
+}
+
+/// Pods, services, ingress addresses and events around one object. Reads only.
+pub async fn read_connected(
+    core: &AppCore,
+    cluster: &str,
+    resource: &str,
+    namespace: &str,
+    name: &str,
+) -> Result<Connected, String> {
+    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let related = related::related(&handle, resource, Some(namespace), name)
+        .await
+        .map_err(|e| e.to_string())?;
+    let pods: Vec<String> = related.pods.iter().map(|pod| pod.name.clone()).collect();
+    let events = related::workload_events(&handle, namespace, name, &pods)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Connected { related, events })
 }
 
 /// How many pods a node allows and runs.

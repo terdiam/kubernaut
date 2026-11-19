@@ -15,14 +15,28 @@ use gpui_kit::{
 use k8s_app::{
     AppCore,
     details::{Details, condition_tone, describe},
+    object_ops::{self, Connected},
+    present::{self, Tone},
 };
 use k8s_core::objects;
+use k8s_ops::related::{EventRow, RelatedRef};
 use tokio::runtime::Handle;
 
 use crate::{
+    diagnose::kind_of,
     drawer::Target,
+    row_actions,
     ui::{message, pill, tone_color},
 };
+
+/// Events listed here before pointing at the Events tab.
+const EVENTS_SHOWN: usize = 8;
+
+/// What this tab asks its drawer to do.
+pub enum DetailsEvent {
+    /// Another object a row points at, to open in place of this one.
+    Open(Target),
+}
 
 enum State {
     Loading,
@@ -36,10 +50,16 @@ const REFRESH: Duration = Duration::from_secs(4);
 
 pub struct DetailsView {
     state: State,
+    /// Pods, services, ingress addresses and events, for the kinds that have
+    /// pods behind them. Read on a slower beat than the object itself.
+    connected: Option<Box<Connected>>,
+    target: Target,
     /// When this was last drawn. A tab nobody is looking at is not drawn, and
     /// stops reading: with eight tabs open, only the one in view asks.
     drawn: Instant,
 }
+
+impl EventEmitter<DetailsEvent> for DetailsView {}
 
 impl DetailsView {
     pub fn new(
@@ -48,15 +68,32 @@ impl DetailsView {
         target: &Target,
         cx: &mut Context<Self>,
     ) -> Self {
-        let (core, runtime, target) = (Arc::clone(core), runtime.clone(), target.clone());
+        let (core, runtime, own) = (Arc::clone(core), runtime.clone(), target.clone());
+        let connects = connects(target);
         cx.spawn(async move |this, cx| {
+            let mut round = 0_u32;
             loop {
-                let (core, target) = (Arc::clone(&core), target.clone());
-                let task = runtime.spawn(async move { fetch(&core, &target).await });
+                let (reader, target) = (Arc::clone(&core), own.clone());
+                let task = runtime.spawn(async move { fetch(&reader, &target).await });
                 let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
                 if this.update(cx, |this, cx| this.apply(result, cx)).is_err() {
                     return;
                 }
+                // Listing services and ingresses is heavier than reading one
+                // object, so the connected view is read every other round.
+                if connects && round.is_multiple_of(2) {
+                    let (reader, target) = (Arc::clone(&core), own.clone());
+                    let task =
+                        runtime.spawn(async move { fetch_connected(&reader, &target).await });
+                    if let Ok(Ok(connected)) = task.await
+                        && this
+                            .update(cx, |this, cx| this.apply_connected(connected, cx))
+                            .is_err()
+                    {
+                        return;
+                    }
+                }
+                round = round.wrapping_add(1);
                 // Wait until the tab is on screen again before the next read.
                 loop {
                     cx.background_executor().timer(REFRESH).await;
@@ -71,8 +108,31 @@ impl DetailsView {
         .detach();
         Self {
             state: State::Loading,
+            connected: None,
+            target: target.clone(),
             drawn: Instant::now(),
         }
+    }
+
+    /// Take a reading of what the object is connected to. An unchanged one does
+    /// not redraw.
+    fn apply_connected(&mut self, connected: Connected, cx: &mut Context<Self>) {
+        if self.connected.as_deref() == Some(&connected) {
+            return;
+        }
+        self.connected = Some(Box::new(connected));
+        cx.notify();
+    }
+
+    /// Open `related` in place of this object.
+    fn open(&self, related: &RelatedRef, cx: &mut Context<Self>) {
+        cx.emit(DetailsEvent::Open(Target {
+            cluster: self.target.cluster.clone(),
+            resource: related.resource.clone().into(),
+            kind: kind_of(&related.resource).into(),
+            namespace: related.namespace.clone().map(Into::into),
+            name: related.name.clone().into(),
+        }));
     }
 
     /// Take a read. A later failure keeps the last good reading rather than
@@ -119,6 +179,64 @@ async fn fetch(core: &AppCore, target: &Target) -> Result<Details, String> {
     Ok(describe(&value))
 }
 
+/// Whether this object has pods, services and events worth listing: the
+/// workloads, which are the objects people open to see how a rollout is going.
+fn connects(target: &Target) -> bool {
+    target.namespace.is_some() && row_actions::is_workload(&target.resource)
+}
+
+async fn fetch_connected(core: &AppCore, target: &Target) -> Result<Connected, String> {
+    let Some(namespace) = target.namespace.as_deref() else {
+        return Ok(Connected::default());
+    };
+    object_ops::read_connected(
+        core,
+        &target.cluster,
+        &target.resource,
+        namespace,
+        &target.name,
+    )
+    .await
+}
+
+fn health_tone(health: &str) -> Option<Tone> {
+    match health {
+        "ok" => Some(Tone::Ok),
+        "pending" => Some(Tone::Pending),
+        "warning" => Some(Tone::Warn),
+        "error" => Some(Tone::Error),
+        _ => None,
+    }
+}
+
+/// The newest `limit` events, newest first, with how long ago each was.
+fn newest_events(rows: &[EventRow], limit: usize) -> Vec<(&EventRow, String)> {
+    let now = present::now();
+    let mut keyed: Vec<(i64, &EventRow)> = rows
+        .iter()
+        .map(|row| {
+            let seen = row
+                .last_seen
+                .as_deref()
+                .or(row.first_seen.as_deref())
+                .and_then(present::parse_timestamp);
+            (seen.unwrap_or(i64::MIN), row)
+        })
+        .collect();
+    keyed.sort_by_key(|&(seen, _)| std::cmp::Reverse(seen));
+    keyed
+        .into_iter()
+        .take(limit)
+        .map(|(seen, row)| {
+            let mut age = String::new();
+            if seen != i64::MIN {
+                present::write_age(&mut age, now - seen);
+            }
+            (row, age)
+        })
+        .collect()
+}
+
 fn section(title: &'static str, muted: Hsla) -> Div {
     div()
         .mt_3()
@@ -145,6 +263,163 @@ fn row(label: impl Into<SharedString>, value: impl Into<SharedString>, muted: Hs
                 .child(label.into()),
         )
         .child(div().flex_1().min_w_0().child(value.into()))
+}
+
+impl DetailsView {
+    /// Pods, services, ingress addresses and recent events, after the object's
+    /// own fields. A row opens the object it names; an address opens in the
+    /// browser.
+    fn render_connected(
+        &self,
+        mut body: Div,
+        connected: &Connected,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let theme = cx.theme();
+        let (muted, link, warning) = (theme.muted_foreground, theme.info, theme.warning);
+        let related = &connected.related;
+
+        let named = |id: String, row: &RelatedRef, cx: &mut Context<Self>| {
+            let target = row.clone();
+            div()
+                .id(SharedString::from(id))
+                .cursor_pointer()
+                .text_color(link)
+                .child(row.name.clone())
+                .on_click(cx.listener(move |this, _, _, cx| this.open(&target, cx)))
+        };
+
+        if !related.pods.is_empty() {
+            body = body
+                .child(section("Pods", muted))
+                .children(related.pods.iter().map(|pod| {
+                    let tone = health_tone(&pod.health).map(|t| tone_color(t, cx.theme()));
+                    h_flex()
+                        .gap_3()
+                        .items_center()
+                        .py_0p5()
+                        .text_sm()
+                        .child(div().flex_1().min_w_0().child(named(
+                            format!("pod-{}", pod.name),
+                            pod,
+                            cx,
+                        )))
+                        .when_some(pod.detail.clone(), |line, detail| {
+                            line.child(pill(detail, tone.unwrap_or(muted)))
+                        })
+                }));
+        }
+        if !related.services.is_empty() {
+            body = body
+                .child(section("Services", muted))
+                .children(related.services.iter().map(|service| {
+                    h_flex()
+                        .gap_3()
+                        .py_0p5()
+                        .text_sm()
+                        .child(div().flex_1().min_w_0().child(named(
+                            format!("svc-{}", service.name),
+                            service,
+                            cx,
+                        )))
+                        .when_some(service.detail.clone(), |line, kind| {
+                            line.child(div().text_color(muted).child(kind))
+                        })
+                }));
+        }
+        if !related.ingresses.is_empty() {
+            body = body.child(section("Ingress", muted));
+            for route in &related.routes {
+                let url = route.url.clone();
+                body = body.child(
+                    h_flex()
+                        .gap_3()
+                        .py_0p5()
+                        .text_sm()
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("route-{}", route.url)))
+                                .flex_1()
+                                .min_w_0()
+                                .cursor_pointer()
+                                .text_color(link)
+                                .child(route.url.clone())
+                                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&url))),
+                        )
+                        .child(
+                            div()
+                                .text_color(muted)
+                                .child(format!("{} → {}", route.ingress, route.service)),
+                        ),
+                );
+            }
+            // An ingress with no host has no address to link; name it.
+            let linked: Vec<&str> = related.routes.iter().map(|r| r.ingress.as_str()).collect();
+            for ingress in related
+                .ingresses
+                .iter()
+                .filter(|i| !linked.contains(&i.name.as_str()))
+            {
+                body = body.child(
+                    h_flex()
+                        .gap_3()
+                        .py_0p5()
+                        .text_sm()
+                        .child(div().flex_1().min_w_0().child(named(
+                            format!("ing-{}", ingress.name),
+                            ingress,
+                            cx,
+                        )))
+                        .child(
+                            div()
+                                .text_color(muted)
+                                .child(ingress.detail.clone().unwrap_or_default()),
+                        ),
+                );
+            }
+        }
+        if !connected.events.is_empty() {
+            body = body.child(section("Events", muted));
+            for (row, age) in newest_events(&connected.events, EVENTS_SHOWN) {
+                let colour = if row.kind == "Warning" {
+                    warning
+                } else {
+                    muted
+                };
+                body = body.child(
+                    v_flex()
+                        .py_0p5()
+                        .text_sm()
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .items_baseline()
+                                .child(div().text_color(colour).child(row.reason.clone()))
+                                .when(row.count > 1, |line| {
+                                    line.child(
+                                        div()
+                                            .text_xs()
+                                            .text_color(muted)
+                                            .child(format!("×{}", row.count)),
+                                    )
+                                })
+                                .child(div().text_xs().text_color(muted).child(age)),
+                        )
+                        .child(div().text_xs().text_color(muted).child(row.message.clone())),
+                );
+            }
+            let more = connected.events.len().saturating_sub(EVENTS_SHOWN);
+            if more > 0 {
+                body = body.child(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(format!("and {more} older in the Events tab")),
+                );
+            }
+        }
+        body
+    }
 }
 
 impl Render for DetailsView {
@@ -214,6 +489,10 @@ impl Render for DetailsView {
                             })
                     }));
         }
+        if let Some(connected) = self.connected.as_deref() {
+            body = self.render_connected(body, connected, cx);
+        }
+        let theme = cx.theme();
         if !details.labels.is_empty() {
             body =
                 body.child(section("Labels", muted))
