@@ -21,6 +21,7 @@ use k8s_helm::{Release, store};
 use tokio::runtime::Handle;
 
 use crate::{
+    cards,
     charts::{ChartsEvent, ChartsView},
     namespaces,
     release::{ReleaseEvent, ReleaseView, status_tone},
@@ -76,6 +77,28 @@ fn release_lines(releases: &[Release], now: i64) -> Vec<ReleaseLine> {
             }
         })
         .collect()
+}
+
+/// How the releases stand, for the card above the list: failed ones first, then
+/// those still changing, else all deployed.
+fn helm_status(lines: &[ReleaseLine]) -> (Tone, String, String) {
+    let count = |wanted: fn(Tone) -> bool| {
+        lines
+            .iter()
+            .filter(|line| line.tone.is_some_and(wanted))
+            .count()
+    };
+    let failed = count(|tone| tone == Tone::Error);
+    let changing = count(|tone| matches!(tone, Tone::Pending | Tone::Warn));
+    let total = lines.len();
+    let detail = format!("of {total} release{}", if total == 1 { "" } else { "s" });
+    if failed > 0 {
+        (Tone::Error, format!("{failed} failed"), detail)
+    } else if changing > 0 {
+        (Tone::Warn, format!("{changing} not settled"), detail)
+    } else {
+        (Tone::Ok, "All deployed".to_string(), detail)
+    }
 }
 
 /// Indices of the lines a filter keeps, in order.
@@ -495,6 +518,20 @@ impl Render for HelmView {
                             .min_h_0()
                             .min_w_0()
                             .child(self.render_header(cx))
+                            .children(
+                                (matches!(self.load, Load::Ready) && !self.lines.is_empty()).then(
+                                    || {
+                                        let (tone, label, detail) = helm_status(&self.lines);
+                                        div().px_4().pb_2().child(cards::status_card(
+                                            tone,
+                                            label,
+                                            detail,
+                                            None,
+                                            cx.theme(),
+                                        ))
+                                    },
+                                ),
+                            )
                             .child(self.render_list(cx)),
                     )
                     .when_some(self.open.as_ref(), |row, open| row.child(open.view.clone()))
@@ -505,7 +542,7 @@ impl Render for HelmView {
 
 #[cfg(test)]
 mod tests {
-    use super::{matching, release_lines};
+    use super::{helm_status, matching, release_lines};
     use k8s_app::present::Tone;
     use k8s_helm::Release;
 
@@ -522,6 +559,27 @@ mod tests {
             description: None,
             pending: false,
         }
+    }
+
+    #[test]
+    fn the_status_puts_failed_releases_before_those_still_changing() {
+        let lines = |statuses: &[&str]| {
+            let releases: Vec<Release> = statuses
+                .iter()
+                .enumerate()
+                .map(|(i, status)| release(&format!("r{i}"), "apps", status))
+                .collect();
+            release_lines(&releases, 120)
+        };
+        let (tone, label, detail) = helm_status(&lines(&["deployed", "deployed"]));
+        assert_eq!(
+            (tone, label.as_str(), detail.as_str()),
+            (Tone::Ok, "All deployed", "of 2 releases")
+        );
+        let (tone, label, _) = helm_status(&lines(&["deployed", "pending-upgrade"]));
+        assert_eq!((tone, label.as_str()), (Tone::Warn, "1 not settled"));
+        let (tone, label, _) = helm_status(&lines(&["failed", "pending-upgrade", "deployed"]));
+        assert_eq!((tone, label.as_str()), (Tone::Error, "1 failed"));
     }
 
     #[test]
