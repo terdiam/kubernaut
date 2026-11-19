@@ -5,26 +5,58 @@
 //! workload is what starts watching it, so the first answer is thin and
 //! improves while someone keeps asking.
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
+use k8s_core::cluster::ClusterHandle;
 use k8s_metrics::{
-    MetricTarget, NamespaceQuotaInfo, NamespaceUsage, NodeSummary, ObjectMetrics, Point,
-    Recommendation, Topology, quantity, quota, recommend, resolve, topology,
+    ClusterSampler, MetricTarget, NamespaceQuotaInfo, NamespaceUsage, NodeSummary, ObjectMetrics,
+    Point, Recommendation, Topology, quantity, quota, recommend, resolve, topology,
 };
 use serde::Serialize;
 use serde_json::Value;
 
 use crate::state::AppCore;
 
+/// What the metrics reads need of the app: a cluster by id, and the sampler
+/// that watches it. Taking this instead of the whole [`AppCore`] says so in the
+/// signature, and lets a stand-in supply both.
+pub trait MetricsSource {
+    /// The cluster, or why it cannot be had.
+    fn handle(&self, cluster: &str) -> Result<Arc<ClusterHandle>, String>;
+    /// The sampler for that cluster, started if it is not already running.
+    fn sampler(&self, handle: &Arc<ClusterHandle>) -> Arc<ClusterSampler>;
+}
+
+impl MetricsSource for AppCore {
+    fn handle(&self, cluster: &str) -> Result<Arc<ClusterHandle>, String> {
+        self.clusters.require(cluster).map_err(|e| e.to_string())
+    }
+
+    fn sampler(&self, handle: &Arc<ClusterHandle>) -> Arc<ClusterSampler> {
+        self.metrics.ensure(handle)
+    }
+}
+
+/// A shared `AppCore` is passed as it is held, so it is a source too.
+impl<T: MetricsSource + ?Sized> MetricsSource for Arc<T> {
+    fn handle(&self, cluster: &str) -> Result<Arc<ClusterHandle>, String> {
+        (**self).handle(cluster)
+    }
+
+    fn sampler(&self, handle: &Arc<ClusterHandle>) -> Arc<ClusterSampler> {
+        (**self).sampler(handle)
+    }
+}
+
 /// History and current figures for a pod, node, namespace or workload.
 pub async fn object_metrics(
-    core: &AppCore,
+    core: &impl MetricsSource,
     cluster: &str,
     target: &MetricTarget,
     window_ms: i64,
 ) -> Result<ObjectMetrics, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
-    let sampler = core.metrics.ensure(&handle);
+    let handle = core.handle(cluster)?;
+    let sampler = core.sampler(&handle);
     Ok(resolve::fetch(&handle, &sampler, target, window_ms).await)
 }
 
@@ -35,14 +67,14 @@ pub async fn object_metrics(
 /// caller keeps the history, one point per call, and this gives it the point.
 /// `None` while no matching pod has reported usage.
 pub async fn workload_point(
-    core: &AppCore,
+    core: &impl MetricsSource,
     cluster: &str,
     namespace: &str,
     resource: &str,
     name: &str,
 ) -> Result<Option<Point>, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
-    let sampler = core.metrics.ensure(&handle);
+    let handle = core.handle(cluster)?;
+    let sampler = core.sampler(&handle);
     // Pod usage is only polled while something asks for it.
     sampler.request_pod_metrics();
 
@@ -100,12 +132,12 @@ fn sum_usage(usages: impl Iterator<Item = (bool, f64, f64)>) -> Option<Point> {
 /// to workloads to pods to nodes. Built per namespace, because a graph of the
 /// whole cluster is a hairball nobody can read.
 pub async fn topology(
-    core: &AppCore,
+    core: &impl MetricsSource,
     cluster: &str,
     namespaces: &[String],
 ) -> Result<Topology, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
-    let pods = core.metrics.ensure(&handle).pods();
+    let handle = core.handle(cluster)?;
+    let pods = core.sampler(&handle).pods();
     topology::build(&handle, namespaces, &pods).await
 }
 
@@ -113,29 +145,35 @@ pub async fn topology(
 ///
 /// Asking is what makes the sampler collect disk, so the first answer can lack
 /// it until the next sample.
-pub fn node_summaries(core: &AppCore, cluster: &str) -> Result<Vec<NodeSummary>, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
-    Ok(core.metrics.ensure(&handle).node_summaries())
+pub fn node_summaries(
+    core: &impl MetricsSource,
+    cluster: &str,
+) -> Result<Vec<NodeSummary>, String> {
+    let handle = core.handle(cluster)?;
+    Ok(core.sampler(&handle).node_summaries())
 }
 
 /// What every namespace uses against what it declares, for the heatmap.
 ///
 /// Pod-level metrics are only polled while someone asks, so asking is what
 /// keeps this fed; the first answer can be empty until a sample has completed.
-pub fn namespace_usage(core: &AppCore, cluster: &str) -> Result<Vec<NamespaceUsage>, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
-    let sampler = core.metrics.ensure(&handle);
+pub fn namespace_usage(
+    core: &impl MetricsSource,
+    cluster: &str,
+) -> Result<Vec<NamespaceUsage>, String> {
+    let handle = core.handle(cluster)?;
+    let sampler = core.sampler(&handle);
     sampler.request_pod_metrics();
     Ok(sampler.namespace_usage())
 }
 
 /// A namespace's `ResourceQuota` and `LimitRange` objects.
 pub async fn namespace_quota(
-    core: &AppCore,
+    core: &impl MetricsSource,
     cluster: &str,
     namespace: &str,
 ) -> Result<NamespaceQuotaInfo, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
+    let handle = core.handle(cluster)?;
     quota::namespace_quota(&handle, namespace).await
 }
 
@@ -173,14 +211,14 @@ fn declared(container: &Value, bucket: &str, key: &str) -> f64 {
 }
 
 pub async fn workload_sizing(
-    core: &AppCore,
+    core: &impl MetricsSource,
     cluster: &str,
     namespace: &str,
     resource: &str,
     name: &str,
 ) -> Result<SizingReport, String> {
-    let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
-    let sampler = core.metrics.ensure(&handle);
+    let handle = core.handle(cluster)?;
+    let sampler = core.sampler(&handle);
 
     let object = k8s_core::objects::get(&handle, resource, Some(namespace), name)
         .await
@@ -248,7 +286,43 @@ pub async fn workload_sizing(
 mod tests {
     use serde_json::json;
 
-    use super::{declared, selector_of, sum_usage};
+    use std::sync::Arc;
+
+    use k8s_core::cluster::ClusterHandle;
+    use k8s_metrics::ClusterSampler;
+
+    use super::{MetricsSource, declared, namespace_usage, node_summaries, selector_of, sum_usage};
+
+    /// An app with no clusters: what the reads need, without an `AppCore`.
+    struct NoClusters;
+
+    impl MetricsSource for NoClusters {
+        fn handle(&self, cluster: &str) -> Result<Arc<ClusterHandle>, String> {
+            Err(format!("no cluster `{cluster}`"))
+        }
+
+        fn sampler(&self, _: &Arc<ClusterHandle>) -> Arc<ClusterSampler> {
+            unreachable!("there is no cluster to sample")
+        }
+    }
+
+    #[test]
+    fn a_read_for_a_cluster_the_app_does_not_have_says_so() {
+        assert_eq!(
+            node_summaries(&NoClusters, "prod").expect_err("no such cluster"),
+            "no cluster `prod`"
+        );
+        assert_eq!(
+            namespace_usage(&NoClusters, "prod").expect_err("no such cluster"),
+            "no cluster `prod`"
+        );
+    }
+
+    #[test]
+    fn a_shared_source_is_a_source_too() {
+        let shared = Arc::new(NoClusters);
+        assert!(node_summaries(&shared, "prod").is_err());
+    }
 
     #[test]
     fn a_workload_selects_its_pods_by_match_labels() {
