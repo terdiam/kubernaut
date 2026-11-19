@@ -261,21 +261,36 @@ pub struct Connected {
 }
 
 /// Pods, services, ingress addresses and events around one object. Reads only.
+///
+/// A workload's events include those of its pods; any other kind shows only its
+/// own, so a pod's events are not listed twice.
 pub async fn read_connected(
     core: &AppCore,
     cluster: &str,
     resource: &str,
-    namespace: &str,
+    namespace: Option<&str>,
     name: &str,
 ) -> Result<Connected, String> {
     let handle = core.clusters.require(cluster).map_err(|e| e.to_string())?;
-    let related = related::related(&handle, resource, Some(namespace), name)
+    let related = related::related(&handle, resource, namespace, name)
         .await
         .map_err(|e| e.to_string())?;
-    let pods: Vec<String> = related.pods.iter().map(|pod| pod.name.clone()).collect();
-    let events = related::workload_events(&handle, namespace, name, &pods)
-        .await
-        .map_err(|e| e.to_string())?;
+    let workload = matches!(
+        resource,
+        "apps/v1/deployments"
+            | "apps/v1/statefulsets"
+            | "apps/v1/daemonsets"
+            | "apps/v1/replicasets"
+            | "batch/v1/jobs"
+    );
+    let events = match namespace {
+        Some(namespace) if workload => {
+            let pods: Vec<String> = related.pods.iter().map(|pod| pod.name.clone()).collect();
+            related::workload_events(&handle, namespace, name, &pods).await
+        }
+        namespace => related::events(&handle, namespace, name).await,
+    }
+    .map_err(|e| e.to_string())?;
     Ok(Connected { related, events })
 }
 

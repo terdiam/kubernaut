@@ -770,7 +770,7 @@ async fn fetch_events(core: Arc<AppCore>, target: Target) -> Result<Vec<EventLin
                 &core,
                 &target.cluster,
                 &target.resource,
-                namespace,
+                Some(namespace),
                 &target.name,
             )
             .await?

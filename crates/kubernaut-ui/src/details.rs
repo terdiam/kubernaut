@@ -27,7 +27,6 @@ use crate::{
     cards::{self, Folds, badge},
     diagnose::kind_of,
     drawer::Target,
-    row_actions,
     ui::{message, pill, toast_success, tone_color},
 };
 
@@ -185,21 +184,30 @@ async fn fetch(core: &AppCore, target: &Target) -> Result<Details, String> {
     Ok(describe(&value))
 }
 
-/// Whether this object has pods, services and events worth listing: the
-/// workloads, which are the objects people open to see how a rollout is going.
+/// Whether this object has connections worth listing: what a workload runs and
+/// serves, where a pod lives and what it uses, what a service selects and who
+/// routes to it, where an ingress sends traffic, and what runs on a node.
 fn connects(target: &Target) -> bool {
-    target.namespace.is_some() && row_actions::is_workload(&target.resource)
+    match &*target.resource {
+        "core/v1/nodes" => true,
+        "apps/v1/deployments"
+        | "apps/v1/statefulsets"
+        | "apps/v1/daemonsets"
+        | "apps/v1/replicasets"
+        | "batch/v1/jobs"
+        | "core/v1/pods"
+        | "core/v1/services"
+        | "networking.k8s.io/v1/ingresses" => target.namespace.is_some(),
+        _ => false,
+    }
 }
 
 async fn fetch_connected(core: &AppCore, target: &Target) -> Result<Connected, String> {
-    let Some(namespace) = target.namespace.as_deref() else {
-        return Ok(Connected::default());
-    };
     object_ops::read_connected(
         core,
         &target.cluster,
         &target.resource,
-        namespace,
+        target.namespace.as_deref(),
         &target.name,
     )
     .await
@@ -301,6 +309,7 @@ impl DetailsView {
             )
         };
         let related = &connected.related;
+        let resource: &str = &self.target.resource;
         let mut cards: Vec<Div> = Vec::new();
 
         let open_row = |id: String, row: &RelatedRef, cx: &mut Context<Self>| {
@@ -314,7 +323,36 @@ impl DetailsView {
                 .on_click(cx.listener(move |this, _, _, cx| this.open(&target, cx)))
         };
 
-        if !related.pods.is_empty() {
+        for (id, title, refs) in [
+            (
+                "owner",
+                "Owner",
+                related.controllers.iter().collect::<Vec<_>>(),
+            ),
+            ("node", "Node", related.nodes.iter().collect::<Vec<_>>()),
+        ] {
+            if refs.is_empty() || (id == "node" && resource == "core/v1/nodes") {
+                continue;
+            }
+            let rows = refs
+                .iter()
+                .map(|row| {
+                    h_flex()
+                        .gap_3()
+                        .text_sm()
+                        .child(div().flex_1().min_w_0().child(open_row(
+                            format!("{id}-{}", row.name),
+                            row,
+                            cx,
+                        )))
+                        .child(div().text_color(muted).child(row.kind.clone()))
+                        .into_any_element()
+                })
+                .collect();
+            cards.push(self.card(id, title, Vec::new(), rows, cx));
+        }
+
+        if !related.pods.is_empty() && resource != "core/v1/pods" {
             let ready = related.pods.iter().filter(|p| p.health == "ok").count();
             let all_ready = ready == related.pods.len();
             let rows = related
@@ -348,7 +386,7 @@ impl DetailsView {
                 cx,
             ));
         }
-        if !related.services.is_empty() {
+        if !related.services.is_empty() && resource != "core/v1/services" {
             let rows = related
                 .services
                 .iter()
@@ -442,6 +480,53 @@ impl DetailsView {
                 cx,
             ));
         }
+        for (id, title, refs) in [
+            (
+                "config",
+                "Config and storage",
+                related
+                    .config
+                    .iter()
+                    .chain(related.storage.iter())
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "policies",
+                "Policies",
+                related.policies.iter().collect::<Vec<_>>(),
+            ),
+        ] {
+            if refs.is_empty() {
+                continue;
+            }
+            let rows = refs
+                .iter()
+                .map(|row| {
+                    h_flex()
+                        .gap_3()
+                        .text_sm()
+                        .child(div().flex_1().min_w_0().child(open_row(
+                            format!("{id}-{}-{}", row.kind, row.name),
+                            row,
+                            cx,
+                        )))
+                        .child(
+                            div()
+                                .text_color(muted)
+                                .child(row.detail.clone().unwrap_or_else(|| row.kind.clone())),
+                        )
+                        .into_any_element()
+                })
+                .collect();
+            cards.push(self.card(
+                id,
+                title,
+                vec![badge(refs.len().to_string(), muted)],
+                rows,
+                cx,
+            ));
+        }
+
         if !connected.events.is_empty() {
             let warnings = connected
                 .events
@@ -535,6 +620,7 @@ impl Render for DetailsView {
         for (id, title, group) in [
             ("rollout", "Rollout", Group::Rollout),
             ("scheduling", "Scheduling", Group::Scheduling),
+            ("capacity", "Capacity", Group::Capacity),
         ] {
             let rows = self.group_rows(details, group, cx);
             if !rows.is_empty() {

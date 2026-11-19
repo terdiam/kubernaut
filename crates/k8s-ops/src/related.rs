@@ -122,6 +122,31 @@ pub fn routes_of(ingress: &Ingress, services: &[String]) -> Vec<Route> {
     routes
 }
 
+/// Names of the services an ingress sends traffic to, each once.
+pub fn backend_services(ingress: &Ingress) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let Some(spec) = &ingress.spec else {
+        return names;
+    };
+    let default = spec
+        .default_backend
+        .as_ref()
+        .and_then(|b| b.service.as_ref())
+        .map(|s| s.name.clone());
+    let routed = spec
+        .rules
+        .iter()
+        .flatten()
+        .flat_map(|rule| rule.http.iter().flat_map(|http| http.paths.iter()))
+        .filter_map(|path| path.backend.service.as_ref().map(|s| s.name.clone()));
+    for name in default.into_iter().chain(routed) {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+}
+
 /// Everything connected to one object, grouped the way people look for it.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -404,9 +429,65 @@ pub async fn related(
         .unwrap_or_default();
 
     let mut out = Related::default();
+
+    // A node's connections are the pods placed on it.
+    if kind == "Node" {
+        let pods: Api<Pod> = Api::all(cluster.client.clone());
+        let params = ListParams::default().fields(&format!("spec.nodeName={name}"));
+        for pod in pods.list(&params).await?.items {
+            let (health, detail) = pod_health(&pod);
+            out.pods.push(RelatedRef {
+                kind: "Pod".into(),
+                name: pod.name_any(),
+                namespace: pod.namespace(),
+                resource: "core/v1/pods".into(),
+                detail,
+                health,
+            });
+        }
+        out.pods
+            .sort_by(|a, b| (&a.namespace, &a.name).cmp(&(&b.namespace, &b.name)));
+        return Ok(out);
+    }
+
     let Some(namespace) = namespace else {
         return Ok(out);
     };
+
+    // An ingress connects forward: to the services it routes to, the addresses
+    // it serves, and the secrets that hold its certificates.
+    if kind == "Ingress" {
+        let ingress: Ingress = serde_json::from_value(value.clone())?;
+        let backends = backend_services(&ingress);
+        out.routes = routes_of(&ingress, &backends);
+        out.services = backends
+            .into_iter()
+            .map(|service| RelatedRef {
+                kind: "Service".into(),
+                name: service,
+                namespace: Some(namespace.to_string()),
+                resource: "core/v1/services".into(),
+                detail: None,
+                health: "ok".into(),
+            })
+            .collect();
+        let secrets = ingress
+            .spec
+            .iter()
+            .flat_map(|spec| spec.tls.iter().flatten())
+            .filter_map(|tls| tls.secret_name.clone());
+        for secret in secrets {
+            out.config.push(RelatedRef {
+                kind: "Secret".into(),
+                name: secret,
+                namespace: Some(namespace.to_string()),
+                resource: "core/v1/secrets".into(),
+                detail: Some("certificate".into()),
+                health: "unknown".into(),
+            });
+        }
+        return Ok(out);
+    }
 
     // Owners, walked one level — enough to get from Pod to ReplicaSet to
     // Deployment without turning the panel into a tree.
@@ -694,6 +775,25 @@ mod tests {
             ["https://shop.example.com/", "http://plain.example.com/"],
             "one link per distinct address; patterns and hostless rules do not make links"
         );
+    }
+
+    #[test]
+    fn an_ingress_names_each_backend_service_once() {
+        let ingress = ingress(json!({
+            "metadata": {"name": "shop"},
+            "spec": {
+                "defaultBackend": {"service": {"name": "fallback", "port": {"number": 80}}},
+                "rules": [{"host": "a.test", "http": {"paths": [
+                    {"path": "/", "pathType": "Prefix",
+                     "backend": {"service": {"name": "web", "port": {"number": 80}}}},
+                    {"path": "/x", "pathType": "Prefix",
+                     "backend": {"service": {"name": "web", "port": {"number": 80}}}},
+                    {"path": "/api", "pathType": "Prefix",
+                     "backend": {"service": {"name": "api", "port": {"number": 80}}}},
+                ]}}],
+            },
+        }));
+        assert_eq!(backend_services(&ingress), ["fallback", "web", "api"]);
     }
 
     #[test]

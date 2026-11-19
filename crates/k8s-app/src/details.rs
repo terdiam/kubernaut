@@ -102,6 +102,41 @@ fn selector(value: &Value, pointer: &str) -> Option<String> {
     )
 }
 
+/// Bytes as a person reads them: `15.6 GiB`, `983 GiB`.
+fn human_bytes(bytes: f64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut value = bytes;
+    let mut unit = 0;
+    while value >= 1024.0 && unit + 1 < UNITS.len() {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if (value - value.round()).abs() < 0.05 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else {
+        format!("{value:.1} {}", UNITS[unit])
+    }
+}
+
+/// What a node has, and how much of it pods may use: `8 · 7910m allocatable`.
+/// Memory and storage are shown in bytes people read; the apiserver reports them
+/// in whatever unit the kubelet chose, often a different one for each figure.
+fn capacity(node: &Value, resource: &str) -> Option<String> {
+    let shown = |raw: &str| match resource {
+        "memory" | "ephemeral-storage" => {
+            k8s_metrics::quantity::parse(raw).map_or_else(|| raw.to_string(), human_bytes)
+        }
+        _ => raw.to_string(),
+    };
+    let has = shown(&text(node, &format!("/status/capacity/{resource}"))?);
+    Some(
+        match text(node, &format!("/status/allocatable/{resource}")).map(|raw| shown(&raw)) {
+            Some(offered) if offered != has => format!("{has} · {offered} allocatable"),
+            _ => has,
+        },
+    )
+}
+
 /// A count the object reports, or `None` when it leaves the field out.
 fn count(value: &Value, pointer: &str) -> Option<String> {
     value.pointer(pointer)?.as_i64().map(|n| n.to_string())
@@ -296,6 +331,8 @@ pub enum Group {
     Rollout,
     /// Where the pods may run and as whom.
     Scheduling,
+    /// What a node has and what it offers pods.
+    Capacity,
 }
 
 /// The card for a summary row, by its label. A label no card claims stays in the
@@ -309,6 +346,7 @@ pub fn group_of(label: &str) -> Group {
         "Node selector" | "Tolerations" | "Affinities" | "Service account" | "Priority class" => {
             Group::Scheduling
         }
+        "CPU" | "Memory" | "Pods" | "Ephemeral storage" => Group::Capacity,
         _ => Group::Overview,
     }
 }
@@ -617,9 +655,10 @@ pub fn describe(object: &Value) -> Details {
                 "Architecture",
                 text(object, "/status/nodeInfo/architecture"),
             ),
-            ("CPU", text(object, "/status/capacity/cpu")),
-            ("Memory", text(object, "/status/capacity/memory")),
-            ("Pods", text(object, "/status/capacity/pods")),
+            ("CPU", capacity(object, "cpu")),
+            ("Memory", capacity(object, "memory")),
+            ("Pods", capacity(object, "pods")),
+            ("Ephemeral storage", capacity(object, "ephemeral-storage")),
             ("Unschedulable", text(object, "/spec/unschedulable")),
         ]),
         "PersistentVolumeClaim" => rows.extend([
@@ -981,6 +1020,29 @@ mod tests {
         assert_eq!(group_of("Max surge"), Group::Rollout);
         assert_eq!(group_of("Tolerations"), Group::Scheduling);
         assert_eq!(group_of("Something new"), Group::Overview);
+    }
+
+    #[test]
+    fn a_node_says_what_it_has_and_what_it_offers() {
+        let node = json!({"kind": "Node", "metadata": {"name": "n"}, "status": {
+            "capacity": {"cpu": "8", "memory": "16Gi", "pods": "110",
+                "ephemeral-storage": "1055761844Ki"},
+            "allocatable": {"cpu": "7910m", "memory": "16Gi", "pods": "110",
+                "ephemeral-storage": "1027045121038"}}});
+        let d = describe(&node);
+        assert_eq!(summary(&d, "CPU"), Some("8 · 7910m allocatable"));
+        assert_eq!(
+            summary(&d, "Memory"),
+            Some("16 GiB"),
+            "same as allocatable: said once"
+        );
+        assert_eq!(summary(&d, "Pods"), Some("110"));
+        assert_eq!(
+            summary(&d, "Ephemeral storage"),
+            Some("1006.9 GiB · 956.5 GiB allocatable"),
+            "two units for one figure are brought to one"
+        );
+        assert_eq!(group_of("CPU"), Group::Capacity);
     }
 
     #[test]
