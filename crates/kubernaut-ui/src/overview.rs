@@ -164,13 +164,11 @@ struct Shown {
     status: Status,
 }
 
-/// The cluster in one line: a state, what it rests on, and nodes ready out of
-/// all.
+/// The cluster in one line: a state and what it rests on.
 struct Status {
     tone: Tone,
     label: &'static str,
     detail: SharedString,
-    nodes: (i64, i64),
 }
 
 /// Errors or an unready node need attention; warnings or a gauge that is
@@ -200,7 +198,6 @@ fn status(
         tone,
         label,
         detail: format!("{nodes_ready} of {nodes_total} nodes ready · {problems}").into(),
-        nodes: (nodes_ready as i64, nodes_total as i64),
     }
 }
 
@@ -596,7 +593,7 @@ impl Render for OverviewView {
                 shown.status.tone,
                 shown.status.label,
                 shown.status.detail.clone(),
-                Some(shown.status.nodes),
+                None,
                 cx.theme(),
             ))
             .when_some(shown.metrics_error.clone(), |page, error| {
@@ -650,7 +647,6 @@ mod tests {
         let s = status(3, 3, 0, 0, Tone::Ok);
         assert_eq!((s.tone, s.label), (Tone::Ok, "Healthy"));
         assert_eq!(&*s.detail, "3 of 3 nodes ready · nothing needs attention");
-        assert_eq!(s.nodes, (3, 3));
         let s = status(3, 3, 0, 2, Tone::Ok);
         assert_eq!((s.tone, s.label), (Tone::Warn, "Worth a look"));
         assert_eq!(&*s.detail, "3 of 3 nodes ready · 2 warnings");

@@ -220,22 +220,31 @@ fn graph_status(drawn: &Drawn) -> (Tone, String, String, (i64, i64)) {
             .filter(|card| &*card.health == wanted)
             .count()
     };
-    let (ok, errors) = (count("ok"), count("error"));
-    let total = drawn.cards.len();
-    let waiting = total - ok - errors;
+    let (ok, errors, unknown) = (count("ok"), count("error"), count("unknown"));
+    // An object with no health of its own (a deployment, a service without
+    // endpoints to check) is neither healthy nor unhealthy, so it is left out of
+    // the count rather than made to look broken.
+    let judged = drawn.cards.len() - unknown;
+    let waiting = judged - ok - errors;
     let (tone, label) = if errors > 0 {
         (Tone::Error, format!("{errors} unhealthy"))
     } else if waiting > 0 {
         (Tone::Warn, format!("{waiting} not ready"))
+    } else if judged == 0 {
+        (Tone::Pending, "Nothing to judge".to_string())
     } else {
         (Tone::Ok, "All healthy".to_string())
     };
     let links = drawn.links.len();
-    let detail = format!(
-        "{ok} of {total} objects healthy · {links} link{}",
+    let mut detail = format!("{ok} of {judged} healthy");
+    if unknown > 0 {
+        detail.push_str(&format!(" · {unknown} without a health"));
+    }
+    detail.push_str(&format!(
+        " · {links} link{}",
         if links == 1 { "" } else { "s" }
-    );
-    (tone, label, detail, (ok as i64, total as i64))
+    ));
+    (tone, label, detail, (ok as i64, judged as i64))
 }
 
 fn drawn(topology: &Topology, cluster: &SharedString) -> Drawn {
@@ -839,10 +848,18 @@ mod tests {
         };
         let (tone, label, detail, progress) = graph_status(&drawn(&["ok", "ok", "ok"]));
         assert_eq!((tone, label.as_str()), (Tone::Ok, "All healthy"));
-        assert_eq!(detail, "3 of 3 objects healthy · 1 link");
+        assert_eq!(detail, "3 of 3 healthy · 1 link");
         assert_eq!(progress, (3, 3));
-        let (tone, label, _, _) = graph_status(&drawn(&["ok", "pending", "unknown"]));
-        assert_eq!((tone, label.as_str()), (Tone::Warn, "2 not ready"));
+        let (tone, label, detail, progress) = graph_status(&drawn(&["ok", "pending", "unknown"]));
+        assert_eq!((tone, label.as_str()), (Tone::Warn, "1 not ready"));
+        assert_eq!(detail, "1 of 2 healthy · 1 without a health · 1 link");
+        assert_eq!(
+            progress,
+            (1, 2),
+            "the unknown one is not counted against it"
+        );
+        let (tone, label, _, _) = graph_status(&drawn(&["unknown", "unknown"]));
+        assert_eq!((tone, label.as_str()), (Tone::Pending, "Nothing to judge"));
         let (tone, label, _, progress) = graph_status(&drawn(&["ok", "error", "pending"]));
         assert_eq!((tone, label.as_str()), (Tone::Error, "1 unhealthy"));
         assert_eq!(progress, (1, 3));

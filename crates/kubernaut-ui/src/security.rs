@@ -205,12 +205,24 @@ fn security_status(counts: [usize; 3], shown: usize) -> Option<(Tone, String, St
     if shown == 0 {
         return None;
     }
-    let detail = format!("{shown} shown");
     let part = |n: usize, word: &str| (n > 0).then(|| format!("{n} {word}"));
     let serious: Vec<String> = [part(critical, "critical"), part(high, "high")]
         .into_iter()
         .flatten()
         .collect();
+    // What is not in the label still counts: medium findings and the total.
+    let rest: Vec<String> = [
+        if serious.is_empty() {
+            None
+        } else {
+            part(medium, "medium")
+        },
+        Some(format!("{shown} shown")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    let detail = rest.join(" · ");
     Some(if !serious.is_empty() {
         (Tone::Error, serious.join(", "), detail)
     } else if medium > 0 {
@@ -867,13 +879,7 @@ impl SecurityView {
 impl Render for SecurityView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let palette = Palette::of(cx);
-        let (danger, warning, success) = {
-            let theme = cx.theme();
-            (theme.danger, theme.warning, theme.success)
-        };
         let [critical, high, medium] = tally(&self.pane().entries, &self.pane().shown);
-        let ready = matches!(self.pane().load, Load::Ready);
-        let clean = ready && critical + high + medium == 0 && !self.pane().shown.is_empty();
         let placeholder = self.placeholder(palette);
         let detail = self
             .pane()
@@ -924,16 +930,6 @@ impl Render for SecurityView {
                             .items_center()
                             .child(page_title(IconName::ShieldCheck, "Security", cx.theme()))
                             .child(tabs)
-                            .when(critical > 0, |row| {
-                                row.child(pill(format!("{critical} critical"), danger))
-                            })
-                            .when(high > 0, |row| {
-                                row.child(pill(format!("{high} high"), danger))
-                            })
-                            .when(medium > 0, |row| {
-                                row.child(pill(format!("{medium} medium"), warning))
-                            })
-                            .when(clean, |row| row.child(pill("Nothing serious", success)))
                             .child(div().flex_1())
                             .child(div().w(px(220.)).child(Input::new(&self.filter))),
                     )
@@ -981,6 +977,8 @@ mod tests {
         assert!(security_status([0, 0, 0], 0).is_none());
         let (tone, label, _) = security_status([2, 3, 9], 40).expect("status");
         assert_eq!((tone, label.as_str()), (Tone::Error, "2 critical, 3 high"));
+        let (_, _, detail) = security_status([2, 3, 9], 40).expect("status");
+        assert_eq!(detail, "9 medium · 40 shown");
         let (tone, label, _) = security_status([0, 0, 4], 40).expect("status");
         assert_eq!((tone, label.as_str()), (Tone::Warn, "4 medium"));
         let (tone, label, detail) = security_status([0, 0, 0], 12).expect("status");

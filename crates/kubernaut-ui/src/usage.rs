@@ -92,7 +92,11 @@ fn heat_id(heat: Heat) -> &'static str {
 fn usage_status(tiles: &[Tile]) -> (Tone, String, String) {
     let count = |wanted: Heat| tiles.iter().filter(|tile| tile.heat == wanted).count();
     let (over, busy) = (count(Heat::Over), count(Heat::Busy));
-    let (tone, label) = if over > 0 {
+    let (tone, label) = if !tiles.is_empty() && count(Heat::Unknown) == tiles.len() {
+        // Nothing declares a request, so "within requests" would claim a
+        // comparison that was never made.
+        (Tone::Pending, "Nothing to compare".to_string())
+    } else if over > 0 {
         (Tone::Error, format!("{over} over request"))
     } else if busy > 0 {
         (Tone::Warn, format!("{busy} near request"))
@@ -531,6 +535,12 @@ mod tests {
                 .collect();
             tiles(&rows, Measure::Cpu, &[])
         };
+        let none: Vec<NamespaceUsage> = vec![entry("a", 0.5, 0.0, true)];
+        let (tone, label, _) = usage_status(&tiles(&none, Measure::Cpu, &[]));
+        assert_eq!(
+            (tone, label.as_str()),
+            (Tone::Pending, "Nothing to compare")
+        );
         let (tone, label, _) = usage_status(&list(&[(0.5, 1.0), (0.1, 1.0)]));
         assert_eq!((tone, label.as_str()), (Tone::Ok, "Within requests"));
         let (tone, label, _) = usage_status(&list(&[(0.9, 1.0), (0.1, 1.0)]));

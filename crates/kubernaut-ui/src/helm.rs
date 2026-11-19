@@ -318,6 +318,18 @@ impl HelmView {
                     )
                     .child(div().w(px(220.)).child(Input::new(&self.filter))),
             )
+            .children(
+                (matches!(self.load, Load::Ready) && !self.lines.is_empty()).then(|| {
+                    let (tone, label, detail) = helm_status(&self.lines);
+                    div().px_4().pb_2().child(cards::status_card(
+                        tone,
+                        label,
+                        detail,
+                        None,
+                        cx.theme(),
+                    ))
+                }),
+            )
             .child(
                 h_flex()
                     .h(px(24.))
@@ -518,20 +530,6 @@ impl Render for HelmView {
                             .min_h_0()
                             .min_w_0()
                             .child(self.render_header(cx))
-                            .children(
-                                (matches!(self.load, Load::Ready) && !self.lines.is_empty()).then(
-                                    || {
-                                        let (tone, label, detail) = helm_status(&self.lines);
-                                        div().px_4().pb_2().child(cards::status_card(
-                                            tone,
-                                            label,
-                                            detail,
-                                            None,
-                                            cx.theme(),
-                                        ))
-                                    },
-                                ),
-                            )
                             .child(self.render_list(cx)),
                     )
                     .when_some(self.open.as_ref(), |row, open| row.child(open.view.clone()))
