@@ -4,13 +4,34 @@
 //! cluster does not serve, or one that publishes no schema, is left alone —
 //! preview says so with the apiserver's own words.
 
+use std::sync::Arc;
+
 use k8s_core::{
     locate::{Outline, split_documents},
+    schema::SchemaCache,
     validate::{render_path, validate},
 };
 use serde_json::Value;
 
-use crate::state::AppCore;
+use crate::{sources::ClusterSource, state::AppCore};
+
+/// What checking a manifest needs of the app beyond a cluster: the cache of the
+/// cluster's resource schemas.
+pub trait SchemaSource: ClusterSource {
+    fn schemas(&self) -> &SchemaCache;
+}
+
+impl SchemaSource for AppCore {
+    fn schemas(&self) -> &SchemaCache {
+        &self.schemas
+    }
+}
+
+impl<H: SchemaSource + ?Sized> SchemaSource for Arc<H> {
+    fn schemas(&self) -> &SchemaCache {
+        (**self).schemas()
+    }
+}
 
 /// One thing wrong with the text, placed on a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,8 +46,8 @@ pub struct Problem {
 
 /// Everything wrong with `yaml`: text that is not YAML, and fields the schema of
 /// each document's kind does not allow.
-pub async fn validate_yaml(core: &AppCore, cluster: &str, yaml: &str) -> Vec<Problem> {
-    let Ok(handle) = core.clusters.require(cluster) else {
+pub async fn validate_yaml(core: &impl SchemaSource, cluster: &str, yaml: &str) -> Vec<Problem> {
+    let Ok(handle) = core.handle(cluster) else {
         return Vec::new();
     };
     let mut problems = Vec::new();
@@ -64,7 +85,7 @@ pub async fn validate_yaml(core: &AppCore, cluster: &str, yaml: &str) -> Vec<Pro
         }) else {
             continue;
         };
-        let Ok(schema) = core.schemas.get(&handle, &key).await else {
+        let Ok(schema) = core.schemas().get(&handle, &key).await else {
             continue;
         };
 
@@ -101,7 +122,41 @@ fn first_line_of(message: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use super::first_line_of;
+    use std::sync::Arc;
+
+    use k8s_core::{cluster::ClusterHandle, schema::SchemaCache};
+
+    use super::{SchemaSource, first_line_of, validate_yaml};
+    use crate::sources::ClusterSource;
+
+    /// An app with no clusters, and an empty schema cache.
+    #[derive(Default)]
+    struct NoClusters {
+        schemas: SchemaCache,
+    }
+
+    impl ClusterSource for NoClusters {
+        fn handle(&self, cluster: &str) -> Result<Arc<ClusterHandle>, String> {
+            Err(format!("no cluster `{cluster}`"))
+        }
+    }
+
+    impl SchemaSource for NoClusters {
+        fn schemas(&self) -> &SchemaCache {
+            &self.schemas
+        }
+    }
+
+    #[tokio::test]
+    async fn a_manifest_for_a_cluster_the_app_does_not_have_is_left_unchecked() {
+        let problems = validate_yaml(
+            &NoClusters::default(),
+            "prod",
+            "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n",
+        )
+        .await;
+        assert!(problems.is_empty(), "nothing to check it against");
+    }
 
     #[test]
     fn the_position_is_dropped_from_a_yaml_error() {
