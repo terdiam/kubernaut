@@ -19,6 +19,7 @@ use k8s_app::{AppCore, helm_ops, present, present::Tone};
 use k8s_helm::{ReleaseDetail, ReleaseRevision, store};
 use tokio::runtime::Handle;
 
+use crate::cards;
 use crate::ui::{
     Emphasis, Palette, button, button_icon, chip_icon, message, segment, segmented_bar,
     toast_success, tone_color,
@@ -55,6 +56,30 @@ struct RevisionLine {
     chart_version: SharedString,
     age: SharedString,
     description: SharedString,
+}
+
+/// The live revision as one status: its state, which revision it is, and how
+/// long ago it was deployed. `None` while the history does not hold it.
+fn live_status(lines: &[RevisionLine], current: i64) -> Option<(Tone, String, String)> {
+    let live = lines.iter().find(|line| line.revision == current)?;
+    let tone = status_tone(&live.status).unwrap_or(Tone::Warn);
+    let mut label = live.status.to_string();
+    if let Some(first) = label.get(..1) {
+        label = first.to_uppercase() + &label[1..];
+    }
+    let age = if live.age.is_empty() {
+        String::new()
+    } else {
+        format!(" · {} ago", live.age)
+    };
+    Some((
+        tone,
+        label,
+        format!(
+            "revision {} · chart {}{age}",
+            live.revision, live.chart_version
+        ),
+    ))
 }
 
 /// Newest first.
@@ -685,6 +710,21 @@ impl Render for ReleaseView {
                             .on_click(cx.listener(|_, _, _, cx| cx.emit(ReleaseEvent::Close))),
                     ),
             )
+            .children(
+                match &self.load {
+                    Load::Ready(loaded) => live_status(&loaded.history, self.current),
+                    _ => None,
+                }
+                .map(|(tone, label, detail)| {
+                    div().flex_none().px_3().pt_2().child(cards::status_card(
+                        tone,
+                        label,
+                        detail,
+                        None,
+                        cx.theme(),
+                    ))
+                }),
+            )
             .child(
                 div().flex_none().px_3().py_2().child(
                     segmented_bar(cx.theme())
@@ -764,6 +804,32 @@ mod tests {
             updated: updated.map(Into::into),
             description: Some(format!("revision {number}")),
         }
+    }
+
+    #[test]
+    fn the_live_revision_reads_as_one_status() {
+        let line = |revision: i64, status: &str| super::RevisionLine {
+            revision,
+            label: "".into(),
+            status: status.to_string().into(),
+            tone: super::status_tone(status),
+            chart_version: "1.2.3".into(),
+            age: "5m".into(),
+            description: "".into(),
+        };
+        let history = [line(3, "deployed"), line(2, "superseded")];
+        let (tone, label, detail) = super::live_status(&history, 3).expect("status");
+        assert_eq!((tone, label.as_str()), (Tone::Ok, "Deployed"));
+        assert_eq!(detail, "revision 3 · chart 1.2.3 · 5m ago");
+        let failed = [line(4, "failed")];
+        assert_eq!(
+            super::live_status(&failed, 4).expect("status").0,
+            Tone::Error
+        );
+        assert!(
+            super::live_status(&history, 9).is_none(),
+            "no such revision"
+        );
     }
 
     #[test]
