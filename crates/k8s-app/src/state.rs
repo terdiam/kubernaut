@@ -90,9 +90,9 @@ impl AppCore {
         self.preferences.read().clone()
     }
 
-    /// The Details cards that start folded, without copying every preference.
-    pub fn details_folded(&self) -> Vec<String> {
-        self.preferences.read().details_folded()
+    /// The cards that start folded, without copying every preference.
+    pub fn folded_cards(&self) -> Vec<String> {
+        self.preferences.read().folded_cards()
     }
 
     /// Whether an object is pinned, without copying every preference to ask:

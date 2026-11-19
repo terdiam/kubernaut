@@ -2,7 +2,6 @@
 //! read from the object itself by `k8s_app::details`.
 
 use std::{
-    collections::HashSet,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -16,7 +15,7 @@ use gpui_kit::{
 };
 use k8s_app::{
     AppCore,
-    details::{Details, Group, Headline, condition_tone, describe, group_of, pack},
+    details::{Details, Group, condition_tone, describe, group_of},
     object_ops::{self, Connected},
     present::{self, Tone},
 };
@@ -25,6 +24,7 @@ use k8s_ops::related::{EventRow, RelatedRef};
 use tokio::runtime::Handle;
 
 use crate::{
+    cards::{self, Folds, badge},
     diagnose::kind_of,
     drawer::Target,
     row_actions,
@@ -56,10 +56,8 @@ pub struct DetailsView {
     /// pods behind them. Read on a slower beat than the object itself.
     connected: Option<Box<Connected>>,
     target: Target,
-    /// Cards the reader has folded, kept across objects in the preferences.
-    collapsed: HashSet<String>,
-    core: Arc<AppCore>,
-    runtime: Handle,
+    /// Cards the reader has folded, kept across screens in the preferences.
+    folds: Folds,
     /// When this was last drawn. A tab nobody is looking at is not drawn, and
     /// stops reading: with eight tabs open, only the one in view asks.
     drawn: Instant,
@@ -117,9 +115,7 @@ impl DetailsView {
             state: State::Loading,
             connected: None,
             target: target.clone(),
-            collapsed: shared.details_folded().into_iter().collect(),
-            core: shared,
-            runtime: handle,
+            folds: Folds::load(&shared, &handle),
             drawn: Instant::now(),
         }
     }
@@ -247,21 +243,8 @@ fn newest_events(rows: &[EventRow], limit: usize) -> Vec<(&EventRow, String)> {
         .collect()
 }
 
-/// A small count or status next to a card's title.
-fn badge(text: impl Into<SharedString>, color: Hsla) -> AnyElement {
-    div()
-        .px_1p5()
-        .rounded_full()
-        .bg(color.opacity(0.14))
-        .text_xs()
-        .text_color(color)
-        .child(text.into())
-        .into_any_element()
-}
-
 impl DetailsView {
-    /// A bordered card whose header folds it. The rows are separated by thin
-    /// lines, so a long list stays readable.
+    /// A card of this tab: folding it is remembered for every screen.
     fn card(
         &self,
         id: &'static str,
@@ -270,174 +253,26 @@ impl DetailsView {
         rows: Vec<AnyElement>,
         cx: &mut Context<Self>,
     ) -> Div {
-        let (border, muted, hover) = {
-            let theme = cx.theme();
-            (theme.border, theme.muted_foreground, theme.secondary)
-        };
-        let folded = self.collapsed.contains(id);
-        v_flex()
-            .rounded_lg()
-            .border_1()
-            .border_color(border)
-            .overflow_hidden()
-            .child(
-                h_flex()
-                    .id(SharedString::from(format!("fold-{id}")))
-                    .gap_2()
-                    .items_center()
-                    .px_3()
-                    .py_2()
-                    .cursor_pointer()
-                    .hover(|header| header.bg(hover))
-                    .tooltip(move |window, cx| {
-                        Tooltip::new(if folded { "Show" } else { "Hide" }).build(window, cx)
-                    })
-                    .child(
-                        Icon::new(if folded {
-                            IconName::ChevronRight
-                        } else {
-                            IconName::ChevronDown
-                        })
-                        .size_3p5()
-                        .text_color(muted),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .font_semibold()
-                            .text_color(muted)
-                            .child(title.to_uppercase()),
-                    )
-                    .children(badges)
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.fold(id);
-                        cx.notify();
-                    })),
-            )
-            .when(!folded, |card| {
-                card.children(rows.into_iter().map(|row| {
-                    div()
-                        .border_t_1()
-                        .border_color(border)
-                        .px_3()
-                        .py_1p5()
-                        .child(row)
-                }))
-            })
-    }
-
-    /// Fold a card, or open it if it is folded, and remember the choice for the
-    /// next object opened. Saving happens off the UI thread.
-    fn fold(&mut self, id: &'static str) {
-        if !self.collapsed.remove(id) {
-            self.collapsed.insert(id.to_string());
-        }
-        let mut folded: Vec<String> = self.collapsed.iter().cloned().collect();
-        folded.sort();
-        let core = Arc::clone(&self.core);
-        self.runtime.spawn(async move {
-            if let Err(reason) = core.update_preferences(|p| p.details_folded = Some(folded)) {
-                tracing::warn!(%reason, "could not save which cards are folded");
-            }
+        let folded = self.folds.is_folded(id);
+        let toggle = cx.listener(move |this, _, _, cx| {
+            this.folds.toggle(id);
+            cx.notify();
         });
+        cards::card(id, title, badges, folded, toggle, rows, cx.theme())
     }
 
-    /// `label` and `value`, the value wrapping rather than being cut. A click
-    /// copies it: an IP, a UID or an image is usually wanted elsewhere. `label`
-    /// is narrower when two fields share a line.
     fn field(
         &self,
         id: &str,
         label: &str,
         value: &str,
-        label_width: f32,
+        width: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (muted, hover) = {
-            let theme = cx.theme();
-            (theme.muted_foreground, theme.secondary)
-        };
-        let (copy, name) = (value.to_string(), label.to_string());
-        h_flex()
-            .id(SharedString::from(format!("{id}-{label}")))
-            .gap_3()
-            .items_start()
-            .text_sm()
-            .cursor_pointer()
-            .rounded_sm()
-            .hover(|row| row.bg(hover))
-            .tooltip(|window, cx| Tooltip::new("Click to copy").build(window, cx))
-            .child(
-                div()
-                    .w(px(label_width))
-                    .flex_none()
-                    .text_color(muted)
-                    .child(label.to_string()),
-            )
-            .child(div().flex_1().min_w_0().child(value.to_string()))
-            .on_click(cx.listener(move |_, _, window, cx| {
-                cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()));
-                toast_success(window, cx, format!("Copied {name}"));
-            }))
-            .into_any_element()
+        cards::field(id, label, value, width, cx.theme())
     }
 
-    /// How the object is doing, at the top: a state, the count it rests on, and
-    /// a bar for ready out of wanted.
-    fn headline(&self, headline: &Headline, cx: &mut Context<Self>) -> Div {
-        let (colour, muted) = {
-            let theme = cx.theme();
-            (tone_color(headline.tone, theme), theme.muted_foreground)
-        };
-        v_flex()
-            .gap_2()
-            .p_3()
-            .rounded_lg()
-            .border_1()
-            .border_color(colour.opacity(0.4))
-            .bg(colour.opacity(0.06))
-            .child(
-                h_flex()
-                    .gap_2()
-                    .items_center()
-                    .child(div().size(px(10.)).rounded_full().bg(colour))
-                    .child(
-                        div()
-                            .text_base()
-                            .font_semibold()
-                            .text_color(colour)
-                            .child(headline.label.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(muted)
-                            .child(headline.detail.clone()),
-                    ),
-            )
-            .when_some(
-                headline.progress.filter(|&(_, wanted)| wanted > 0),
-                |card, (ready, wanted)| {
-                    let fraction = (ready as f32 / wanted as f32).clamp(0.0, 1.0);
-                    card.child(
-                        div()
-                            .h(px(6.))
-                            .w_full()
-                            .rounded_full()
-                            .bg(colour.opacity(0.18))
-                            .child(
-                                div()
-                                    .h_full()
-                                    .rounded_full()
-                                    .bg(colour)
-                                    .w(relative(fraction)),
-                            ),
-                    )
-                },
-            )
-    }
-
-    /// The summary rows that belong to `group`.
+    /// The summary rows that belong to `group`, paired where short.
     fn group_rows(
         &self,
         details: &Details,
@@ -449,37 +284,7 @@ impl DetailsView {
             .iter()
             .filter(|(label, _)| group_of(label) == group)
             .collect();
-        self.lines(&rows, cx)
-    }
-
-    /// Fields as lines: two to a line when both values are short, so a card of
-    /// small facts does not run to a screen.
-    fn lines(&self, rows: &[&(String, String)], cx: &mut Context<Self>) -> Vec<AnyElement> {
-        /// Longest value that still shares a line.
-        const SHORT: usize = 22;
-        pack(rows, |(_, value)| value.chars().count() <= SHORT)
-            .into_iter()
-            .map(|line| match line {
-                [(a_label, a_value), (b_label, b_value)] => h_flex()
-                    .gap_4()
-                    .items_start()
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.field("pair", a_label, a_value, 130., cx)),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .child(self.field("pair", b_label, b_value, 104., cx)),
-                    )
-                    .into_any_element(),
-                [(label, value)] => self.field("summary", label, value, 130., cx),
-                _ => div().into_any_element(),
-            })
-            .collect()
+        cards::paired("summary", &rows, cx.theme())
     }
 
     /// Pods, services, ingress addresses and recent events. A row opens the
@@ -712,7 +517,13 @@ impl Render for DetailsView {
 
         let mut body = v_flex().w_full().p_3().gap_3();
         if let Some(headline) = &details.headline {
-            body = body.child(self.headline(headline, cx));
+            body = body.child(cards::status_card(
+                headline.tone,
+                headline.label.clone(),
+                headline.detail.clone(),
+                headline.progress,
+                cx.theme(),
+            ));
         }
 
         let mut overview = self.group_rows(details, Group::Overview, cx);

@@ -9,6 +9,7 @@ mod activity;
 mod add_cluster;
 mod alerts;
 mod app;
+mod cards;
 mod categories;
 mod charts;
 mod cluster_info;
