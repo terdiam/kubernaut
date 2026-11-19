@@ -32,8 +32,8 @@ use crate::{
     namespaces,
     rows::contains_ignore_case,
     ui::{
-        Emphasis, Palette, button, button_icon, chip, message, page_title, pill, segment,
-        segmented_bar, tone_color,
+        Emphasis, Palette, button, button_icon, chip, grid_cell, grid_header, message, page_title,
+        pill, segment, segmented_bar, tone_color,
     },
 };
 
@@ -667,8 +667,12 @@ impl SecurityView {
             self.pane().shown.len(),
             cx.processor(|this, range: Range<usize>, _window, cx| {
                 let theme = cx.theme();
-                let (selected, hover, muted) =
-                    (theme.list_active, theme.secondary, theme.muted_foreground);
+                let (selected, hover, muted, line) = (
+                    theme.list_active,
+                    theme.secondary,
+                    theme.muted_foreground,
+                    theme.border,
+                );
                 let pane = this.pane();
                 range
                     .filter_map(|position| {
@@ -682,50 +686,47 @@ impl SecurityView {
                                 .id(("security-row", position))
                                 .w_full()
                                 .h(ROW_HEIGHT)
-                                .px_4()
-                                .gap_3()
-                                .items_center()
                                 .text_sm()
                                 .cursor_pointer()
+                                .border_b_1()
+                                .border_color(line)
                                 .when(is_selected, |row| row.bg(selected))
                                 .hover(|row| row.bg(hover))
                                 .child(
-                                    div()
-                                        .size(px(8.))
-                                        .flex_none()
-                                        .rounded_full()
-                                        .bg(color.unwrap_or(muted)),
+                                    grid_cell(cx.theme(), Some(96.), false)
+                                        .child(
+                                            div()
+                                                .size(px(8.))
+                                                .flex_none()
+                                                .rounded_full()
+                                                .bg(color.unwrap_or(muted)),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_xs()
+                                                .when_some(color, |c, color| c.text_color(color))
+                                                .child(severity_label(entry.severity)),
+                                        ),
                                 )
                                 .child(
-                                    div()
-                                        .w(px(64.))
-                                        .flex_none()
-                                        .text_xs()
-                                        .when_some(color, |c, color| c.text_color(color))
-                                        .child(severity_label(entry.severity)),
+                                    grid_cell(cx.theme(), None, false)
+                                        .child(div().truncate().child(entry.title.clone())),
                                 )
                                 .child(
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .truncate()
-                                        .child(entry.title.clone()),
+                                    grid_cell(cx.theme(), Some(200.), false).child(
+                                        div()
+                                            .truncate()
+                                            .text_color(muted)
+                                            .child(entry.subject.clone()),
+                                    ),
                                 )
                                 .child(
-                                    div()
-                                        .w(px(200.))
-                                        .flex_none()
-                                        .truncate()
-                                        .text_color(muted)
-                                        .child(entry.subject.clone()),
-                                )
-                                .child(
-                                    div()
-                                        .w(px(110.))
-                                        .flex_none()
-                                        .truncate()
-                                        .text_color(muted)
-                                        .child(entry.namespace.clone().unwrap_or_default()),
+                                    grid_cell(cx.theme(), Some(110.), true).child(
+                                        div()
+                                            .truncate()
+                                            .text_color(muted)
+                                            .child(entry.namespace.clone().unwrap_or_default()),
+                                    ),
                                 )
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.pane_mut().selected = Some(index);
@@ -909,6 +910,7 @@ impl Render for SecurityView {
                 .on_click(to_images),
             );
         let toolbar = self.render_toolbar(cx).into_any_element();
+        let has_rows = placeholder.is_none();
         let list = self.render_list(placeholder, cx);
 
         div()
@@ -955,6 +957,17 @@ impl Render for SecurityView {
                             .text_color(palette.muted)
                             .child(text.clone())
                     }))
+                    .when(has_rows, |column| {
+                        column.child(grid_header(
+                            cx.theme(),
+                            &[
+                                ("Severity", Some(96.)),
+                                ("Finding", None),
+                                ("Object", Some(200.)),
+                                ("Namespace", Some(110.)),
+                            ],
+                        ))
+                    })
                     .child(list),
             )
             .children(detail)

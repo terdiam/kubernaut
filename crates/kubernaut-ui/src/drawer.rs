@@ -38,7 +38,10 @@ use crate::{
     quota::QuotaView,
     row_actions::{self, RowAction},
     terminal::{Request, TerminalView},
-    ui::{Emphasis, button_icon, chip, segment_icon, segmented_bar, toast_success},
+    ui::{
+        Emphasis, button_icon, chip, grid_cell, grid_header, segment_icon, segmented_bar,
+        toast_success,
+    },
     yaml::YamlView,
 };
 
@@ -562,45 +565,45 @@ impl DrawerView {
                             .id(("event", index))
                             .w_full()
                             .h(ROW_HEIGHT)
-                            .px_3()
-                            .gap_3()
-                            .items_center()
                             .text_sm()
+                            .border_b_1()
+                            .border_color(theme.border)
                             .bg(tint)
                             .cursor_pointer()
                             .hover(|row| row.bg(theme.secondary))
                             .tooltip(move |window, cx| Tooltip::new(full.clone()).build(window, cx))
-                            .child(div().size(px(8.)).flex_none().rounded_full().bg(dot))
                             .child(
-                                div()
-                                    .w(px(120.))
-                                    .flex_none()
-                                    .truncate()
-                                    .font_semibold()
-                                    .when(line.warning, |name| name.text_color(theme.warning))
-                                    .child(line.reason.clone()),
+                                grid_cell(cx.theme(), Some(150.), false)
+                                    .child(div().size(px(8.)).flex_none().rounded_full().bg(dot))
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .font_semibold()
+                                            .when(line.warning, |name| {
+                                                name.text_color(theme.warning)
+                                            })
+                                            .child(line.reason.clone()),
+                                    ),
                             )
                             .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .child(line.message.clone()),
+                                grid_cell(cx.theme(), None, false)
+                                    .child(div().truncate().child(line.message.clone())),
                             )
                             .child(
-                                div()
-                                    .flex_none()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .child(line.count.clone()),
+                                grid_cell(cx.theme(), Some(56.), false).child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(line.count.clone()),
+                                ),
                             )
                             .child(
-                                div()
-                                    .w(px(56.))
-                                    .flex_none()
-                                    .text_xs()
-                                    .text_color(theme.muted_foreground)
-                                    .child(line.age.clone()),
+                                grid_cell(cx.theme(), Some(64.), true).child(
+                                    div()
+                                        .text_xs()
+                                        .text_color(theme.muted_foreground)
+                                        .child(line.age.clone()),
+                                ),
                             )
                             .on_click(move |_, window, cx| {
                                 cx.write_to_clipboard(ClipboardItem::new_string(format!(
@@ -630,6 +633,15 @@ impl DrawerView {
                         .child(filter("warnings", format!("Warnings {warnings}"), only, cx)),
                 ),
             )
+            .child(grid_header(
+                cx.theme(),
+                &[
+                    ("Reason", Some(150.)),
+                    ("Message", None),
+                    ("Count", Some(56.)),
+                    ("Age", Some(64.)),
+                ],
+            ))
             .child(list)
             .into_any_element()
     }

@@ -355,56 +355,13 @@ fn is_numeric(kind: &str) -> bool {
     matches!(kind, "integer" | "number")
 }
 
-impl TableDelegate for ResourceDelegate {
-    fn context_menu(
-        &mut self,
-        row_ix: usize,
-        menu: PopupMenu,
-        _: &mut Window,
-        _: &mut Context<TableState<Self>>,
-    ) -> PopupMenu {
-        let Some((name, namespace)) = self.target_at(row_ix) else {
-            return menu;
-        };
-        let target = Target {
-            cluster: self.context.cluster.clone(),
-            resource: self.context.resource.clone(),
-            kind: self.context.kind.clone(),
-            namespace,
-            name,
-        };
-
-        let owner = self.context.owner.clone();
-        let pinned = self.context.core.is_pinned(&target.pin());
-        let suspended = self
-            .cell_of(row_ix, "Suspend")
-            .and_then(|cell| match &*cell {
-                "true" => Some(true),
-                "false" => Some(false),
-                _ => None,
-            });
-        row_actions::build_menu(
-            menu,
-            &self.context.resource,
-            true,
-            pinned,
-            suspended,
-            move |action, window, cx| {
-                owner
-                    .update(cx, |app, cx| {
-                        app.row_action(action, target.clone(), window, cx);
-                    })
-                    .ok();
-            },
-        )
-    }
-
-    fn render_th(
+impl ResourceDelegate {
+    fn th(
         &mut self,
         col_ix: usize,
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
         if !matches!(self.fields.get(col_ix), Some(Field::Check)) {
             return div()
                 .w_full()
@@ -429,91 +386,13 @@ impl TableDelegate for ResourceDelegate {
         .into_any_element()
     }
 
-    fn columns_count(&self, _: &App) -> usize {
-        self.fields.len()
-    }
-
-    fn rows_count(&self, _: &App) -> usize {
-        self.store.len()
-    }
-
-    fn column(&self, col_ix: usize, _: &App) -> Column {
-        match self.fields.get(col_ix) {
-            Some(Field::Check) => Column::new("check", "").width(px(40.)),
-            Some(Field::Name) => Column::new("name", "Name").width(px(280.)).sortable(),
-            Some(Field::NodeUsage(metric)) => match metric {
-                NodeMetric::Cpu => Column::new("node-cpu", "CPU").width(px(170.)),
-                NodeMetric::Memory => Column::new("node-memory", "Memory").width(px(190.)),
-                NodeMetric::Pods => Column::new("node-pods", "Pods").width(px(110.)),
-                NodeMetric::Disk => Column::new("node-disk", "Disk").width(px(180.)),
-            },
-            Some(Field::Namespace) => Column::new("namespace", "Namespace")
-                .width(px(160.))
-                .sortable(),
-            Some(Field::Cell(at)) => match self.columns.get(*at) {
-                Some(spec) => {
-                    let column = Column::new(spec.name.clone(), spec.name.clone())
-                        .width(px(140.))
-                        .sortable();
-                    if is_numeric(&spec.kind) {
-                        column.text_right()
-                    } else {
-                        column
-                    }
-                }
-                None => Column::new("unknown", ""),
-            },
-            Some(Field::Age) => Column::new("age", "Age").width(px(80.)).sortable(),
-            None => Column::new("unknown", ""),
-        }
-    }
-
-    fn perform_sort(
-        &mut self,
-        col_ix: usize,
-        sort: ColumnSort,
-        _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) {
-        let key = self.fields.get(col_ix).copied().and_then(Field::sort_key);
-        self.sort = match (key, sort) {
-            (Some(key), ColumnSort::Ascending) => Some(Sort {
-                key,
-                descending: false,
-            }),
-            (Some(key), ColumnSort::Descending) => Some(Sort {
-                key,
-                descending: true,
-            }),
-            _ => None,
-        };
-        self.rebuild();
-        cx.notify();
-    }
-
-    fn render_tr(
-        &mut self,
-        row_ix: usize,
-        _: &mut Window,
-        cx: &mut Context<TableState<Self>>,
-    ) -> Stateful<Div> {
-        let selected = self
-            .store
-            .row(row_ix)
-            .is_some_and(|row| self.is_selected(row));
-        let active = cx.theme().list_active;
-        div()
-            .id(("row", row_ix))
-            .when(selected, move |row| row.bg(active))
-    }
-
-    fn render_td(
+    fn td(
         &mut self,
         row_ix: usize,
         col_ix: usize,
         _: &mut Window,
         cx: &mut Context<TableState<Self>>,
-    ) -> impl IntoElement {
+    ) -> AnyElement {
         let theme = cx.theme();
         let (Some(row), Some(field)) = (self.store.row(row_ix), self.fields.get(col_ix)) else {
             return div().into_any_element();
@@ -598,6 +477,170 @@ impl TableDelegate for ResourceDelegate {
                 .child(row.age.clone())
                 .into_any_element(),
         }
+    }
+}
+
+/// A cell with a thin line down its right edge, so the columns read as a grid.
+/// The line is positioned against the cell itself, not the content.
+fn gridded(content: AnyElement, line: Hsla, last: bool) -> Div {
+    div().child(content).when(!last, |cell| {
+        cell.child(
+            div()
+                .absolute()
+                .top_0()
+                .right_0()
+                .h_full()
+                .w(px(1.))
+                .bg(line),
+        )
+    })
+}
+
+impl TableDelegate for ResourceDelegate {
+    fn context_menu(
+        &mut self,
+        row_ix: usize,
+        menu: PopupMenu,
+        _: &mut Window,
+        _: &mut Context<TableState<Self>>,
+    ) -> PopupMenu {
+        let Some((name, namespace)) = self.target_at(row_ix) else {
+            return menu;
+        };
+        let target = Target {
+            cluster: self.context.cluster.clone(),
+            resource: self.context.resource.clone(),
+            kind: self.context.kind.clone(),
+            namespace,
+            name,
+        };
+
+        let owner = self.context.owner.clone();
+        let pinned = self.context.core.is_pinned(&target.pin());
+        let suspended = self
+            .cell_of(row_ix, "Suspend")
+            .and_then(|cell| match &*cell {
+                "true" => Some(true),
+                "false" => Some(false),
+                _ => None,
+            });
+        row_actions::build_menu(
+            menu,
+            &self.context.resource,
+            true,
+            pinned,
+            suspended,
+            move |action, window, cx| {
+                owner
+                    .update(cx, |app, cx| {
+                        app.row_action(action, target.clone(), window, cx);
+                    })
+                    .ok();
+            },
+        )
+    }
+
+    fn render_th(
+        &mut self,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let last = col_ix + 1 == self.fields.len();
+        let line = cx.theme().border;
+        gridded(self.th(col_ix, window, cx), line, last)
+    }
+
+    fn columns_count(&self, _: &App) -> usize {
+        self.fields.len()
+    }
+
+    fn rows_count(&self, _: &App) -> usize {
+        self.store.len()
+    }
+
+    fn column(&self, col_ix: usize, _: &App) -> Column {
+        match self.fields.get(col_ix) {
+            Some(Field::Check) => Column::new("check", "").width(px(40.)),
+            Some(Field::Name) => Column::new("name", "Name").width(px(280.)).sortable(),
+            Some(Field::NodeUsage(metric)) => match metric {
+                NodeMetric::Cpu => Column::new("node-cpu", "CPU").width(px(170.)),
+                NodeMetric::Memory => Column::new("node-memory", "Memory").width(px(190.)),
+                NodeMetric::Pods => Column::new("node-pods", "Pods").width(px(110.)),
+                NodeMetric::Disk => Column::new("node-disk", "Disk").width(px(180.)),
+            },
+            Some(Field::Namespace) => Column::new("namespace", "Namespace")
+                .width(px(160.))
+                .sortable(),
+            Some(Field::Cell(at)) => match self.columns.get(*at) {
+                Some(spec) => {
+                    let column = Column::new(spec.name.clone(), spec.name.clone())
+                        .width(px(140.))
+                        .sortable();
+                    if is_numeric(&spec.kind) {
+                        column.text_right()
+                    } else {
+                        column
+                    }
+                }
+                None => Column::new("unknown", ""),
+            },
+            Some(Field::Age) => Column::new("age", "Age").width(px(80.)).sortable(),
+            None => Column::new("unknown", ""),
+        }
+    }
+
+    fn perform_sort(
+        &mut self,
+        col_ix: usize,
+        sort: ColumnSort,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) {
+        let key = self.fields.get(col_ix).copied().and_then(Field::sort_key);
+        self.sort = match (key, sort) {
+            (Some(key), ColumnSort::Ascending) => Some(Sort {
+                key,
+                descending: false,
+            }),
+            (Some(key), ColumnSort::Descending) => Some(Sort {
+                key,
+                descending: true,
+            }),
+            _ => None,
+        };
+        self.rebuild();
+        cx.notify();
+    }
+
+    fn render_tr(
+        &mut self,
+        row_ix: usize,
+        _: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> Stateful<Div> {
+        let selected = self
+            .store
+            .row(row_ix)
+            .is_some_and(|row| self.is_selected(row));
+        let (active, line) = (cx.theme().list_active, cx.theme().border);
+        div()
+            .id(("row", row_ix))
+            // The table draws the line under a row; this makes it one that shows.
+            .border_color(line)
+            .when(selected, move |row| row.bg(active))
+    }
+
+    fn render_td(
+        &mut self,
+        row_ix: usize,
+        col_ix: usize,
+        window: &mut Window,
+        cx: &mut Context<TableState<Self>>,
+    ) -> impl IntoElement {
+        let last = col_ix + 1 == self.fields.len();
+        let line = cx.theme().border;
+        gridded(self.td(row_ix, col_ix, window, cx), line, last)
     }
 
     fn cell_label(&self, row_ix: usize, col_ix: usize, _: &App) -> Option<SharedString> {

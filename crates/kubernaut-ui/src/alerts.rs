@@ -29,8 +29,8 @@ use crate::{
     namespaces,
     rows::contains_ignore_case,
     ui::{
-        Emphasis, Palette, button_icon, message, page_title, pill, segment, segmented_bar,
-        toast_error, toast_success, tone_color,
+        Emphasis, Palette, button_icon, grid_cell, grid_header, message, page_title, pill, segment,
+        segmented_bar, toast_error, toast_success, tone_color,
     },
 };
 
@@ -669,8 +669,12 @@ impl AlertsView {
                 self.shown.len(),
                 cx.processor(|this, range: Range<usize>, _window, cx| {
                     let theme = cx.theme();
-                    let (selected, hover, muted) =
-                        (theme.list_active, theme.secondary, theme.muted_foreground);
+                    let (selected, hover, muted, line_color) = (
+                        theme.list_active,
+                        theme.secondary,
+                        theme.muted_foreground,
+                        theme.border,
+                    );
                     range
                         .filter_map(|position| {
                             let index = *this.shown.get(position)?;
@@ -682,60 +686,54 @@ impl AlertsView {
                                     .id(("alert-row", position))
                                     .w_full()
                                     .h(ROW_HEIGHT)
-                                    .px_4()
-                                    .gap_3()
-                                    .items_center()
                                     .text_sm()
                                     .cursor_pointer()
+                                    .border_b_1()
+                                    .border_color(line_color)
                                     .when(line.silenced, |row| row.opacity(0.55))
                                     .when(is_selected, |row| row.bg(selected))
                                     .hover(|row| row.bg(hover))
                                     .child(
-                                        div()
-                                            .size(px(8.))
-                                            .flex_none()
-                                            .rounded_full()
-                                            .bg(color.unwrap_or(muted)),
+                                        grid_cell(cx.theme(), Some(96.), false)
+                                            .child(
+                                                div()
+                                                    .size(px(8.))
+                                                    .flex_none()
+                                                    .rounded_full()
+                                                    .bg(color.unwrap_or(muted)),
+                                            )
+                                            .child(
+                                                div()
+                                                    .text_xs()
+                                                    .when_some(color, |c, color| {
+                                                        c.text_color(color)
+                                                    })
+                                                    .child(line.severity.clone()),
+                                            ),
                                     )
                                     .child(
-                                        div()
-                                            .w(px(70.))
-                                            .flex_none()
-                                            .text_xs()
-                                            .when_some(color, |c, color| c.text_color(color))
-                                            .child(line.severity.clone()),
+                                        grid_cell(cx.theme(), Some(220.), false)
+                                            .child(div().truncate().child(line.name.clone())),
                                     )
                                     .child(
-                                        div()
-                                            .w(px(220.))
-                                            .flex_none()
-                                            .truncate()
-                                            .child(line.name.clone()),
+                                        grid_cell(cx.theme(), None, false).child(
+                                            div()
+                                                .truncate()
+                                                .text_color(muted)
+                                                .child(line.summary.clone()),
+                                        ),
                                     )
                                     .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_color(muted)
-                                            .child(line.summary.clone()),
+                                        grid_cell(cx.theme(), Some(110.), false).child(
+                                            div()
+                                                .truncate()
+                                                .text_color(muted)
+                                                .child(line.namespace.clone().unwrap_or_default()),
+                                        ),
                                     )
-                                    .child(
-                                        div()
-                                            .w(px(110.))
-                                            .flex_none()
-                                            .truncate()
-                                            .text_color(muted)
-                                            .child(line.namespace.clone().unwrap_or_default()),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(px(60.))
-                                            .flex_none()
-                                            .text_xs()
-                                            .text_color(muted)
-                                            .child(line.age.clone()),
-                                    )
+                                    .child(grid_cell(cx.theme(), Some(70.), true).child(
+                                        div().text_xs().text_color(muted).child(line.age.clone()),
+                                    ))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.selected =
                                             this.lines.get(index).map(|l| l.fingerprint.clone());
@@ -810,6 +808,21 @@ impl Render for AlertsView {
                             cx.theme(),
                         ))
                     }))
+                    .when(
+                        matches!(self.load, Load::Ready) && !self.shown.is_empty(),
+                        |column| {
+                            column.child(grid_header(
+                                cx.theme(),
+                                &[
+                                    ("Severity", Some(96.)),
+                                    ("Alert", Some(220.)),
+                                    ("Summary", None),
+                                    ("Namespace", Some(110.)),
+                                    ("Age", Some(70.)),
+                                ],
+                            ))
+                        },
+                    )
                     .child(list),
             )
             .children(detail)

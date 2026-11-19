@@ -3,7 +3,7 @@
 use gpui_kit::{
     assets::IconName,
     base::StyledExt,
-    component::{ActiveTheme, Icon, Theme, WindowExt, notification::Notification},
+    component::{ActiveTheme, Icon, Theme, WindowExt, h_flex, notification::Notification},
     prelude::FluentBuilder,
     *,
 };
@@ -266,4 +266,45 @@ pub fn toast_error(
     reason: impl Into<SharedString>,
 ) {
     window.push_notification(Notification::error(reason).title(title).autohide(false), cx);
+}
+
+/// One cell of a list drawn as a grid: padded, clipped, and with a thin line on
+/// its right edge unless it is the last. `width` is fixed in pixels; `None`
+/// takes what the others leave. Header and rows build their cells from this, so
+/// the columns line up.
+pub fn grid_cell(theme: &Theme, width: Option<f32>, last: bool) -> Div {
+    let cell = div()
+        .h_full()
+        .flex()
+        .items_center()
+        .gap_2()
+        .px_3()
+        .overflow_hidden()
+        .min_w_0();
+    let cell = match width {
+        Some(width) => cell.w(px(width)).flex_none(),
+        None => cell.flex_1(),
+    };
+    if last {
+        cell
+    } else {
+        cell.border_r_1().border_color(theme.border)
+    }
+}
+
+/// The column names above a grid list, in the same cells as its rows.
+pub fn grid_header(theme: &Theme, columns: &[(&'static str, Option<f32>)]) -> Div {
+    h_flex()
+        .w_full()
+        .h(px(28.))
+        .flex_none()
+        .border_y_1()
+        .border_color(theme.border)
+        .bg(theme.secondary.opacity(0.5))
+        .text_xs()
+        .font_semibold()
+        .text_color(theme.muted_foreground)
+        .children(columns.iter().enumerate().map(|(index, (label, width))| {
+            grid_cell(theme, *width, index + 1 == columns.len()).child(*label)
+        }))
 }

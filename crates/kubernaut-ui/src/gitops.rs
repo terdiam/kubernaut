@@ -29,8 +29,8 @@ use crate::{
     namespaces,
     rows::contains_ignore_case,
     ui::{
-        Emphasis, Palette, button_icon, message, page_title, pill, toast_error, toast_success,
-        tone_color,
+        Emphasis, Palette, button_icon, grid_cell, grid_header, message, page_title, pill,
+        toast_error, toast_success, tone_color,
     },
 };
 
@@ -651,11 +651,12 @@ impl GitOpsView {
                 self.shown.len(),
                 cx.processor(|this, range: Range<usize>, _window, cx| {
                     let theme = cx.theme();
-                    let (selected, hover, muted, warning) = (
+                    let (selected, hover, muted, warning, line_color) = (
                         theme.list_active,
                         theme.secondary,
                         theme.muted_foreground,
                         theme.warning,
+                        theme.border,
                     );
                     range
                         .filter_map(|position| {
@@ -668,60 +669,47 @@ impl GitOpsView {
                                     .id(("gitops-row", position))
                                     .w_full()
                                     .h(ROW_HEIGHT)
-                                    .px_4()
-                                    .gap_3()
-                                    .items_center()
                                     .text_sm()
                                     .cursor_pointer()
+                                    .border_b_1()
+                                    .border_color(line_color)
                                     .when(is_selected, |row| row.bg(selected))
                                     .hover(|row| row.bg(hover))
                                     .child(
-                                        div()
-                                            .size(px(8.))
-                                            .flex_none()
-                                            .rounded_full()
-                                            .bg(color.unwrap_or(muted)),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .child(line.entry.name.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(px(70.))
-                                            .flex_none()
-                                            .text_color(muted)
-                                            .child(line.controller.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(px(120.))
-                                            .flex_none()
-                                            .truncate()
-                                            .text_color(muted)
+                                        grid_cell(cx.theme(), None, false)
                                             .child(
-                                                line.entry.namespace.clone().unwrap_or_default(),
-                                            ),
+                                                div()
+                                                    .size(px(8.))
+                                                    .flex_none()
+                                                    .rounded_full()
+                                                    .bg(color.unwrap_or(muted)),
+                                            )
+                                            .child(div().truncate().child(line.entry.name.clone())),
+                                    )
+                                    .child(grid_cell(cx.theme(), Some(90.), false).child(
+                                        div().text_color(muted).child(line.controller.clone()),
+                                    ))
+                                    .child(grid_cell(cx.theme(), Some(130.), false).child(
+                                        div().truncate().text_color(muted).child(
+                                            line.entry.namespace.clone().unwrap_or_default(),
+                                        ),
+                                    ))
+                                    .child(
+                                        grid_cell(cx.theme(), Some(150.), false).child(
+                                            div()
+                                                .truncate()
+                                                .text_xs()
+                                                .when(line.drifted, |c| c.text_color(warning))
+                                                .child(line.revision.clone()),
+                                        ),
                                     )
                                     .child(
-                                        div()
-                                            .w(px(140.))
-                                            .flex_none()
-                                            .truncate()
-                                            .text_xs()
-                                            .when(line.drifted, |c| c.text_color(warning))
-                                            .child(line.revision.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .w(px(100.))
-                                            .flex_none()
-                                            .truncate()
-                                            .when_some(color, |c, color| c.text_color(color))
-                                            .child(line.entry.status.clone()),
+                                        grid_cell(cx.theme(), Some(110.), true).child(
+                                            div()
+                                                .truncate()
+                                                .when_some(color, |c, color| c.text_color(color))
+                                                .child(line.entry.status.clone()),
+                                        ),
                                     )
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.selected = this.lines.get(index).map(Self::key_of);
@@ -801,6 +789,21 @@ impl Render for GitOpsView {
                             .text_color(palette.muted)
                             .child(text.clone())
                     }))
+                    .when(
+                        matches!(self.load, Load::Ready) && !self.shown.is_empty(),
+                        |column| {
+                            column.child(grid_header(
+                                cx.theme(),
+                                &[
+                                    ("Name", None),
+                                    ("Controller", Some(90.)),
+                                    ("Namespace", Some(130.)),
+                                    ("Revision", Some(150.)),
+                                    ("Status", Some(110.)),
+                                ],
+                            ))
+                        },
+                    )
                     .child(self.render_list(cx)),
             )
             .children(detail)

@@ -26,16 +26,16 @@ use crate::{
     namespaces,
     release::{ReleaseEvent, ReleaseView, status_tone},
     rows::contains_ignore_case,
-    ui::{Palette, chip_icon, message, segment, segmented_bar, tone_color},
+    ui::{Palette, chip_icon, grid_cell, grid_header, message, segment, segmented_bar, tone_color},
 };
 
 const ROW_HEIGHT: Pixels = px(28.);
-const NAMESPACE_WIDTH: Pixels = px(120.);
-const CHART_WIDTH: Pixels = px(150.);
-const REVISION_WIDTH: Pixels = px(36.);
-const STATUS_WIDTH: Pixels = px(104.);
+const NAMESPACE_WIDTH: f32 = 120.;
+const CHART_WIDTH: f32 = 150.;
+const REVISION_WIDTH: f32 = 40.;
+const STATUS_WIDTH: f32 = 104.;
 /// Fits the longest age `write_age` makes, such as `12h34m`, on one line.
-const AGE_WIDTH: Pixels = px(72.);
+const AGE_WIDTH: f32 = 80.;
 
 /// One release as the list draws it. Labels are built once, at load.
 struct ReleaseLine {
@@ -287,7 +287,16 @@ impl HelmView {
         // With a release open the pane takes half the width, so the columns the
         // pane repeats (chart) or that matter least (age) give way to the name.
         let compact = self.open.is_some();
-        let label = |text: &'static str| div().text_xs().text_color(palette.muted).child(text);
+        let mut columns: Vec<(&'static str, Option<f32>)> =
+            vec![("Name", None), ("Namespace", Some(NAMESPACE_WIDTH))];
+        if !compact {
+            columns.push(("Chart", Some(CHART_WIDTH)));
+        }
+        columns.push(("Rev", Some(REVISION_WIDTH)));
+        columns.push(("Status", Some(STATUS_WIDTH)));
+        if !compact {
+            columns.push(("Age", Some(AGE_WIDTH)));
+        }
 
         v_flex()
             .flex_none()
@@ -330,25 +339,7 @@ impl HelmView {
                     ))
                 }),
             )
-            .child(
-                h_flex()
-                    .h(px(24.))
-                    .px_4()
-                    .gap_2()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(palette.border)
-                    .child(label("Name").flex_1().min_w_0())
-                    .child(label("Namespace").w(NAMESPACE_WIDTH).flex_none())
-                    .when(!compact, |row| {
-                        row.child(label("Chart").w(CHART_WIDTH).flex_none())
-                    })
-                    .child(label("Rev").w(REVISION_WIDTH).flex_none())
-                    .child(label("Status").w(STATUS_WIDTH).flex_none())
-                    .when(!compact, |row| {
-                        row.child(label("Age").w(AGE_WIDTH).flex_none())
-                    }),
-            )
+            .child(grid_header(cx.theme(), &columns))
     }
 
     fn render_list(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -372,8 +363,12 @@ impl HelmView {
                 self.shown.len(),
                 cx.processor(|this, range: Range<usize>, _window, cx| {
                     let theme = cx.theme();
-                    let (selected, hover, muted) =
-                        (theme.list_active, theme.secondary, theme.muted_foreground);
+                    let (selected, hover, muted, line_color) = (
+                        theme.list_active,
+                        theme.secondary,
+                        theme.muted_foreground,
+                        theme.border,
+                    );
                     let compact = this.open.is_some();
                     range
                         .filter_map(|position| {
@@ -385,60 +380,53 @@ impl HelmView {
                                     .id(("release", position))
                                     .w_full()
                                     .h(ROW_HEIGHT)
-                                    .px_4()
-                                    .gap_2()
-                                    .items_center()
                                     .text_sm()
                                     .cursor_pointer()
+                                    .border_b_1()
+                                    .border_color(line_color)
                                     .when(this.is_open(line), |row| row.bg(selected))
                                     .hover(|row| row.bg(hover))
                                     .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .child(line.name.clone()),
+                                        grid_cell(cx.theme(), None, false)
+                                            .child(div().truncate().child(line.name.clone())),
                                     )
                                     .child(
-                                        div()
-                                            .w(NAMESPACE_WIDTH)
-                                            .flex_none()
-                                            .truncate()
-                                            .child(line.namespace.clone()),
+                                        grid_cell(cx.theme(), Some(NAMESPACE_WIDTH), false)
+                                            .child(div().truncate().child(line.namespace.clone())),
                                     )
                                     .when(!compact, |row| {
                                         row.child(
-                                            div()
-                                                .w(CHART_WIDTH)
-                                                .flex_none()
-                                                .truncate()
-                                                .text_color(muted)
-                                                .child(line.chart.clone()),
+                                            grid_cell(cx.theme(), Some(CHART_WIDTH), false).child(
+                                                div()
+                                                    .truncate()
+                                                    .text_color(muted)
+                                                    .child(line.chart.clone()),
+                                            ),
                                         )
                                     })
                                     .child(
-                                        div()
-                                            .w(REVISION_WIDTH)
-                                            .flex_none()
+                                        grid_cell(cx.theme(), Some(REVISION_WIDTH), false)
                                             .child(line.revision.clone()),
                                     )
                                     .child(
-                                        div()
-                                            .w(STATUS_WIDTH)
-                                            .flex_none()
-                                            .truncate()
-                                            .when_some(color, |cell, color| cell.text_color(color))
-                                            .child(line.status.clone()),
+                                        grid_cell(cx.theme(), Some(STATUS_WIDTH), compact).child(
+                                            div()
+                                                .truncate()
+                                                .when_some(color, |cell, color| {
+                                                    cell.text_color(color)
+                                                })
+                                                .child(line.status.clone()),
+                                        ),
                                     )
                                     .when(!compact, |row| {
                                         row.child(
-                                            div()
-                                                .w(AGE_WIDTH)
-                                                .flex_none()
-                                                .whitespace_nowrap()
-                                                .truncate()
-                                                .text_color(muted)
-                                                .child(line.age.clone()),
+                                            grid_cell(cx.theme(), Some(AGE_WIDTH), true).child(
+                                                div()
+                                                    .whitespace_nowrap()
+                                                    .truncate()
+                                                    .text_color(muted)
+                                                    .child(line.age.clone()),
+                                            ),
                                         )
                                     })
                                     .on_click(cx.listener(move |this, _, window, cx| {
