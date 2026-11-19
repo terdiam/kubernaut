@@ -26,7 +26,7 @@ use k8s_app::{
 };
 use tokio::runtime::Handle;
 
-use crate::ui::{Emphasis, button, chip, segment, segmented_bar, toast_error};
+use crate::ui::{Emphasis, button, chip, progress_bar, segment, segmented_bar, toast_error};
 
 /// How many lines a log view asks for when it opens.
 const TAIL_CHOICES: [i64; 4] = [200, 500, 1000, 5000];
@@ -167,7 +167,7 @@ enum UpdateState {
     Current,
     Available(Release),
     /// Downloading, verifying or handing over to the installer.
-    Working(&'static str),
+    Working(Arc<updates::Progress>),
     Failed(SharedString),
 }
 
@@ -371,11 +371,25 @@ impl SettingsView {
     /// Download, verify and stage the release, then hand the swap to a helper
     /// and quit so it can run.
     fn install_update(&mut self, release: Release, cx: &mut Context<Self>) {
-        self.update = UpdateState::Working("Downloading and checking the signature…");
+        let progress = Arc::new(updates::Progress::default());
+        self.update = UpdateState::Working(Arc::clone(&progress));
         cx.notify();
+        let worker = Arc::clone(&progress);
         let task = self
             .runtime
-            .spawn_blocking(move || updates::download_and_install(&release));
+            .spawn_blocking(move || updates::download_and_install_tracked(&release, &worker));
+        // Repaint while the worker runs so the bar moves.
+        cx.spawn(async move |this, cx| {
+            while Arc::strong_count(&progress) > 2 {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(120))
+                    .await;
+                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
             this.update(cx, |this, cx| match result {
@@ -663,7 +677,7 @@ impl Render for SettingsView {
                 format!("Version {} is available.", release.version).into(),
                 cx.theme().success,
             ),
-            UpdateState::Working(what) => ((*what).into(), muted),
+            UpdateState::Working(progress) => (progress.describe().into(), muted),
             UpdateState::Failed(reason) => (reason.clone(), danger),
         };
         let mut update_actions = h_flex().gap_2().items_center().child(
@@ -706,6 +720,11 @@ impl Render for SettingsView {
                 );
             }
         }
+        let working = match &self.update {
+            UpdateState::Working(progress) => Some(progress.fraction()),
+            UpdateState::Checking => Some(None),
+            _ => None,
+        };
         let signed_note = match &self.update {
             UpdateState::Available(release) if !release.installable() => Some(
                 "This build cannot install updates itself: download the new version from the \
@@ -943,6 +962,13 @@ impl Render for SettingsView {
                                                 )
                                                 .child(update_actions),
                                         )
+                                        .when_some(working, |column, fraction| {
+                                            column.child(progress_bar(
+                                                fraction,
+                                                relative(1.),
+                                                cx.theme(),
+                                            ))
+                                        })
                                         .when_some(signed_note, |column, note| {
                                             column.child(
                                                 div().text_xs().text_color(muted).child(note),

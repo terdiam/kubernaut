@@ -103,7 +103,7 @@ fn selector(value: &Value, pointer: &str) -> Option<String> {
 }
 
 /// Bytes as a person reads them: `15.6 GiB`, `983 GiB`.
-fn human_bytes(bytes: f64) -> String {
+pub(crate) fn human_bytes(bytes: f64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut value = bytes;
     let mut unit = 0;

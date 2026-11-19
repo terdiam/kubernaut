@@ -380,3 +380,40 @@ pub fn grid_header(theme: &Theme, columns: &[(&'static str, Option<f32>)]) -> Di
             grid_cell(theme, *width, index + 1 == columns.len()).child(*label)
         }))
 }
+
+/// A thin bar showing how far something has got. With a fraction it fills from
+/// the left; without one (a step of unknown length) a short stripe sweeps
+/// across, driven by the clock, so the caller only has to repaint now and then.
+pub fn progress_bar(fraction: Option<f32>, width: DefiniteLength, theme: &Theme) -> Div {
+    let track = div()
+        .h(px(4.))
+        .w(width)
+        .flex_none()
+        .rounded_full()
+        .overflow_hidden()
+        .bg(theme.border);
+    match fraction {
+        Some(fraction) => track.child(
+            div()
+                .h_full()
+                .w(relative(fraction.clamp(0., 1.)))
+                .rounded_full()
+                .bg(theme.primary),
+        ),
+        None => {
+            const STRIPE: f32 = 0.3;
+            let millis = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |elapsed| elapsed.as_millis() % 1400);
+            let at = millis as f32 / 1400. * (1. + STRIPE) - STRIPE;
+            track.child(
+                div()
+                    .h_full()
+                    .w(relative(STRIPE))
+                    .ml(relative(at.max(0.)))
+                    .rounded_full()
+                    .bg(theme.primary),
+            )
+        }
+    }
+}

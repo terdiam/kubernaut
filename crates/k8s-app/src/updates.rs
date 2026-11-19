@@ -24,6 +24,8 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::atomic::{AtomicU8, AtomicU64, Ordering},
+    time::Duration,
 };
 
 pub use crate::update_install::{current_install, install, stage};
@@ -57,6 +59,77 @@ pub struct Release {
     pub package_url: Option<String>,
     /// Its signature, if the release has one.
     pub sig_url: Option<String>,
+    /// The package's size in bytes, as the release lists it.
+    pub package_size: Option<u64>,
+}
+
+/// Where an install has got to, in the order it happens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    Idle = 0,
+    Downloading = 1,
+    Verifying = 2,
+    Unpacking = 3,
+    Installing = 4,
+}
+
+/// A running install's progress, written by the worker and read by whatever
+/// draws it. Atomics keep both sides lock-free.
+#[derive(Debug, Default)]
+pub struct Progress {
+    stage: AtomicU8,
+    done: AtomicU64,
+    total: AtomicU64,
+}
+
+impl Progress {
+    fn enter(&self, stage: Stage) {
+        self.stage.store(stage as u8, Ordering::Relaxed);
+    }
+
+    pub fn stage(&self) -> Stage {
+        match self.stage.load(Ordering::Relaxed) {
+            1 => Stage::Downloading,
+            2 => Stage::Verifying,
+            3 => Stage::Unpacking,
+            4 => Stage::Installing,
+            _ => Stage::Idle,
+        }
+    }
+
+    /// Bytes received and bytes expected (0 when the release did not say).
+    pub fn bytes(&self) -> (u64, u64) {
+        (
+            self.done.load(Ordering::Relaxed),
+            self.total.load(Ordering::Relaxed),
+        )
+    }
+
+    /// What the install is doing, in a line: `Downloading 12 MiB of 45 MiB (27%)`.
+    pub fn describe(&self) -> String {
+        let (done, total) = self.bytes();
+        match self.stage() {
+            Stage::Idle => String::new(),
+            Stage::Downloading if total > 0 => format!(
+                "Downloading {} of {} ({}%)",
+                crate::details::human_bytes(done as f64),
+                crate::details::human_bytes(total as f64),
+                (done * 100 / total).min(100)
+            ),
+            Stage::Downloading => {
+                format!("Downloading {}", crate::details::human_bytes(done as f64))
+            }
+            Stage::Verifying => "Checking the signature".into(),
+            Stage::Unpacking => "Unpacking the update".into(),
+            Stage::Installing => "Installing, restarting in a moment".into(),
+        }
+    }
+
+    /// How far the download is, from 0 to 1, when its size is known.
+    pub fn fraction(&self) -> Option<f32> {
+        let (done, total) = self.bytes();
+        (total > 0).then(|| (done as f32 / total as f32).min(1.))
+    }
 }
 
 impl Release {
@@ -137,9 +210,19 @@ pub fn parse_release(json: &str, os: &str, arch: &str) -> Result<Release, String
             .and_then(|asset| asset.get("browser_download_url")?.as_str())
             .map(str::to_string)
     };
+    let package_size = value
+        .get("assets")
+        .and_then(Value::as_array)
+        .and_then(|assets| {
+            assets
+                .iter()
+                .find(|asset| asset.get("name").and_then(Value::as_str) == Some(package.as_str()))
+        })
+        .and_then(|asset| asset.get("size")?.as_u64());
     Ok(Release {
         sig_url: asset(&format!("{package}.sig")),
         package_url: asset(&package),
+        package_size,
         version,
         page_url,
     })
@@ -273,12 +356,45 @@ pub fn sign(private_key_hex: &str, zip: &Path) -> Result<String, String> {
 /// Download a release's package and signature into `directory` and verify them.
 /// Returns the verified package; on any failure nothing is left to install.
 pub fn download(release: &Release, directory: &Path) -> Result<PathBuf, String> {
+    download_tracked(release, directory, &Progress::default())
+}
+
+/// [`download`], reporting into `progress`. curl writes the package to disk, so
+/// the file's growing size is the byte count.
+fn download_tracked(
+    release: &Release,
+    directory: &Path,
+    progress: &Progress,
+) -> Result<PathBuf, String> {
     let key = public_key().ok_or("this build has no update key, so it cannot install updates")?;
     let (Some(package_url), Some(sig_url)) = (&release.package_url, &release.sig_url) else {
         return Err("this release has no signed download for this machine".into());
     };
     let package = directory.join("update-package");
-    curl(package_url, Some(&package))?;
+    progress
+        .total
+        .store(release.package_size.unwrap_or(0), Ordering::Relaxed);
+    progress.done.store(0, Ordering::Relaxed);
+    progress.enter(Stage::Downloading);
+    let fetched = std::thread::scope(|scope| {
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let watched = package.as_path();
+        scope.spawn(move || {
+            while stop_rx.recv_timeout(Duration::from_millis(100)).is_err() {
+                if let Ok(meta) = std::fs::metadata(watched) {
+                    progress.done.store(meta.len(), Ordering::Relaxed);
+                }
+            }
+        });
+        let result = curl(package_url, Some(&package));
+        drop(stop_tx);
+        result
+    });
+    fetched?;
+    progress
+        .done
+        .store(progress.total.load(Ordering::Relaxed), Ordering::Relaxed);
+    progress.enter(Stage::Verifying);
     let signature = curl(sig_url, None)?;
     let checked = verify(&key, &package, &String::from_utf8_lossy(&signature));
     if let Err(reason) = checked {
@@ -293,15 +409,23 @@ pub fn download(release: &Release, directory: &Path) -> Result<PathBuf, String> 
 /// runs once this process exits. The caller quits on `Ok`. A failure leaves the
 /// running install untouched and removes what was downloaded.
 pub fn download_and_install(release: &Release) -> Result<(), String> {
+    download_and_install_tracked(release, &Progress::default())
+}
+
+/// [`download_and_install`], reporting each stage into `progress`.
+pub fn download_and_install_tracked(release: &Release, progress: &Progress) -> Result<(), String> {
     let install_dir = current_install()
         .ok_or("this copy is not running from an installed package, so it cannot replace itself")?;
     let directory = staging_directory()?;
     let outcome = (|| {
-        let package = download(release, &directory)?;
+        let package = download_tracked(release, &directory, progress)?;
+        progress.enter(Stage::Unpacking);
         let staged = stage(&package, &directory, &release.version)?;
+        progress.enter(Stage::Installing);
         install(&staged, &install_dir)
     })();
     if outcome.is_err() {
+        progress.enter(Stage::Idle);
         let _ = std::fs::remove_dir_all(&directory);
     }
     outcome
@@ -339,7 +463,7 @@ mod tests {
         "tag_name": "v0.1.16",
         "html_url": "https://github.com/terdiam/kubernaut/releases/tag/v0.1.16",
         "assets": [
-            {"name": "Kubernaut-0.1.16-macos-arm64.zip", "browser_download_url": "https://x/zip"},
+            {"name": "Kubernaut-0.1.16-macos-arm64.zip", "browser_download_url": "https://x/zip", "size": 4096},
             {"name": "Kubernaut-0.1.16-macos-arm64.zip.sig", "browser_download_url": "https://x/sig"},
             {"name": "Kubernaut-0.1.16-macos-x86_64.zip", "browser_download_url": "https://x/intel"},
             {"name": "Kubernaut-0.1.16-linux-aarch64.tar.gz", "browser_download_url": "https://x/linux"},
@@ -355,6 +479,7 @@ mod tests {
         assert_eq!(release.version, "0.1.16");
         assert_eq!(release.package_url.as_deref(), Some("https://x/zip"));
         assert_eq!(release.sig_url.as_deref(), Some("https://x/sig"));
+        assert_eq!(release.package_size, Some(4096));
 
         let intel = parse_release(RELEASE, "macos", "x86_64").unwrap();
         assert_eq!(intel.package_url.as_deref(), Some("https://x/intel"));
@@ -373,6 +498,25 @@ mod tests {
 
         assert!(parse_release("{}", "macos", "aarch64").is_err());
         assert!(parse_release("not json", "macos", "aarch64").is_err());
+    }
+
+    #[test]
+    fn progress_reads_as_a_line_and_a_fraction() {
+        let progress = Progress::default();
+        assert_eq!(progress.describe(), "");
+        assert_eq!(progress.fraction(), None);
+
+        progress.total.store(2048, Ordering::Relaxed);
+        progress.done.store(512, Ordering::Relaxed);
+        progress.enter(Stage::Downloading);
+        assert_eq!(progress.describe(), "Downloading 512 B of 2 KiB (25%)");
+        assert_eq!(progress.fraction(), Some(0.25));
+
+        progress.total.store(0, Ordering::Relaxed);
+        assert_eq!(progress.fraction(), None, "no size, no fraction");
+
+        progress.enter(Stage::Verifying);
+        assert_eq!(progress.describe(), "Checking the signature");
     }
 
     #[test]
