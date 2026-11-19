@@ -3,7 +3,9 @@
 use gpui_kit::{
     assets::IconName,
     base::StyledExt,
-    component::{ActiveTheme, Icon, Theme, WindowExt, h_flex, notification::Notification},
+    component::{
+        ActiveTheme, Icon, Theme, WindowExt, h_flex, notification::Notification, tooltip::Tooltip,
+    },
     prelude::FluentBuilder,
     *,
 };
@@ -168,6 +170,40 @@ pub fn segment_icon(
         .gap_1p5()
         .child(Icon::new(icon).size_3())
         .child(label.into())
+}
+
+/// A tab drawn as an icon alone, with its name in a tooltip. Larger than the
+/// icon of a labelled segment, because the shape is all there is to go by; the
+/// open one is lifted and takes the foreground colour.
+pub fn tab_icon(
+    id: impl Into<ElementId>,
+    icon: IconName,
+    label: impl Into<SharedString>,
+    active: bool,
+    theme: &Theme,
+) -> Stateful<Div> {
+    let label: SharedString = label.into();
+    div()
+        .id(id)
+        .size(px(32.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_md()
+        .cursor_pointer()
+        .tooltip(move |window, cx| Tooltip::new(label.clone()).build(window, cx))
+        .when(active, |tab| {
+            tab.bg(theme.background)
+                .shadow_sm()
+                .text_color(theme.primary)
+        })
+        .when(!active, |tab| {
+            tab.text_color(theme.muted_foreground).hover(|tab| {
+                tab.bg(theme.background.opacity(0.6))
+                    .text_color(theme.foreground)
+            })
+        })
+        .child(Icon::new(icon).size(px(18.)))
 }
 
 /// How loudly a button asks to be pressed.

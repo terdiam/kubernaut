@@ -13,7 +13,9 @@ assets::icon_assets!(
         ArrowLeftRight,
         BellOff,
         Box,
+        Bug,
         Cable,
+        ChartLine,
         Clock,
         Cog,
         Container,
@@ -39,12 +41,15 @@ assets::icon_assets!(
         ScanSearch,
         ScrollText,
         Server,
+        ServerCog,
         Shield,
         ShieldAlert,
         ShieldCheck,
         ShipWheel,
         SlidersHorizontal,
+        Stethoscope,
         Tag,
+        Tags,
         Timer,
         Upload,
         UserCog,
@@ -120,6 +125,32 @@ mod tests {
             kind_icon("Widget").is_none(),
             "a custom kind is left to the caller"
         );
+    }
+
+    #[test]
+    fn the_icon_of_every_drawer_tab_is_embedded() {
+        // A tab with no icon would be an empty square, and there is no label to
+        // fall back on until it is hovered.
+        use gpui_kit::AssetSource;
+        for icon in [
+            IconName::Info,
+            IconName::FileCode,
+            IconName::Activity,
+            IconName::ChartLine,
+            IconName::Gauge,
+            IconName::Stethoscope,
+            IconName::ScrollText,
+            IconName::SquareTerminal,
+            IconName::Bug,
+            IconName::Tags,
+            IconName::ServerCog,
+        ] {
+            let path = IconName::path(icon);
+            assert!(
+                matches!(super::AppAssets.load(&path), Ok(Some(_))),
+                "{path}"
+            );
+        }
     }
 
     #[test]

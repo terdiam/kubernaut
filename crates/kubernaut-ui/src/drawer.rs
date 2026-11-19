@@ -39,8 +39,7 @@ use crate::{
     row_actions::{self, RowAction},
     terminal::{Request, TerminalView},
     ui::{
-        Emphasis, button_icon, chip, grid_cell, grid_header, segment_icon, segmented_bar,
-        toast_success,
+        Emphasis, button_icon, chip, grid_cell, grid_header, segmented_bar, tab_icon, toast_success,
     },
     yaml::YamlView,
 };
@@ -243,7 +242,7 @@ impl DrawerView {
         label: &'static str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        segment_icon(label, icon, label, self.tab == tab, cx.theme())
+        tab_icon(label, icon, label, self.tab == tab, cx.theme())
             .on_click(cx.listener(move |this, _, window, cx| this.show(tab, window, cx)))
     }
 
@@ -741,28 +740,27 @@ impl Render for DrawerView {
             )
             .child(
                 div().flex_none().px_3().py_2().child(
-                    // Eight tabs do not fit in one row of the drawer, and the last
-                    // ones (Debug) were cut off; let them wrap onto a second row.
+                    // Icons alone, so every tab fits one row; the name shows on
+                    // hover.
                     segmented_bar(cx.theme())
-                        .flex_wrap()
                         .child(self.render_tab(Tab::Details, IconName::Info, "Details", cx))
                         .child(self.render_tab(Tab::Yaml, IconName::FileCode, "YAML", cx))
                         .child(self.render_tab(Tab::Events, IconName::Activity, "Events", cx))
                         .when(metric_target(&self.target).is_some(), |tabs| {
                             tabs.child(self.render_tab(
                                 Tab::Metrics,
-                                IconName::Gauge,
+                                IconName::ChartLine,
                                 "Metrics",
                                 cx,
                             ))
                         })
                         .when(self.has_quota(), |tabs| {
-                            tabs.child(self.render_tab(Tab::Quota, IconName::Ruler, "Quota", cx))
+                            tabs.child(self.render_tab(Tab::Quota, IconName::Gauge, "Quota", cx))
                         })
                         .when(self.can_diagnose(), |tabs| {
                             tabs.child(self.render_tab(
                                 Tab::Diagnose,
-                                IconName::ShieldAlert,
+                                IconName::Stethoscope,
                                 "Diagnose",
                                 cx,
                             ))
@@ -779,7 +777,7 @@ impl Render for DrawerView {
                             ))
                             .child(self.render_tab(
                                 Tab::Debug,
-                                IconName::Cog,
+                                IconName::Bug,
                                 "Debug",
                                 cx,
                             ))
@@ -787,13 +785,13 @@ impl Render for DrawerView {
                         .when(self.has_node_shell(), |tabs| {
                             tabs.child(self.render_tab(
                                 Tab::Labels,
-                                IconName::Settings2,
+                                IconName::Tags,
                                 "Labels & taints",
                                 cx,
                             ))
                             .child(self.render_tab(
                                 Tab::NodeShell,
-                                IconName::SquareTerminal,
+                                IconName::ServerCog,
                                 "Node shell",
                                 cx,
                             ))
