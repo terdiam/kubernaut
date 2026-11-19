@@ -24,6 +24,7 @@ use k8s_metrics::{Alert, AlertmanagerTarget};
 use tokio::runtime::Handle;
 
 use crate::{
+    cards::{self, Folds, badge},
     drawer::Target,
     namespaces,
     rows::contains_ignore_case,
@@ -166,6 +167,46 @@ fn matching(lines: &[Line], needle: &str) -> Vec<usize> {
         .collect()
 }
 
+/// How the alerts stand, for the card above the list: the worst that is still
+/// firing, and what is silenced. Nothing firing is good news worth saying.
+fn alerts_status(lines: &[Line]) -> (Tone, String, String) {
+    let firing: Vec<&Line> = lines.iter().filter(|line| !line.silenced).collect();
+    let silenced = lines.len() - firing.len();
+    let silenced_note = if silenced > 0 {
+        format!("{silenced} silenced")
+    } else {
+        "none silenced".to_string()
+    };
+    if firing.is_empty() {
+        let label = if silenced > 0 {
+            "All silenced"
+        } else {
+            "Nothing firing"
+        };
+        let tone = if silenced > 0 {
+            Tone::Pending
+        } else {
+            Tone::Ok
+        };
+        return (tone, label.to_string(), silenced_note);
+    }
+    let worst = firing
+        .iter()
+        .filter_map(|line| tone_of(&line.severity))
+        .max()
+        .unwrap_or(Tone::Warn);
+    let urgent = firing
+        .iter()
+        .filter(|line| severity_rank(&line.severity) <= 1)
+        .count();
+    let detail = if urgent > 0 {
+        format!("{urgent} urgent · {silenced_note}")
+    } else {
+        silenced_note
+    };
+    (worst, format!("{} firing", firing.len()), detail)
+}
+
 enum Load {
     Loading,
     Ready,
@@ -197,6 +238,7 @@ pub struct AlertsView {
     busy: bool,
     scroll: UniformListScrollHandle,
     _filter: Subscription,
+    folds: Folds,
 }
 
 impl EventEmitter<AlertsEvent> for AlertsView {}
@@ -232,6 +274,7 @@ impl AlertsView {
             busy: false,
             scroll: UniformListScrollHandle::new(),
             _filter: subscription,
+            folds: Folds::load(core, runtime),
         };
         view.refresh(cx);
         cx.spawn(async move |this, cx| {
@@ -419,24 +462,49 @@ impl AlertsView {
         let open = target.map(|target| {
             cx.listener(move |_, _, _, cx| cx.emit(AlertsEvent::Open(target.clone())))
         });
-        let rows = |pairs: &[(SharedString, SharedString)]| {
-            v_flex().gap_1().children(pairs.iter().map(|(key, value)| {
-                h_flex()
-                    .gap_3()
-                    .items_start()
-                    .text_sm()
-                    .child(
-                        div()
-                            .w(px(120.))
-                            .flex_none()
-                            .truncate()
-                            .text_color(muted)
-                            .child(key.clone()),
-                    )
-                    .child(div().flex_1().min_w_0().child(value.clone()))
-            }))
+        let card = |id: &'static str,
+                    title: &'static str,
+                    count: usize,
+                    rows: Vec<AnyElement>,
+                    cx: &mut Context<Self>| {
+            let folded = self.folds.is_folded(id);
+            let toggle = cx.listener(move |this, _, _, cx| {
+                this.folds.toggle(id);
+                cx.notify();
+            });
+            cards::card(
+                id,
+                title,
+                vec![badge(count.to_string(), muted)],
+                folded,
+                toggle,
+                rows,
+                cx.theme(),
+            )
         };
-        let section = |title: &'static str| div().text_xs().text_color(muted).child(title);
+        let fields = |pairs: &[(SharedString, SharedString)], cx: &mut Context<Self>| {
+            pairs
+                .iter()
+                .map(|(key, value)| cards::field("alert", key, value, 120., cx.theme()))
+                .collect::<Vec<_>>()
+        };
+        let mut cards_column = v_flex().gap_3();
+        cards_column = cards_column.child(card(
+            "alerts-labels",
+            "Labels",
+            line.labels.len(),
+            fields(&line.labels, cx),
+            cx,
+        ));
+        if !line.annotations.is_empty() {
+            cards_column = cards_column.child(card(
+                "alerts-annotations",
+                "Annotations",
+                line.annotations.len(),
+                fields(&line.annotations, cx),
+                cx,
+            ));
+        }
 
         v_flex()
             .w(px(460.))
@@ -497,13 +565,7 @@ impl AlertsView {
                                 .child(line.summary.clone()),
                         )
                     })
-                    .child(section("Labels"))
-                    .child(rows(&line.labels))
-                    .when(!line.annotations.is_empty(), |column| {
-                        column
-                            .child(section("Annotations"))
-                            .child(rows(&line.annotations))
-                    }),
+                    .child(cards_column),
             )
             .child(
                 v_flex()
@@ -738,6 +800,16 @@ impl Render for AlertsView {
                             .child(div().flex_1())
                             .child(div().w(px(220.)).child(Input::new(&self.filter))),
                     )
+                    .children(matches!(self.load, Load::Ready).then(|| {
+                        let (tone, label, detail) = alerts_status(&self.lines);
+                        div().px_4().pb_2().child(cards::status_card(
+                            tone,
+                            label,
+                            detail,
+                            None,
+                            cx.theme(),
+                        ))
+                    }))
                     .child(list),
             )
             .children(detail)
@@ -748,7 +820,7 @@ impl Render for AlertsView {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::{line, matching, order, severity_rank, subject_of, tone_of};
+    use super::{alerts_status, line, matching, order, severity_rank, subject_of, tone_of};
     use k8s_app::present::Tone;
     use k8s_metrics::Alert;
 
@@ -775,6 +847,30 @@ mod tests {
                 Vec::new()
             },
         }
+    }
+
+    #[test]
+    fn the_status_is_the_worst_alert_still_firing() {
+        let lines = |alerts: &[(&str, &str, &str)]| -> Vec<super::Line> {
+            alerts
+                .iter()
+                .map(|(name, severity, state)| line(alert(name, severity, state), 120))
+                .collect()
+        };
+        let (tone, label, _) = alerts_status(&lines(&[]));
+        assert_eq!((tone, label.as_str()), (Tone::Ok, "Nothing firing"));
+        let (tone, label, _) = alerts_status(&lines(&[("a", "critical", "suppressed")]));
+        assert_eq!((tone, label.as_str()), (Tone::Pending, "All silenced"));
+        let (tone, label, detail) = alerts_status(&lines(&[
+            ("a", "warning", "active"),
+            ("b", "critical", "active"),
+            ("c", "warning", "suppressed"),
+        ]));
+        assert_eq!((tone, label.as_str()), (Tone::Error, "2 firing"));
+        assert_eq!(detail, "1 urgent · 1 silenced");
+        let (tone, _, detail) = alerts_status(&lines(&[("a", "warning", "active")]));
+        assert_eq!(tone, Tone::Warn);
+        assert_eq!(detail, "none silenced");
     }
 
     #[test]
