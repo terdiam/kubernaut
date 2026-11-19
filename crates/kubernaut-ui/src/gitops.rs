@@ -24,6 +24,7 @@ use k8s_ops::gitops::GitOpsEntry;
 use tokio::runtime::Handle;
 
 use crate::{
+    cards::{self, Folds},
     drawer::Target,
     namespaces,
     rows::contains_ignore_case,
@@ -147,6 +148,38 @@ fn matching(lines: &[Line], needle: &str) -> Vec<usize> {
         .collect()
 }
 
+/// How the synced objects stand, for the card above the list: failing ones
+/// first, then those still working, then drift and suspension, else all synced.
+fn gitops_status(lines: &[Line]) -> (Tone, String, String) {
+    let count = |wanted: fn(&Line) -> bool| lines.iter().filter(|line| wanted(line)).count();
+    let failing = count(|line| line.tone == Some(Tone::Error));
+    let working = count(|line| matches!(line.tone, Some(Tone::Pending | Tone::Warn)));
+    let drifted = count(|line| line.drifted);
+    let suspended = count(|line| line.entry.suspended);
+    let total = lines.len();
+    let mut notes = vec![format!("of {total}")];
+    if drifted > 0 {
+        notes.push(format!("{drifted} drifted"));
+    }
+    if suspended > 0 {
+        notes.push(format!("{suspended} suspended"));
+    }
+    let detail = notes.join(" · ");
+    if failing > 0 {
+        (Tone::Error, format!("{failing} failing"), detail)
+    } else if working > 0 {
+        (Tone::Warn, format!("{working} not settled"), detail)
+    } else if drifted > 0 {
+        (
+            Tone::Warn,
+            format!("{drifted} drifted"),
+            format!("of {total}"),
+        )
+    } else {
+        (Tone::Ok, "All synced".to_string(), detail)
+    }
+}
+
 enum Load {
     Loading,
     Ready,
@@ -195,6 +228,7 @@ pub struct GitOpsView {
     busy: Option<&'static str>,
     scroll: UniformListScrollHandle,
     _filter: Subscription,
+    folds: Folds,
 }
 
 impl EventEmitter<GitOpsEvent> for GitOpsView {}
@@ -230,6 +264,7 @@ impl GitOpsView {
             busy: None,
             scroll: UniformListScrollHandle::new(),
             _filter: subscription,
+            folds: Folds::load(core, runtime),
         };
         view.refresh(cx);
         cx.spawn(async move |this, cx| {
@@ -418,15 +453,56 @@ impl GitOpsView {
             theme.muted_foreground,
             theme.danger,
         );
-        let field = |label: &'static str, value: String| {
-            h_flex()
-                .gap_3()
-                .items_start()
-                .text_sm()
-                .child(div().w(px(110.)).flex_none().text_color(muted).child(label))
-                .child(div().flex_1().min_w_0().child(value))
-        };
         let entry = &line.entry;
+        let none = || "—".to_string();
+        let rows: Vec<(&str, String)> = vec![
+            ("Namespace", entry.namespace.clone().unwrap_or_else(none)),
+            ("Source", entry.source.clone().unwrap_or_else(none)),
+            ("Path", entry.path.clone().unwrap_or_else(none)),
+            (
+                "Tracking",
+                entry.target_revision.clone().unwrap_or_else(none),
+            ),
+            (
+                "Applied",
+                entry.applied_revision.clone().unwrap_or_else(none),
+            ),
+            (
+                "Last sync",
+                if line.age.is_empty() {
+                    none()
+                } else {
+                    format!("{} ago", line.age)
+                },
+            ),
+        ];
+        let id = "gitops-source";
+        let folded = self.folds.is_folded(id);
+        let fold = cx.listener(move |this, _, _, cx| {
+            this.folds.toggle(id);
+            cx.notify();
+        });
+        let cards_column = v_flex()
+            .gap_2()
+            .child(cards::card(
+                id,
+                "Source and revision",
+                Vec::new(),
+                folded,
+                fold,
+                rows.iter()
+                    .map(|(label, value)| cards::field("gitops", label, value, 110., cx.theme()))
+                    .collect(),
+                cx.theme(),
+            ))
+            .when(line.drifted, |column| {
+                column.child(
+                    div()
+                        .text_xs()
+                        .text_color(cx.theme().warning)
+                        .child("The applied commit is not the one this is pinned to."),
+                )
+            });
         let idle = self.busy.is_none();
         let target = Self::target(line, &self.cluster);
 
@@ -501,42 +577,7 @@ impl GitOpsView {
                                 .child(text),
                         )
                     })
-                    .child(field(
-                        "Namespace",
-                        entry.namespace.clone().unwrap_or_else(|| "—".into()),
-                    ))
-                    .child(field(
-                        "Source",
-                        entry.source.clone().unwrap_or_else(|| "—".into()),
-                    ))
-                    .child(field(
-                        "Path",
-                        entry.path.clone().unwrap_or_else(|| "—".into()),
-                    ))
-                    .child(field(
-                        "Tracking",
-                        entry.target_revision.clone().unwrap_or_else(|| "—".into()),
-                    ))
-                    .child(field(
-                        "Applied",
-                        entry.applied_revision.clone().unwrap_or_else(|| "—".into()),
-                    ))
-                    .child(field(
-                        "Last sync",
-                        if line.age.is_empty() {
-                            "—".to_string()
-                        } else {
-                            format!("{} ago", line.age)
-                        },
-                    ))
-                    .when(line.drifted, |column| {
-                        column.child(
-                            div()
-                                .text_xs()
-                                .text_color(cx.theme().warning)
-                                .child("The applied commit is not the one this is pinned to."),
-                        )
-                    }),
+                    .child(cards_column),
             )
             .child(
                 h_flex()
@@ -740,6 +781,18 @@ impl Render for GitOpsView {
                             .child(div().flex_1())
                             .child(div().w(px(220.)).child(Input::new(&self.filter))),
                     )
+                    .children(
+                        (matches!(self.load, Load::Ready) && !self.lines.is_empty()).then(|| {
+                            let (tone, label, detail) = gitops_status(&self.lines);
+                            div().px_4().pb_2().child(cards::status_card(
+                                tone,
+                                label,
+                                detail,
+                                None,
+                                cx.theme(),
+                            ))
+                        }),
+                    )
                     .children(self.limitations.iter().take(3).map(|text| {
                         div()
                             .px_4()
@@ -756,8 +809,34 @@ impl Render for GitOpsView {
 
 #[cfg(test)]
 mod tests {
-    use super::{line, matching, short_revision};
+    use super::{gitops_status, line, matching, short_revision};
+    use k8s_app::present::Tone;
     use k8s_ops::gitops::GitOpsEntry;
+
+    #[test]
+    fn the_status_puts_failing_first_then_unsettled_then_drift() {
+        let lines = |rows: &[(&str, Option<&str>, Option<&str>)]| -> Vec<super::Line> {
+            rows.iter()
+                .enumerate()
+                .map(|(i, (health, applied, target))| {
+                    line(entry(&format!("a{i}"), health, *applied, *target), 120)
+                })
+                .collect()
+        };
+        let (tone, label, _) = gitops_status(&lines(&[("ok", None, None), ("ok", None, None)]));
+        assert_eq!((tone, label.as_str()), (Tone::Ok, "All synced"));
+        let (tone, label, _) = gitops_status(&lines(&[("pending", None, None)]));
+        assert_eq!((tone, label.as_str()), (Tone::Warn, "1 not settled"));
+        let (tone, label, detail) = gitops_status(&lines(&[
+            ("error", None, None),
+            ("ok", None, None),
+            ("ok", None, None),
+        ]));
+        assert_eq!(
+            (tone, label.as_str(), detail.as_str()),
+            (Tone::Error, "1 failing", "of 3")
+        );
+    }
 
     fn entry(name: &str, health: &str, applied: Option<&str>, target: Option<&str>) -> GitOpsEntry {
         GitOpsEntry {
