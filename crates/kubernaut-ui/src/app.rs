@@ -58,7 +58,8 @@ use crate::{
     terminal::{Request, TerminalView},
     theme,
     topology::{TopologyEvent, TopologyView},
-    ui::{Emphasis, button_icon, chip, pill, progress_bar, toast_error, toast_success},
+    ui::{Emphasis, button_icon, chip, pill, toast_error, toast_success},
+    update_progress::UpdateProgress,
     usage::{UsageEvent, UsageView},
     window_controls::{leaves_room_for_traffic_lights, window_controls},
     yaml::fetch_yaml,
@@ -439,8 +440,6 @@ const MAX_DRAWERS: usize = 8;
 
 pub struct AppView {
     core: Arc<AppCore>,
-    /// An update being installed in the background, for the status bar.
-    installing: Option<Arc<updates::Progress>>,
     /// The tokio runtime the Kubernetes client lives on. GPUI drives its own
     /// executor, but `kube`/`hyper` need tokio's reactor, so work is spawned
     /// here and the `JoinHandle` awaited from a GPUI task (a join handle is an
@@ -597,7 +596,7 @@ impl AppView {
             let install_here = preferences.auto_install_updates;
             let runtime = runtime.clone();
             let task = runtime.spawn_blocking(|| updates::check(env!("CARGO_PKG_VERSION")));
-            cx.spawn_in(window, async move |this, cx| {
+            cx.spawn_in(window, async move |_, cx| {
                 let Ok(Ok(Some(release))) = task.await else {
                     return;
                 };
@@ -607,46 +606,46 @@ impl AppView {
                 // (a .deb, a build run from `target/`) only gets the notice.
                 if install_here && release.installable() && updates::current_install().is_some() {
                     let version = release.version.clone();
-                    cx.update(|window, cx| {
-                        toast_success(
-                            window,
-                            cx,
-                            format!("Installing Kubernaut {version}; it restarts in a moment."),
-                        );
-                    })
-                    .ok();
-                    // Shown in the status bar, so a download that takes a while
-                    // is not a silent wait for a restart.
+                    // A window of its own, so a download that takes a while is
+                    // not a silent wait for a restart.
                     let progress = Arc::new(updates::Progress::default());
-                    this.update(cx, |this, cx| {
-                        this.installing = Some(Arc::clone(&progress));
-                        cx.notify();
+                    cx.update(|window, cx| {
+                        let body = cx.new(|cx| UpdateProgress::new(Arc::clone(&progress), cx));
+                        let title = format!("Updating Kubernaut to {version}");
+                        window.open_dialog(cx, move |dialog, _, _| {
+                            dialog
+                                .title(title.clone())
+                                .width(px(420.))
+                                .close_button(false)
+                                .overlay_closable(false)
+                                .keyboard(false)
+                                .child(body.clone())
+                        });
                     })
                     .ok();
                     let worker = Arc::clone(&progress);
-                    let mut install = runtime.spawn_blocking(move || {
-                        updates::download_and_install_tracked(&release, &worker)
-                    });
-                    let outcome = loop {
-                        let tick = cx.background_executor().timer(Duration::from_millis(120));
-                        futures::pin_mut!(tick);
-                        match futures::future::select(&mut install, tick).await {
-                            futures::future::Either::Left((done, _)) => {
-                                break done.unwrap_or_else(|err| Err(err.to_string()));
-                            }
-                            futures::future::Either::Right(_) => {
-                                this.update(cx, |_, cx| cx.notify()).ok();
-                            }
-                        }
-                    };
-                    this.update(cx, |this, cx| {
-                        this.installing = None;
-                        cx.notify();
-                    })
-                    .ok();
+                    let outcome = runtime
+                        .spawn_blocking(move || {
+                            updates::download_and_install_tracked(&release, &worker)
+                        })
+                        .await
+                        .unwrap_or_else(|err| Err(err.to_string()));
+                    cx.update(|window, cx| window.close_dialog(cx)).ok();
                     match outcome {
                         Ok(()) => {
                             cx.update(|_, cx| cx.quit()).ok();
+                        }
+                        Err(reason) if reason == updates::CANCELLED => {
+                            cx.update(|window, cx| {
+                                toast_success(
+                                    window,
+                                    cx,
+                                    format!(
+                                        "Update to {version} cancelled. See Settings → Updates."
+                                    ),
+                                );
+                            })
+                            .ok();
                         }
                         Err(reason) => {
                             cx.update(|window, cx| {
@@ -654,7 +653,10 @@ impl AppView {
                                     window,
                                     cx,
                                     format!("Could not install Kubernaut {version}"),
-                                    format!("{reason} See Settings → Updates."),
+                                    format!(
+                                        "{}. See Settings → Updates.",
+                                        reason.trim_end_matches('.')
+                                    ),
                                 );
                             })
                             .ok();
@@ -682,7 +684,6 @@ impl AppView {
 
         Self {
             core,
-            installing: None,
             runtime,
             tiles,
             rail,
@@ -3721,16 +3722,6 @@ impl AppView {
             }
         });
 
-        let installing = self.installing.as_ref().map(|progress| {
-            h_flex()
-                .gap_2()
-                .items_center()
-                .text_color(theme.primary)
-                .child(Icon::new(IconName::ArrowDownToLine).size_3())
-                .child(format!("Update {}", progress.describe().to_lowercase()))
-                .child(progress_bar(progress.fraction(), px(90.).into(), theme))
-        });
-
         h_flex()
             .h(px(24.))
             .w_full()
@@ -3745,7 +3736,6 @@ impl AppView {
             .text_color(tone)
             .child(left)
             .child(div().flex_1())
-            .children(installing)
             .children(shown)
     }
 

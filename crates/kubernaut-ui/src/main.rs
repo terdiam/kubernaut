@@ -46,6 +46,7 @@ mod terminal;
 mod theme;
 mod topology;
 mod ui;
+mod update_progress;
 mod upgrade;
 mod usage;
 mod validation;

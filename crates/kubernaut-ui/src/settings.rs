@@ -375,6 +375,7 @@ impl SettingsView {
         self.update = UpdateState::Working(Arc::clone(&progress));
         cx.notify();
         let worker = Arc::clone(&progress);
+        let release_again = release.clone();
         let task = self
             .runtime
             .spawn_blocking(move || updates::download_and_install_tracked(&release, &worker));
@@ -394,6 +395,10 @@ impl SettingsView {
             let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
             this.update(cx, |this, cx| match result {
                 Ok(()) => cx.quit(),
+                Err(reason) if reason == updates::CANCELLED => {
+                    this.update = UpdateState::Available(release_again);
+                    cx.notify();
+                }
                 Err(reason) => {
                     this.update = UpdateState::Failed(reason.into());
                     cx.notify();
@@ -677,6 +682,9 @@ impl Render for SettingsView {
                 format!("Version {} is available.", release.version).into(),
                 cx.theme().success,
             ),
+            UpdateState::Working(progress) if progress.is_cancelled() => {
+                ("Cancelling…".into(), muted)
+            }
             UpdateState::Working(progress) => (progress.describe().into(), muted),
             UpdateState::Failed(reason) => (reason.clone(), danger),
         };
@@ -692,6 +700,25 @@ impl Render for SettingsView {
                 b.on_click(cx.listener(|this, _, _, cx| this.check_for_update(cx)))
             }),
         );
+        if let UpdateState::Working(progress) = &self.update {
+            let progress = Arc::clone(progress);
+            let can_cancel = progress.can_cancel() && !progress.is_cancelled();
+            update_actions = update_actions.child(
+                button(
+                    "settings-update-cancel",
+                    "Cancel update",
+                    can_cancel,
+                    Emphasis::Plain,
+                    cx.theme(),
+                )
+                .when(can_cancel, |b| {
+                    b.on_click(cx.listener(move |_, _, _, cx| {
+                        progress.cancel();
+                        cx.notify();
+                    }))
+                }),
+            );
+        }
         if let UpdateState::Available(release) = &self.update {
             let page = release.page_url.clone();
             update_actions = update_actions.child(

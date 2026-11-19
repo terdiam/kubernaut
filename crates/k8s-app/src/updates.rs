@@ -24,7 +24,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::{AtomicU8, AtomicU64, Ordering},
+    sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     time::Duration,
 };
 
@@ -48,6 +48,9 @@ pub const PUBLIC_KEY_HEX: &str = "0def8acb94b255bf40ec475d5f38a96b257c41eb64cdda
 
 /// The most that is downloaded for one release.
 const MAX_DOWNLOAD: &str = "200M";
+
+/// The error an install gives when the person stopped it.
+pub const CANCELLED: &str = "Update cancelled.";
 
 /// A release newer than the running version.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,12 +80,29 @@ pub enum Stage {
 /// draws it. Atomics keep both sides lock-free.
 #[derive(Debug, Default)]
 pub struct Progress {
+    cancelled: AtomicBool,
     stage: AtomicU8,
     done: AtomicU64,
     total: AtomicU64,
 }
 
 impl Progress {
+    /// Ask the install to stop. Takes effect within a fraction of a second while
+    /// it is downloading or checking; once the swap has begun it cannot be undone
+    /// from here, so [`Progress::can_cancel`] turns false.
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+
+    /// Whether stopping is still possible: only before the package is unpacked.
+    pub fn can_cancel(&self) -> bool {
+        matches!(self.stage(), Stage::Downloading | Stage::Verifying)
+    }
+
     fn enter(&self, stage: Stage) {
         self.stage.store(stage as u8, Ordering::Relaxed);
     }
@@ -238,8 +258,8 @@ fn url_override() -> Option<String> {
     }
 }
 
-/// Run `curl` with fixed, conservative options.
-fn curl(url: &str, output: Option<&Path>) -> Result<Vec<u8>, String> {
+/// `curl` with fixed, conservative options, ready for a URL and an output.
+fn curl_command(url: &str) -> Command {
     // https only; the override of a debug build may also name a file.
     let protocols = if url_override().is_some() {
         "=https,file"
@@ -259,13 +279,15 @@ fn curl(url: &str, output: Option<&Path>) -> Result<Vec<u8>, String> {
         .args(["--proto", protocols, "--proto-redir", "=https"])
         .args(["--max-time", "300", "--max-filesize", MAX_DOWNLOAD])
         .args(["-H", "Accept: application/vnd.github+json"])
-        .args(["-H", "User-Agent: Kubernaut"]);
-    if let Some(path) = output {
-        command.arg("--output").arg(path);
-    }
-    let result = command
+        .args(["-H", "User-Agent: Kubernaut"])
         .arg(url)
-        .stdin(Stdio::null())
+        .stdin(Stdio::null());
+    command
+}
+
+/// Run `curl` and return what it printed.
+fn curl(url: &str) -> Result<Vec<u8>, String> {
+    let result = curl_command(url)
         .output()
         .map_err(|e| format!("could not run curl: {e}"))?;
     if result.status.success() {
@@ -275,11 +297,46 @@ fn curl(url: &str, output: Option<&Path>) -> Result<Vec<u8>, String> {
     }
 }
 
+/// Run `curl` into a file, counting its bytes into `progress` and killing it
+/// the moment the person cancels. The file's growing size is the byte count.
+fn curl_to_file(url: &str, path: &Path, progress: &Progress) -> Result<(), String> {
+    let mut child = curl_command(url)
+        .arg("--output")
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not run curl: {e}"))?;
+    loop {
+        if progress.is_cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = std::fs::remove_file(path);
+            return Err(CANCELLED.into());
+        }
+        if let Ok(meta) = std::fs::metadata(path) {
+            progress.done.store(meta.len(), Ordering::Relaxed);
+        }
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(_)) => {
+                let mut reason = String::new();
+                if let Some(mut stderr) = child.stderr.take() {
+                    let _ = stderr.read_to_string(&mut reason);
+                }
+                return Err(reason.trim().to_string());
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => return Err(format!("could not run curl: {e}")),
+        }
+    }
+}
+
 /// Ask for the latest release; `None` when the running version is current.
 pub fn check(current: &str) -> Result<Option<Release>, String> {
     let url = url_override()
         .unwrap_or_else(|| format!("https://api.github.com/repos/{REPO}/releases/latest"));
-    let body = curl(&url, None)?;
+    let body = curl(&url)?;
     let release = parse_release(
         &String::from_utf8_lossy(&body),
         std::env::consts::OS,
@@ -376,26 +433,16 @@ fn download_tracked(
         .store(release.package_size.unwrap_or(0), Ordering::Relaxed);
     progress.done.store(0, Ordering::Relaxed);
     progress.enter(Stage::Downloading);
-    let fetched = std::thread::scope(|scope| {
-        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
-        let watched = package.as_path();
-        scope.spawn(move || {
-            while stop_rx.recv_timeout(Duration::from_millis(100)).is_err() {
-                if let Ok(meta) = std::fs::metadata(watched) {
-                    progress.done.store(meta.len(), Ordering::Relaxed);
-                }
-            }
-        });
-        let result = curl(package_url, Some(&package));
-        drop(stop_tx);
-        result
-    });
-    fetched?;
+    curl_to_file(package_url, &package, progress)?;
     progress
         .done
         .store(progress.total.load(Ordering::Relaxed), Ordering::Relaxed);
     progress.enter(Stage::Verifying);
-    let signature = curl(sig_url, None)?;
+    let signature = curl(sig_url)?;
+    if progress.is_cancelled() {
+        let _ = std::fs::remove_file(&package);
+        return Err(CANCELLED.into());
+    }
     let checked = verify(&key, &package, &String::from_utf8_lossy(&signature));
     if let Err(reason) = checked {
         let _ = std::fs::remove_file(&package);
@@ -517,6 +564,23 @@ mod tests {
 
         progress.enter(Stage::Verifying);
         assert_eq!(progress.describe(), "Checking the signature");
+    }
+
+    #[test]
+    fn cancelling_is_possible_only_before_the_swap() {
+        let progress = Progress::default();
+        assert!(!progress.can_cancel(), "nothing is running yet");
+        for stage in [Stage::Downloading, Stage::Verifying] {
+            progress.enter(stage);
+            assert!(progress.can_cancel(), "{stage:?}");
+        }
+        for stage in [Stage::Unpacking, Stage::Installing] {
+            progress.enter(stage);
+            assert!(!progress.can_cancel(), "{stage:?}");
+        }
+        assert!(!progress.is_cancelled());
+        progress.cancel();
+        assert!(progress.is_cancelled());
     }
 
     #[test]
