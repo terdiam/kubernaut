@@ -64,6 +64,74 @@ pub struct Release {
     pub sig_url: Option<String>,
     /// The package's size in bytes, as the release lists it.
     pub package_size: Option<u64>,
+    /// What changed, as the release's author wrote it (Markdown).
+    pub notes: String,
+}
+
+/// How a line of release notes is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoteKind {
+    Heading,
+    Bullet,
+    Text,
+}
+
+/// One line of release notes with its Markdown marks removed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NoteLine {
+    pub kind: NoteKind,
+    pub text: String,
+}
+
+/// Release notes as lines a plain view can draw: headings, bullets and
+/// paragraphs, without `#`, `**`, backticks or link syntax. Blank lines go;
+/// a paragraph is one line however long it is, for the view to wrap.
+pub fn note_lines(notes: &str) -> Vec<NoteLine> {
+    notes
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let (kind, rest) = if let Some(rest) = line.strip_prefix('#') {
+                (NoteKind::Heading, rest.trim_start_matches('#'))
+            } else if let Some(rest) = line.strip_prefix("- ").or(line.strip_prefix("* ")) {
+                (NoteKind::Bullet, rest)
+            } else {
+                (NoteKind::Text, line)
+            };
+            NoteLine {
+                kind,
+                text: plain(rest.trim()),
+            }
+        })
+        .collect()
+}
+
+/// Inline Markdown as plain text: `**bold**` and `` `code` `` lose their marks
+/// and `[label](url)` becomes `label`.
+fn plain(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(open) = rest.find('[') {
+        let (before, tail) = rest.split_at(open);
+        out.push_str(before);
+        let link = tail.find("](").and_then(|mid| {
+            let end = tail[mid..].find(')')? + mid;
+            Some((&tail[1..mid], &tail[end + 1..]))
+        });
+        match link {
+            Some((label, after)) => {
+                out.push_str(label);
+                rest = after;
+            }
+            None => {
+                out.push('[');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out.replace("**", "").replace('`', "")
 }
 
 /// Where an install has got to, in the order it happens.
@@ -230,6 +298,11 @@ pub fn parse_release(json: &str, os: &str, arch: &str) -> Result<Release, String
             .and_then(|asset| asset.get("browser_download_url")?.as_str())
             .map(str::to_string)
     };
+    let notes = value
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     let package_size = value
         .get("assets")
         .and_then(Value::as_array)
@@ -243,6 +316,7 @@ pub fn parse_release(json: &str, os: &str, arch: &str) -> Result<Release, String
         sig_url: asset(&format!("{package}.sig")),
         package_url: asset(&package),
         package_size,
+        notes,
         version,
         page_url,
     })
@@ -581,6 +655,40 @@ mod tests {
         assert!(!progress.is_cancelled());
         progress.cancel();
         assert!(progress.is_cancelled());
+    }
+
+    #[test]
+    fn notes_read_as_plain_lines() {
+        let lines = note_lines(
+            "## What's new\n\n**Bold** start with `code` and [a link](https://x/y).\n- one\n* two\n\n[not a link",
+        );
+        let shown: Vec<_> = lines.iter().map(|l| (l.kind, l.text.as_str())).collect();
+        assert_eq!(
+            shown,
+            [
+                (NoteKind::Heading, "What's new"),
+                (NoteKind::Text, "Bold start with code and a link."),
+                (NoteKind::Bullet, "one"),
+                (NoteKind::Bullet, "two"),
+                (NoteKind::Text, "[not a link"),
+            ]
+        );
+        assert!(note_lines("").is_empty());
+    }
+
+    #[test]
+    fn a_release_carries_its_notes() {
+        let release = parse_release(
+            r###"{"tag_name":"v1.0.0","body":"## Hi\n- a","assets":[]}"###,
+            "macos",
+            "aarch64",
+        )
+        .unwrap();
+        assert_eq!(release.notes, "## Hi\n- a");
+        assert_eq!(
+            parse_release(RELEASE, "macos", "aarch64").unwrap().notes,
+            ""
+        );
     }
 
     #[test]

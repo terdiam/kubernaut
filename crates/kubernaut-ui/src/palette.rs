@@ -34,6 +34,7 @@ pub enum Command {
     Ports,
     Create,
     Settings,
+    CheckUpdates,
     AddCluster,
     Activity,
     Crashes,

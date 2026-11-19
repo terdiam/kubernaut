@@ -59,7 +59,7 @@ use crate::{
     theme,
     topology::{TopologyEvent, TopologyView},
     ui::{Emphasis, button_icon, chip, pill, toast_error, toast_success},
-    update_progress::UpdateProgress,
+    update_progress,
     usage::{UsageEvent, UsageView},
     window_controls::{leaves_room_for_traffic_lights, window_controls},
     yaml::fetch_yaml,
@@ -605,63 +605,7 @@ impl AppView {
                 // Settings → Updates, and an install that cannot replace itself
                 // (a .deb, a build run from `target/`) only gets the notice.
                 if install_here && release.installable() && updates::current_install().is_some() {
-                    let version = release.version.clone();
-                    // A window of its own, so a download that takes a while is
-                    // not a silent wait for a restart.
-                    let progress = Arc::new(updates::Progress::default());
-                    cx.update(|window, cx| {
-                        let body = cx.new(|cx| UpdateProgress::new(Arc::clone(&progress), cx));
-                        let title = format!("Updating Kubernaut to {version}");
-                        window.open_dialog(cx, move |dialog, _, _| {
-                            dialog
-                                .title(title.clone())
-                                .width(px(420.))
-                                .close_button(false)
-                                .overlay_closable(false)
-                                .keyboard(false)
-                                .child(body.clone())
-                        });
-                    })
-                    .ok();
-                    let worker = Arc::clone(&progress);
-                    let outcome = runtime
-                        .spawn_blocking(move || {
-                            updates::download_and_install_tracked(&release, &worker)
-                        })
-                        .await
-                        .unwrap_or_else(|err| Err(err.to_string()));
-                    cx.update(|window, cx| window.close_dialog(cx)).ok();
-                    match outcome {
-                        Ok(()) => {
-                            cx.update(|_, cx| cx.quit()).ok();
-                        }
-                        Err(reason) if reason == updates::CANCELLED => {
-                            cx.update(|window, cx| {
-                                toast_success(
-                                    window,
-                                    cx,
-                                    format!(
-                                        "Update to {version} cancelled. See Settings → Updates."
-                                    ),
-                                );
-                            })
-                            .ok();
-                        }
-                        Err(reason) => {
-                            cx.update(|window, cx| {
-                                toast_error(
-                                    window,
-                                    cx,
-                                    format!("Could not install Kubernaut {version}"),
-                                    format!(
-                                        "{}. See Settings → Updates.",
-                                        reason.trim_end_matches('.')
-                                    ),
-                                );
-                            })
-                            .ok();
-                        }
-                    }
+                    update_progress::install(&runtime, release, cx).await;
                     return;
                 }
                 cx.update(|window, cx| {
@@ -1257,6 +1201,12 @@ impl AppView {
             command: Command::AddCluster,
         });
         items.push(Item {
+            label: "Check for updates".into(),
+            hint: "Action".into(),
+            icon: IconName::ArrowDownToLine,
+            command: Command::CheckUpdates,
+        });
+        items.push(Item {
             label: "Settings".into(),
             hint: "Page".into(),
             icon: IconName::Settings,
@@ -1273,6 +1223,7 @@ impl AppView {
             Command::Security => self.open_security(window, cx),
             Command::Alerts => self.open_alerts(window, cx),
             Command::Settings => self.open_settings(window, cx),
+            Command::CheckUpdates => self.check_for_updates(window, cx),
             Command::AddCluster => self.open_add_cluster(window, cx),
             Command::Activity => self.open_activity(window, cx),
             Command::Crashes => self.open_crashes(cx),
@@ -1776,12 +1727,26 @@ impl AppView {
     /// Open Settings and look for a newer version there, where the result and the
     /// button that installs it are.
     pub fn check_for_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.open_settings(window, cx);
-        if let Some(settings) = &self.settings {
-            settings
-                .view
-                .update(cx, |settings, cx| settings.check_for_update(cx));
-        }
+        toast_success(window, cx, "Looking for a newer version…");
+        let runtime = self.runtime.clone();
+        let task = runtime.spawn_blocking(|| updates::check(env!("CARGO_PKG_VERSION")));
+        cx.spawn_in(window, async move |_, cx| {
+            let result = task.await.unwrap_or_else(|err| Err(err.to_string()));
+            cx.update(|window, cx| match result {
+                Ok(Some(release)) => update_progress::open_available(window, cx, runtime, release),
+                Ok(None) => toast_success(
+                    window,
+                    cx,
+                    format!(
+                        "Kubernaut {} is the latest version.",
+                        env!("CARGO_PKG_VERSION")
+                    ),
+                ),
+                Err(reason) => toast_error(window, cx, "Could not check for updates", reason),
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Say what this is and which version.

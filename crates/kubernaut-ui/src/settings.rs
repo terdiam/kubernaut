@@ -27,6 +27,7 @@ use k8s_app::{
 use tokio::runtime::Handle;
 
 use crate::ui::{Emphasis, button, chip, progress_bar, segment, segmented_bar, toast_error};
+use crate::update_progress::notes_panel;
 
 /// How many lines a log view asks for when it opens.
 const TAIL_CHOICES: [i64; 4] = [200, 500, 1000, 5000];
@@ -747,6 +748,10 @@ impl Render for SettingsView {
                 );
             }
         }
+        let notes = match &self.update {
+            UpdateState::Available(release) => updates::note_lines(&release.notes),
+            _ => Vec::new(),
+        };
         let working = match &self.update {
             UpdateState::Working(progress) => Some(progress.fraction()),
             UpdateState::Checking => Some(None),
@@ -995,6 +1000,13 @@ impl Render for SettingsView {
                                                 relative(1.),
                                                 cx.theme(),
                                             ))
+                                        })
+                                        .when(!notes.is_empty(), |column| {
+                                            column.child(div().pt_2().child(notes_panel(
+                                                "settings-update-notes-panel",
+                                                &notes,
+                                                cx.theme(),
+                                            )))
                                         })
                                         .when_some(signed_note, |column, note| {
                                             column.child(
