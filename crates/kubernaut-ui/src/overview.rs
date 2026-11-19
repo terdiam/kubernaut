@@ -22,6 +22,7 @@ use k8s_metrics::{
 use tokio::runtime::Handle;
 
 use crate::{
+    cards::{self, Folds, badge},
     drawer::Target,
     ui::{Palette, message, pill, segment, segmented_bar, tone_color},
 };
@@ -159,6 +160,48 @@ struct Shown {
     issues: Vec<IssueLine>,
     hidden_issues: usize,
     metrics_error: Option<SharedString>,
+    /// How the cluster is doing, for the card at the top.
+    status: Status,
+}
+
+/// The cluster in one line: a state, what it rests on, and nodes ready out of
+/// all.
+struct Status {
+    tone: Tone,
+    label: &'static str,
+    detail: SharedString,
+    nodes: (i64, i64),
+}
+
+/// Errors or an unready node need attention; warnings or a gauge that is
+/// filling up deserve a look; otherwise the cluster is healthy.
+fn status(
+    nodes_ready: usize,
+    nodes_total: usize,
+    errors: usize,
+    warnings: usize,
+    fullest: Tone,
+) -> Status {
+    let (tone, label) = if nodes_ready < nodes_total || errors > 0 {
+        (Tone::Error, "Needs attention")
+    } else if warnings > 0 || fullest >= Tone::Warn {
+        (Tone::Warn, "Worth a look")
+    } else {
+        (Tone::Ok, "Healthy")
+    };
+    let count = |n: usize, word: &str| format!("{n} {word}{}", if n == 1 { "" } else { "s" });
+    let problems = match (errors, warnings) {
+        (0, 0) => "nothing needs attention".to_string(),
+        (e, 0) => count(e, "error"),
+        (0, w) => count(w, "warning"),
+        (e, w) => format!("{}, {}", count(e, "error"), count(w, "warning")),
+    };
+    Status {
+        tone,
+        label,
+        detail: format!("{nodes_ready} of {nodes_total} nodes ready · {problems}").into(),
+        nodes: (nodes_ready as i64, nodes_total as i64),
+    }
 }
 
 fn issue_line(cluster: &SharedString, issue: &Issue) -> IssueLine {
@@ -190,14 +233,22 @@ fn shown(cluster: &SharedString, overview: &ClusterOverview) -> Shown {
     // Errors before warnings; the sampler's own order is kept within each.
     issues.sort_by_key(|issue| issue.severity == Severity::Warning);
     let hidden_issues = issues.len().saturating_sub(MAX_ISSUES);
+    let errors = issues
+        .iter()
+        .filter(|issue| issue.severity == Severity::Error)
+        .count();
+    let warnings = issues.len() - errors;
+    let gauges = [
+        gauge("CPU", &overview.cpu, Unit::Cores),
+        gauge("Memory", &overview.memory, Unit::Bytes),
+        gauge("Pods", &overview.pods, Unit::Count),
+    ];
+    let fullest = gauges.iter().map(|g| g.tone).max().unwrap_or(Tone::Ok);
 
     Shown {
         sampled_at: overview.sampled_at.clone(),
-        gauges: [
-            gauge("CPU", &overview.cpu, Unit::Cores),
-            gauge("Memory", &overview.memory, Unit::Bytes),
-            gauge("Pods", &overview.pods, Unit::Count),
-        ],
+        status: status(nodes.ready, nodes.total, errors, warnings, fullest),
+        gauges,
         nodes_headline: format!("{} of {}", nodes.ready, nodes.total).into(),
         nodes_detail: if nodes.total == 1 {
             "node ready".into()
@@ -221,6 +272,7 @@ pub struct OverviewView {
     sampler: Option<Arc<ClusterSampler>>,
     scope: NodeScope,
     shown: Option<Shown>,
+    folds: Folds,
 }
 
 impl EventEmitter<OverviewEvent> for OverviewView {}
@@ -259,6 +311,7 @@ impl OverviewView {
             sampler: None,
             scope: NodeScope::All,
             shown: None,
+            folds: Folds::load(core, runtime),
         }
     }
 
@@ -410,42 +463,39 @@ impl OverviewView {
 
     fn render_issues(&self, shown: &Shown, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.theme();
-        let (muted, border, success, hover) = (
-            theme.muted_foreground,
-            theme.border,
-            theme.success,
-            theme.secondary_hover,
-        );
+        let (muted, success, warning) = (theme.muted_foreground, theme.success, theme.warning);
 
-        let body = if shown.issues.is_empty() {
-            h_flex()
-                .gap_2()
-                .px_4()
-                .py_4()
-                .items_center()
-                .text_sm()
-                .text_color(muted)
-                .child(
-                    Icon::new(IconName::CircleCheck)
-                        .size_4()
-                        .text_color(success),
-                )
-                .child("All clear. Nothing needs attention right now.")
-                .into_any_element()
+        let rows: Vec<AnyElement> = if shown.issues.is_empty() {
+            vec![
+                h_flex()
+                    .gap_2()
+                    .py_2()
+                    .items_center()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(
+                        Icon::new(IconName::CircleCheck)
+                            .size_4()
+                            .text_color(success),
+                    )
+                    .child("All clear. Nothing needs attention right now.")
+                    .into_any_element(),
+            ]
         } else {
-            v_flex()
-                .children(shown.issues.iter().enumerate().map(|(index, line)| {
+            let mut rows: Vec<AnyElement> = shown
+                .issues
+                .iter()
+                .enumerate()
+                .map(|(index, line)| {
                     let target = line.target.clone();
                     let color = tone_color(line.tone, cx.theme());
+                    let hover = cx.theme().secondary_hover;
                     h_flex()
                         .id(("issue", index))
-                        .px_4()
-                        .py_2()
                         .gap_3()
                         .items_center()
+                        .rounded_sm()
                         .cursor_pointer()
-                        .border_t_1()
-                        .border_color(border)
                         .hover(|row| row.bg(hover))
                         .child(div().size(px(8.)).flex_none().rounded_full().bg(color))
                         .child(
@@ -465,42 +515,44 @@ impl OverviewView {
                         .on_click(cx.listener(move |_, _, _, cx| {
                             cx.emit(OverviewEvent::Open(target.clone()));
                         }))
-                }))
-                .when(shown.hidden_issues > 0, |list| {
-                    list.child(
-                        div()
-                            .px_4()
-                            .py_2()
-                            .border_t_1()
-                            .border_color(border)
-                            .text_xs()
-                            .text_color(muted)
-                            .child(format!("and {} more", shown.hidden_issues)),
-                    )
+                        .into_any_element()
                 })
-                .into_any_element()
+                .collect();
+            if shown.hidden_issues > 0 {
+                rows.push(
+                    div()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(format!("and {} more", shown.hidden_issues))
+                        .into_any_element(),
+                );
+            }
+            rows
         };
 
-        v_flex()
-            .rounded_xl()
-            .border_1()
-            .border_color(border)
-            .overflow_hidden()
-            .child(
-                h_flex()
-                    .px_4()
-                    .py_3()
-                    .gap_2()
-                    .items_center()
-                    .child(div().font_semibold().child("Needs attention"))
-                    .when(!shown.issues.is_empty(), |row| {
-                        row.child(pill(
-                            (shown.issues.len() + shown.hidden_issues).to_string(),
-                            cx.theme().warning,
-                        ))
-                    }),
-            )
-            .child(body)
+        let id = "overview-attention";
+        let folded = self.folds.is_folded(id);
+        let toggle = cx.listener(move |this, _, _, cx| {
+            this.folds.toggle(id);
+            cx.notify();
+        });
+        let badges = if shown.issues.is_empty() {
+            Vec::new()
+        } else {
+            vec![badge(
+                (shown.issues.len() + shown.hidden_issues).to_string(),
+                warning,
+            )]
+        };
+        cards::card(
+            id,
+            "Needs attention",
+            badges,
+            folded,
+            toggle,
+            rows,
+            cx.theme(),
+        )
     }
 }
 
@@ -540,6 +592,13 @@ impl Render for OverviewView {
                     .child(div().flex_1())
                     .child(switcher),
             )
+            .child(cards::status_card(
+                shown.status.tone,
+                shown.status.label,
+                shown.status.detail.clone(),
+                Some(shown.status.nodes),
+                cx.theme(),
+            ))
             .when_some(shown.metrics_error.clone(), |page, error| {
                 page.child(
                     div()
@@ -583,6 +642,25 @@ mod tests {
             capacity: allocatable,
             usage_available,
         }
+    }
+
+    #[test]
+    fn the_cluster_status_follows_nodes_then_errors_then_warnings_then_fullness() {
+        use super::status;
+        let s = status(3, 3, 0, 0, Tone::Ok);
+        assert_eq!((s.tone, s.label), (Tone::Ok, "Healthy"));
+        assert_eq!(&*s.detail, "3 of 3 nodes ready · nothing needs attention");
+        assert_eq!(s.nodes, (3, 3));
+        let s = status(3, 3, 0, 2, Tone::Ok);
+        assert_eq!((s.tone, s.label), (Tone::Warn, "Worth a look"));
+        assert_eq!(&*s.detail, "3 of 3 nodes ready · 2 warnings");
+        let s = status(3, 3, 0, 0, Tone::Warn);
+        assert_eq!(s.tone, Tone::Warn, "a nearly full gauge deserves a look");
+        let s = status(2, 3, 0, 0, Tone::Ok);
+        assert_eq!((s.tone, s.label), (Tone::Error, "Needs attention"));
+        let s = status(3, 3, 1, 4, Tone::Ok);
+        assert_eq!(s.tone, Tone::Error);
+        assert_eq!(&*s.detail, "3 of 3 nodes ready · 1 error, 4 warnings");
     }
 
     #[test]
